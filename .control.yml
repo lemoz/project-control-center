@@ -1,0 +1,10 @@
+id: project-control-center
+name: Project Control Center
+type: long_term
+stage: building
+status: active
+priority: 1
+tags:
+  - meta
+  - bootstrap
+

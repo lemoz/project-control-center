@@ -1,0 +1,194 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: #0b0d12;
+  color: #e6e8ee;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.card {
+  background: #141824;
+  border: 1px solid #22293a;
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.cardLink {
+  position: relative;
+}
+
+.stretchedLink {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  z-index: 1;
+}
+
+.grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: #1f2433;
+  border: 1px solid #2b3347;
+}
+
+.muted {
+  color: #a9b0c2;
+}
+
+.desc {
+  color: #a9b0c2;
+  font-size: 13px;
+  margin-top: 4px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.nextItem {
+  font-size: 13px;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.board {
+  display: grid;
+  gap: 12px;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(340px, 1fr);
+  overflow-x: auto;
+  padding-bottom: 6px;
+  scroll-snap-type: x mandatory;
+}
+
+.column {
+  min-height: 320px;
+  scroll-snap-align: start;
+}
+
+.woCard {
+  background: #0f1320;
+  border: 1px solid #22293a;
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.woGoal {
+  color: #a9b0c2;
+  font-size: 13px;
+  margin-top: 6px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.woFieldsGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+@media (min-width: 860px) {
+  .woFieldsGrid {
+    grid-template-columns: 1fr 180px 180px;
+  }
+}
+
+.input, .select, .textarea {
+  width: 100%;
+  background: #0b0d12;
+  border: 1px solid #2b3347;
+  border-radius: 10px;
+  color: #e6e8ee;
+  padding: 8px 10px;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.textarea {
+  resize: vertical;
+}
+
+.btn, .btnSecondary {
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-weight: 650;
+  border: 1px solid #2b3347;
+  cursor: pointer;
+}
+
+.btn {
+  background: #2b5cff;
+  border-color: #2b5cff;
+  color: #ffffff;
+}
+
+.btnSecondary {
+  background: transparent;
+  color: #e6e8ee;
+}
+
+.btn:disabled, .btnSecondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.linkBtn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: #a9b0c2;
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: underline;
+}
+
+.linkBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.fieldLabel {
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.error {
+  background: #2a1417;
+  border: 1px solid #5a1f2a;
+  color: #ffb4c0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+}

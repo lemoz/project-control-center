@@ -1,0 +1,541 @@
+import Database from "better-sqlite3";
+import path from "path";
+
+export type ProjectRow = {
+  id: string;
+  path: string;
+  name: string;
+  description: string | null;
+  type: "prototype" | "long_term";
+  stage: string;
+  status: "active" | "blocked" | "parked";
+  priority: number;
+  starred: 0 | 1;
+  hidden: 0 | 1;
+  tags: string; // JSON array
+  last_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RunRow = {
+  id: string;
+  project_id: string;
+  work_order_id: string;
+  provider: string;
+  status:
+    | "queued"
+    | "building"
+    | "ai_review"
+    | "testing"
+    | "you_review"
+    | "failed"
+    | "canceled";
+  iteration: number;
+  reviewer_verdict: "approved" | "changes_requested" | null;
+  reviewer_notes: string | null; // JSON array
+  summary: string | null;
+  run_dir: string;
+  log_path: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+};
+
+export type SettingRow = {
+  key: string;
+  value: string; // JSON payload
+  updated_at: string;
+};
+
+let db: Database.Database | null = null;
+
+export function getDb() {
+  if (db) return db;
+  const dbPath =
+    process.env.CONTROL_CENTER_DB_PATH ||
+    path.join(process.cwd(), "control-center.db");
+  db = new Database(dbPath);
+  db.pragma("foreign_keys = ON");
+  db.pragma("journal_mode = WAL");
+  initSchema(db);
+  return db;
+}
+
+function initSchema(database: Database.Database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      path TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      type TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      status TEXT NOT NULL,
+      priority INTEGER NOT NULL,
+      starred INTEGER NOT NULL DEFAULT 0,
+      hidden INTEGER NOT NULL DEFAULT 0,
+      tags TEXT NOT NULL DEFAULT '[]',
+      last_run_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS work_orders (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL,
+      priority INTEGER NOT NULL,
+      tags TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_work_orders_project_id ON work_orders(project_id);
+
+    CREATE TABLE IF NOT EXISTS runs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      work_order_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      status TEXT NOT NULL,
+      iteration INTEGER NOT NULL DEFAULT 1,
+      reviewer_verdict TEXT,
+      reviewer_notes TEXT,
+      summary TEXT,
+      run_dir TEXT NOT NULL,
+      log_path TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      error TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_runs_project_id_created_at ON runs(project_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_runs_status_created_at ON runs(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_threads (
+      id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL,
+      project_id TEXT,
+      work_order_id TEXT,
+      summary TEXT NOT NULL DEFAULT '',
+      summarized_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_threads_scope_project_work_order ON chat_threads(scope, project_id, work_order_id);
+
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT NOT NULL UNIQUE,
+      thread_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      actions_json TEXT,
+      run_id TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_seq ON chat_messages(thread_id, seq);
+
+    CREATE TABLE IF NOT EXISTS chat_runs (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      user_message_id TEXT NOT NULL,
+      assistant_message_id TEXT,
+      status TEXT NOT NULL,
+      model TEXT NOT NULL DEFAULT '',
+      cli_path TEXT NOT NULL DEFAULT '',
+      cwd TEXT NOT NULL,
+      log_path TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      error TEXT,
+      FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_runs_thread_created_at ON chat_runs(thread_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_runs_status_created_at ON chat_runs(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS chat_run_commands (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      cwd TEXT NOT NULL,
+      command TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (run_id) REFERENCES chat_runs(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_run_commands_run_id_seq ON chat_run_commands(run_id, seq);
+
+    CREATE TABLE IF NOT EXISTS chat_action_ledger (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      action_index INTEGER NOT NULL,
+      action_type TEXT NOT NULL,
+      action_payload_json TEXT NOT NULL,
+      applied_at TEXT NOT NULL,
+      undo_payload_json TEXT,
+      undone_at TEXT,
+      error TEXT,
+      FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE,
+      FOREIGN KEY (run_id) REFERENCES chat_runs(id) ON DELETE CASCADE
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_action_ledger_message_action ON chat_action_ledger(message_id, action_index);
+    CREATE INDEX IF NOT EXISTS idx_chat_action_ledger_thread_applied_at ON chat_action_ledger(thread_id, applied_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_action_ledger_run_id ON chat_action_ledger(run_id);
+  `);
+
+  // Lightweight migration for existing DBs.
+  const projectColumns = database.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>;
+  const hasStarred = projectColumns.some((c) => c.name === "starred");
+  const hasDescription = projectColumns.some((c) => c.name === "description");
+  const hasHidden = projectColumns.some((c) => c.name === "hidden");
+  if (!hasStarred) {
+    database.exec("ALTER TABLE projects ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;");
+  }
+  if (!hasDescription) {
+    database.exec("ALTER TABLE projects ADD COLUMN description TEXT;");
+  }
+  if (!hasHidden) {
+    database.exec("ALTER TABLE projects ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;");
+  }
+}
+
+export function listProjects(): ProjectRow[] {
+  const database = getDb();
+  return database
+    .prepare(
+      "SELECT * FROM projects ORDER BY hidden ASC, starred DESC, priority ASC, name ASC"
+    )
+    .all() as ProjectRow[];
+}
+
+export function findProjectByPath(repoPath: string): ProjectRow | null {
+  const database = getDb();
+  const row = database
+    .prepare(
+      "SELECT * FROM projects WHERE path = ? ORDER BY priority ASC, created_at ASC LIMIT 1"
+    )
+    .get(repoPath) as ProjectRow | undefined;
+  return row || null;
+}
+
+export function listProjectsByPath(repoPath: string): ProjectRow[] {
+  const database = getDb();
+  return database
+    .prepare("SELECT * FROM projects WHERE path = ?")
+    .all(repoPath) as ProjectRow[];
+}
+
+export function findProjectById(id: string): ProjectRow | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM projects WHERE id = ? LIMIT 1")
+    .get(id) as ProjectRow | undefined;
+  return row || null;
+}
+
+export function deleteProjectsByPathExceptId(
+  repoPath: string,
+  keepId: string
+): number {
+  const database = getDb();
+  const result = database
+    .prepare("DELETE FROM projects WHERE path = ? AND id != ?")
+    .run(repoPath, keepId);
+  return result.changes;
+}
+
+export type ProjectMergeResult = {
+  kept_id: string;
+  merged_ids: string[];
+  moved_runs: number;
+  moved_work_orders: number;
+  deleted_projects: number;
+};
+
+type ProjectIdForeignKey = { table: string; column: string };
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function listProjectIdForeignKeys(database: Database.Database): ProjectIdForeignKey[] {
+  const tables = database
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    )
+    .all() as Array<{ name: string }>;
+
+  const found: ProjectIdForeignKey[] = [];
+  for (const t of tables) {
+    const tableName = t.name;
+    const fkRows = database
+      .prepare(`PRAGMA foreign_key_list(${quoteIdentifier(tableName)})`)
+      .all() as Array<{ table: string; from: string; to: string }>;
+    for (const fk of fkRows) {
+      if (fk.table !== "projects") continue;
+      if (fk.to !== "id") continue;
+      found.push({ table: tableName, column: fk.from });
+    }
+  }
+
+  const seen = new Set<string>();
+  return found.filter((fk) => {
+    const key = `${fk.table}\0${fk.column}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export function mergeProjectsByPath(
+  repoPath: string,
+  keepId: string
+): ProjectMergeResult {
+  const database = getDb();
+
+  const keep = database
+    .prepare("SELECT id FROM projects WHERE id = ? LIMIT 1")
+    .get(keepId) as { id: string } | undefined;
+  if (!keep) {
+    return {
+      kept_id: keepId,
+      merged_ids: [],
+      moved_runs: 0,
+      moved_work_orders: 0,
+      deleted_projects: 0,
+    };
+  }
+
+  const duplicates = database
+    .prepare("SELECT id FROM projects WHERE path = ? AND id != ?")
+    .all(repoPath, keepId) as Array<{ id: string }>;
+  if (!duplicates.length) {
+    return {
+      kept_id: keepId,
+      merged_ids: [],
+      moved_runs: 0,
+      moved_work_orders: 0,
+      deleted_projects: 0,
+    };
+  }
+
+  const mergeTx = database.transaction(() => {
+    let movedRuns = 0;
+    let movedWorkOrders = 0;
+    let deletedProjects = 0;
+    const mergedIds: string[] = [];
+
+    const moveProjectIdStmts = listProjectIdForeignKeys(database).map((fk) => ({
+      ...fk,
+      stmt: database.prepare(
+        `UPDATE ${quoteIdentifier(fk.table)} SET ${quoteIdentifier(fk.column)} = ? WHERE ${quoteIdentifier(fk.column)} = ?`
+      ),
+    }));
+    const deleteProjectStmt = database.prepare(
+      "DELETE FROM projects WHERE id = ? AND id != ?"
+    );
+
+    for (const dup of duplicates) {
+      const dupId = dup.id;
+      if (!dupId || dupId === keepId) continue;
+      mergedIds.push(dupId);
+
+      for (const mover of moveProjectIdStmts) {
+        const moved = mover.stmt.run(keepId, dupId).changes;
+        if (mover.table === "runs" && mover.column === "project_id") movedRuns += moved;
+        if (mover.table === "work_orders" && mover.column === "project_id") movedWorkOrders += moved;
+      }
+      deletedProjects += deleteProjectStmt.run(dupId, keepId).changes;
+    }
+
+    return {
+      kept_id: keepId,
+      merged_ids: mergedIds,
+      moved_runs: movedRuns,
+      moved_work_orders: movedWorkOrders,
+      deleted_projects: deletedProjects,
+    } satisfies ProjectMergeResult;
+  });
+
+  return mergeTx();
+}
+
+export function upsertProject(p: Omit<ProjectRow, "created_at" | "updated_at"> & { created_at?: string; updated_at?: string; }) {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const createdAt = p.created_at || now;
+  const updatedAt = p.updated_at || now;
+  database
+    .prepare(
+      `INSERT INTO projects (id, path, name, description, type, stage, status, priority, starred, hidden, tags, last_run_at, created_at, updated_at)
+       VALUES (@id, @path, @name, @description, @type, @stage, @status, @priority, @starred, @hidden, @tags, @last_run_at, @created_at, @updated_at)
+       ON CONFLICT(id) DO UPDATE SET
+         path=excluded.path,
+         name=excluded.name,
+         description=COALESCE(excluded.description, projects.description),
+         type=excluded.type,
+         stage=excluded.stage,
+         status=excluded.status,
+         priority=excluded.priority,
+         starred=excluded.starred,
+         hidden=excluded.hidden,
+         tags=excluded.tags,
+         last_run_at=COALESCE(excluded.last_run_at, projects.last_run_at),
+         updated_at=excluded.updated_at`
+    )
+    .run({
+      ...p,
+      created_at: createdAt,
+      updated_at: updatedAt,
+    });
+}
+
+export function setProjectStar(id: string, starred: boolean): boolean {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const result = database
+    .prepare("UPDATE projects SET starred = ?, updated_at = ? WHERE id = ?")
+    .run(starred ? 1 : 0, now, id);
+  return result.changes > 0;
+}
+
+export function setProjectHidden(id: string, hidden: boolean): boolean {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const result = database
+    .prepare("UPDATE projects SET hidden = ?, updated_at = ? WHERE id = ?")
+    .run(hidden ? 1 : 0, now, id);
+  return result.changes > 0;
+}
+
+export function createRun(run: RunRow): void {
+  const database = getDb();
+  database
+    .prepare(
+      `INSERT INTO runs
+        (id, project_id, work_order_id, provider, status, iteration, reviewer_verdict, reviewer_notes, summary, run_dir, log_path, created_at, started_at, finished_at, error)
+       VALUES
+        (@id, @project_id, @work_order_id, @provider, @status, @iteration, @reviewer_verdict, @reviewer_notes, @summary, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error)`
+    )
+    .run(run);
+}
+
+export function updateRun(
+  id: string,
+  patch: Partial<
+    Pick<
+      RunRow,
+      | "status"
+      | "iteration"
+      | "reviewer_verdict"
+      | "reviewer_notes"
+      | "summary"
+      | "started_at"
+      | "finished_at"
+      | "error"
+    >
+  >
+): boolean {
+  const database = getDb();
+  const fields: Array<{ key: keyof typeof patch; column: string }> = [
+    { key: "status", column: "status" },
+    { key: "iteration", column: "iteration" },
+    { key: "reviewer_verdict", column: "reviewer_verdict" },
+    { key: "reviewer_notes", column: "reviewer_notes" },
+    { key: "summary", column: "summary" },
+    { key: "started_at", column: "started_at" },
+    { key: "finished_at", column: "finished_at" },
+    { key: "error", column: "error" },
+  ];
+  const sets = fields
+    .filter((f) => patch[f.key] !== undefined)
+    .map((f) => `${f.column} = @${f.key}`);
+  if (!sets.length) return false;
+  const result = database
+    .prepare(`UPDATE runs SET ${sets.join(", ")} WHERE id = @id`)
+    .run({ id, ...patch });
+  return result.changes > 0;
+}
+
+export function getRunById(id: string): RunRow | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM runs WHERE id = ? LIMIT 1")
+    .get(id) as RunRow | undefined;
+  return row || null;
+}
+
+export function listRunsByProject(projectId: string, limit = 50): RunRow[] {
+  const database = getDb();
+  return database
+    .prepare(
+      "SELECT * FROM runs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?"
+    )
+    .all(projectId, limit) as RunRow[];
+}
+
+export function markInProgressRunsFailed(reason: string): number {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const result = database
+    .prepare(
+      `UPDATE runs
+       SET status = 'failed',
+           error = ?,
+           finished_at = COALESCE(finished_at, ?)
+       WHERE status IN ('queued', 'building', 'ai_review', 'testing')`
+    )
+    .run(reason, now);
+  return result.changes;
+}
+
+export function getSetting(key: string): SettingRow | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM settings WHERE key = ? LIMIT 1")
+    .get(key) as SettingRow | undefined;
+  return row || null;
+}
+
+export function setSetting(key: string, value: string): SettingRow {
+  const database = getDb();
+  const now = new Date().toISOString();
+  database
+    .prepare(
+      `INSERT INTO settings (key, value, updated_at)
+       VALUES (@key, @value, @updated_at)
+       ON CONFLICT(key) DO UPDATE SET
+         value=excluded.value,
+         updated_at=excluded.updated_at`
+    )
+    .run({ key, value, updated_at: now });
+  return (
+    getSetting(key) ?? {
+      key,
+      value,
+      updated_at: now,
+    }
+  );
+}

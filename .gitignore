@@ -1,0 +1,34 @@
+node_modules/
+.next/
+.next-dev/
+dist/
+build/
+
+*.log
+.DS_Store
+*.tsbuildinfo
+
+# Local env / secrets
+.env
+.env.*
+
+# Local-only seed data
+scripts/seed_descriptions.local.json
+
+# SQLite / local state
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+control-center.db
+control-center.db-*
+
+# Runner artifacts
+.system/
+
+# E2E artifacts
+e2e/.tmp/
+test-results/
+playwright-report/
