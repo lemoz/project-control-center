@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { ChatThread } from "../components/ChatThread";
+import { Suspense } from "react";
+import { ChatOverlayLauncher } from "../components/ChatOverlayLauncher";
 
 export default function GlobalChatPage() {
   return (
@@ -11,8 +12,9 @@ export default function GlobalChatPage() {
         <div className="muted" style={{ fontSize: 13 }}>Global</div>
       </section>
 
-      <ChatThread scope={{ scope: "global" }} />
+      <Suspense fallback={null}>
+        <ChatOverlayLauncher scope={{ scope: "global" }} />
+      </Suspense>
     </main>
   );
 }
-

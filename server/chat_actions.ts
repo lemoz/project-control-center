@@ -48,6 +48,8 @@ const WorkOrderCreatePayloadSchema = z
     title: z.string().min(1),
     priority: z.number().int().min(1).max(5).optional(),
     tags: z.array(z.string()).optional(),
+    depends_on: z.array(z.string()).optional(),
+    era: z.string().optional(),
   })
   .strict();
 
@@ -63,6 +65,8 @@ const WorkOrderPatchSchema: z.ZodType<WorkOrderPatchInput> = z
     tags: z.array(z.string()).optional(),
     estimate_hours: z.number().nullable().optional(),
     status: z.enum(WORK_ORDER_STATUSES).optional(),
+    depends_on: z.array(z.string()).optional(),
+    era: z.string().nullable().optional(),
   })
   .strict()
   .partial();
@@ -196,6 +200,8 @@ export function applyChatAction(input: unknown) {
           title: payload.title,
           priority: payload.priority,
           tags: payload.tags,
+          depends_on: payload.depends_on,
+          era: payload.era,
         });
         const undoPayload: UndoPayload = {
           type: "work_order_delete",
@@ -244,7 +250,7 @@ export function applyChatAction(input: unknown) {
       case "work_order_start_run": {
         const payload = WorkOrderStartRunPayloadSchema.parse(action.payload);
         const run = enqueueCodexRun(payload.projectId, payload.workOrderId);
-        return { undoPayload: null, result: { run } };
+        return { undoPayload: null, result: { run }, workOrderRunId: run.id };
       }
       default: {
         const neverType: never = action.type;
@@ -262,6 +268,7 @@ export function applyChatAction(input: unknown) {
     actionPayload: action.payload,
     undoPayload: applyResult.undoPayload,
     error: null,
+    workOrderRunId: "workOrderRunId" in applyResult ? applyResult.workOrderRunId : null,
   });
 
   return { ledger, result: applyResult.result };
@@ -275,31 +282,37 @@ export function undoChatAction(ledgerId: string) {
 
   const undo = UndoPayloadSchema.parse(JSON.parse(entry.undo_payload_json));
 
-  switch (undo.type) {
-    case "project_set_star": {
-      const payload = ProjectSetStarPayloadSchema.parse(undo.payload);
-      const ok = setProjectStar(payload.projectId, payload.starred);
-      if (!ok) throw new Error("failed to update project");
-      break;
+  try {
+    switch (undo.type) {
+      case "project_set_star": {
+        const payload = ProjectSetStarPayloadSchema.parse(undo.payload);
+        const ok = setProjectStar(payload.projectId, payload.starred);
+        if (!ok) throw new Error("failed to update project");
+        break;
+      }
+      case "project_set_hidden": {
+        const payload = ProjectSetHiddenPayloadSchema.parse(undo.payload);
+        const ok = setProjectHidden(payload.projectId, payload.hidden);
+        if (!ok) throw new Error("failed to update project");
+        break;
+      }
+      case "work_order_delete": {
+        const project = findProjectById(undo.payload.projectId);
+        if (!project) throw new Error("project not found");
+        deleteWorkOrder(project.path, undo.payload.workOrderId);
+        break;
+      }
+      case "work_order_restore_markdown": {
+        const project = findProjectById(undo.payload.projectId);
+        if (!project) throw new Error("project not found");
+        overwriteWorkOrderMarkdown(project.path, undo.payload.workOrderId, undo.payload.markdown);
+        break;
+      }
     }
-    case "project_set_hidden": {
-      const payload = ProjectSetHiddenPayloadSchema.parse(undo.payload);
-      const ok = setProjectHidden(payload.projectId, payload.hidden);
-      if (!ok) throw new Error("failed to update project");
-      break;
-    }
-    case "work_order_delete": {
-      const project = findProjectById(undo.payload.projectId);
-      if (!project) throw new Error("project not found");
-      deleteWorkOrder(project.path, undo.payload.workOrderId);
-      break;
-    }
-    case "work_order_restore_markdown": {
-      const project = findProjectById(undo.payload.projectId);
-      if (!project) throw new Error("project not found");
-      overwriteWorkOrderMarkdown(project.path, undo.payload.workOrderId, undo.payload.markdown);
-      break;
-    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    markChatActionUndone({ ledgerId, error: message });
+    throw err;
   }
 
   const ok = markChatActionUndone({ ledgerId, error: null });

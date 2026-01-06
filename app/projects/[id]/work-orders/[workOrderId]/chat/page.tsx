@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { ChatThread } from "../../../../../components/ChatThread";
+import { Suspense } from "react";
+import { ChatOverlayLauncher } from "../../../../../components/ChatOverlayLauncher";
 
 export default function WorkOrderChatPage({
   params,
@@ -31,8 +32,9 @@ export default function WorkOrderChatPage({
         </div>
       </section>
 
-      <ChatThread scope={{ scope: "work_order", projectId: id, workOrderId }} />
+      <Suspense fallback={null}>
+        <ChatOverlayLauncher scope={{ scope: "work_order", projectId: id, workOrderId }} />
+      </Suspense>
     </main>
   );
 }
-

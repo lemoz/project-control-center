@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { ChatThread } from "../../../components/ChatThread";
+import { Suspense } from "react";
+import { ChatOverlayLauncher } from "../../../components/ChatOverlayLauncher";
 
 export default function ProjectChatPage({ params }: { params: { id: string } }) {
   const { id } = params;
@@ -21,8 +22,9 @@ export default function ProjectChatPage({ params }: { params: { id: string } }) 
         </div>
       </section>
 
-      <ChatThread scope={{ scope: "project", projectId: id }} />
+      <Suspense fallback={null}>
+        <ChatOverlayLauncher scope={{ scope: "project", projectId: id }} />
+      </Suspense>
     </main>
   );
 }
-
