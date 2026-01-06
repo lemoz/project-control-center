@@ -23,9 +23,17 @@ tags:
   - realtime
   - sse
 estimate_hours: 2
-status: ready
+status: done
 created_at: 2026-01-04
-updated_at: 2026-01-04
+updated_at: 2026-01-06
+depends_on: [WO-2025-011]
+era: chat-v2
 ---
 ## Notes
 - Ensure SSE respects ngrok/basic-auth exposure (no sensitive payloads beyond what the UI already renders).
+
+## Implementation Notes
+- server/chat_events.ts provides SSE event emitter and endpoint
+- app/api/chat/stream/route.ts proxies SSE to frontend
+- ChatThread.tsx subscribes to stream for live updates
+- Events: message_created, run_status, thread_updated, attention_changed
