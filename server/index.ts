@@ -26,6 +26,15 @@ import {
   patchRunnerSettings,
 } from "./settings.js";
 import {
+  listGlobalConstitutionVersions,
+  listProjectConstitutionVersions,
+  mergeConstitutions,
+  readGlobalConstitution,
+  readProjectConstitution,
+  writeGlobalConstitution,
+  writeProjectConstitution,
+} from "./constitution.js";
+import {
   enqueueCodexRun,
   finalizeManualRunResolution,
   getRun,
@@ -137,7 +146,7 @@ app.use(
           if (allowedOrigins.has(origin)) return callback(null, true);
           return callback(null, false);
         },
-    methods: ["GET", "POST", "PATCH", "OPTIONS"],
+    methods: ["GET", "POST", "PATCH", "PUT", "OPTIONS"],
   })
 );
 app.use(express.json());
@@ -176,6 +185,48 @@ app.patch("/chat/settings", (req, res) => {
   }
 });
 
+app.get("/constitution", (req, res) => {
+  const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
+  const global = readGlobalConstitution();
+  let local: string | null = null;
+
+  if (projectId) {
+    const project = findProjectById(projectId);
+    if (!project) return res.status(404).json({ error: "project not found" });
+    local = readProjectConstitution(project.path);
+  }
+
+  const merged = mergeConstitutions(global, local);
+  return res.json({ global, local, merged });
+});
+
+app.put("/constitution/global", (req, res) => {
+  const content = req.body?.content;
+  if (typeof content !== "string") {
+    return res.status(400).json({ error: "`content` must be string" });
+  }
+  const result = writeGlobalConstitution(content);
+  return res.json({ ok: true, version: result.version });
+});
+
+app.get("/constitution/versions", (req, res) => {
+  const scope = typeof req.query.scope === "string" ? req.query.scope : null;
+  if (scope !== "global" && scope !== "project") {
+    return res.status(400).json({ error: "`scope` must be global or project" });
+  }
+  if (scope === "global") {
+    return res.json({ versions: listGlobalConstitutionVersions() });
+  }
+
+  const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
+  if (!projectId) {
+    return res.status(400).json({ error: "`projectId` required for project scope" });
+  }
+  const project = findProjectById(projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  return res.json({ versions: listProjectConstitutionVersions(project.path) });
+});
+
 app.get("/repos", (_req, res) => {
   return res.json(syncAndListRepoSummaries());
 });
@@ -189,6 +240,18 @@ app.patch("/repos/:id/star", (req, res) => {
   const ok = setProjectStar(id, starred);
   if (!ok) return res.status(404).json({ error: "project not found" });
   return res.json({ ok: true, id, starred });
+});
+
+app.put("/repos/:id/constitution", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const content = req.body?.content;
+  if (typeof content !== "string") {
+    return res.status(400).json({ error: "`content` must be string" });
+  }
+  const result = writeProjectConstitution(project.path, content);
+  return res.json({ ok: true, version: result.version });
 });
 
 function sendWorkOrderError(res: Response, err: unknown) {
