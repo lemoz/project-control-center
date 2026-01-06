@@ -9,6 +9,19 @@ updated: 2026-01-06
 estimate_hours: 6
 depends_on: [WO-2025-004]
 era: autonomous
+goal: "When tests fail during a builder run, feed the test output back to the builder for another iteration instead of immediately stopping. The builder should iterate until tests pass or max iterations are reached."
+acceptance_criteria:
+  - "When tests fail, capture full test output (stdout + stderr)"
+  - "Feed test failure output back to builder as context for next iteration"
+  - "Builder prompt includes: Tests failed with the following output. Fix the issues."
+  - "Track iteration count (builder_iteration: 1, 2, 3...)"
+  - "Configurable max iterations before giving up (default: 3)"
+  - "Only proceed to reviewer when tests pass"
+  - "If max iterations reached without passing, mark run as failed with all iteration history"
+  - "Run details UI shows iteration history (what was tried, what failed)"
+stop_conditions:
+  - "If iteration causes infinite loops or runaway costs, cap strictly and fail gracefully"
+  - "If test output is too large to fit in context, truncate intelligently (last N lines of failure)"
 ---
 
 # Builder Iteration on Test Failures

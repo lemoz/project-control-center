@@ -9,6 +9,18 @@ updated: 2026-01-06
 estimate_hours: 8
 depends_on: [WO-2025-002]
 era: autonomous
+goal: "Every project should define what success looks like - a clear north star that the system can work toward and measure progress against. This enables autonomous operation with a defined finish line."
+acceptance_criteria:
+  - "Add success_criteria field to project schema (markdown text)"
+  - "Add success_metrics field for measurable KPIs (JSON array)"
+  - "Project dashboard shows success criteria prominently"
+  - "Progress indicators show how close project is to success"
+  - "Chat agent can help user define success criteria through conversation"
+  - "First work order suggestion for new projects: Define success criteria"
+  - "Success criteria stored in .control.yml sidecar for portability"
+stop_conditions:
+  - "If success criteria becomes too complex to be useful, keep it simple (just free-form text)"
+  - "If metrics tracking adds too much overhead, make it optional"
 ---
 
 # Project Success Criteria and Goals
