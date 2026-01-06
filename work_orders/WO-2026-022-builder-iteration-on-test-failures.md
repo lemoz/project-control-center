@@ -73,6 +73,16 @@ Current runner flow in `server/runner_agent.ts`:
 - If iteration causes infinite loops or runaway costs, cap strictly and fail gracefully
 - If test output is too large to fit in context, truncate intelligently (last N lines of failure)
 
+## CRITICAL: Code Quality Requirements
+
+**IMPORTANT**: Before submitting any code changes:
+1. **Ensure ALL imports are present** - If you use a function like `appendLog`, `writeJson`, `ensureDir`, etc., verify it is imported at the top of the file
+2. **Check existing imports** - Look at what's already imported in the file and use those patterns
+3. **Run TypeScript mentally** - Would `tsc` pass? Are all types correct?
+4. **Common imports in runner_agent.ts**: `appendLog`, `writeJson`, `readJson`, `ensureDir` come from `./utils`
+
+Previous runs failed because `appendLog` was used without being imported. This is unacceptable.
+
 ## Technical Notes
 
 ### New flow:

@@ -134,6 +134,17 @@ GET /constitution/versions?scope=global|project&projectId=xxx
 Response: { versions: [{ timestamp, content }] }
 ```
 
+## CRITICAL: Code Quality Requirements
+
+**IMPORTANT**: Before submitting any code changes:
+1. **Ensure ALL imports are present** - If you use a function like `appendLog`, `writeJson`, `ensureDir`, `readJson`, etc., verify it is imported at the top of the file
+2. **Check existing imports** - Look at what's already imported in the file and follow those patterns
+3. **Run TypeScript mentally** - Would `tsc` pass? Are all types correct?
+4. **Common utility imports**: Functions like `appendLog`, `writeJson`, `readJson`, `ensureDir` typically come from `./utils`
+5. **Verify imports before adding code** - If you call a function, grep for where it's imported elsewhere in the codebase
+
+Previous runs failed because `appendLog` was used without being imported. This is unacceptable.
+
 ## Merge Strategy
 
 When both global and local exist:
