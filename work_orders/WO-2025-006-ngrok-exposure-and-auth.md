@@ -25,4 +25,7 @@ updated_at: 2026-01-02
 stop_conditions:
   - If ngrok CLI is missing or reserved-domain details are unknown, pause and ask.
   - If exposing the public URL requires extra deps or network polling, skip and report.
+depends_on:
+  - WO-2025-001
+era: v1
 ---

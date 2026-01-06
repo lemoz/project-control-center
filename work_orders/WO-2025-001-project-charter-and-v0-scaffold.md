@@ -30,6 +30,8 @@ estimate_hours: 6
 status: done
 created_at: 2025-12-12
 updated_at: 2025-12-15
+depends_on: []
+era: foundation
 ---
 ## Background
 We’re building a local-first, mobile-friendly control center to manage all your projects and long-running agent work.

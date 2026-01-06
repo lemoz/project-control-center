@@ -40,6 +40,9 @@ estimate_hours: 12
 status: done
 created_at: 2025-12-15
 updated_at: 2026-01-02
+depends_on:
+  - WO-2025-004
+era: v1
 ---
 ## Product intent
 You should be able to “talk to the system” to manage the portfolio, projects, and cards without losing track across repos. This chat is not a replacement for Builder/Reviewer work; it is an operator console for the Control Center itself.

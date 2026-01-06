@@ -22,4 +22,7 @@ estimate_hours: 8
 status: done
 created_at: "2025-12-12"
 updated_at: "2025-12-12"
+depends_on:
+  - WO-2025-003
+era: foundation
 ---
