@@ -29,12 +29,16 @@ export type RunRow = {
     | "ai_review"
     | "testing"
     | "you_review"
+    | "merge_conflict"
     | "failed"
     | "canceled";
   iteration: number;
   reviewer_verdict: "approved" | "changes_requested" | null;
   reviewer_notes: string | null; // JSON array
   summary: string | null;
+  branch_name: string | null;
+  merge_status: "pending" | "merged" | "conflict" | null;
+  conflict_with_run_id: string | null;
   run_dir: string;
   log_path: string;
   created_at: string;
@@ -47,6 +51,13 @@ export type SettingRow = {
   key: string;
   value: string; // JSON payload
   updated_at: string;
+};
+
+export type WorkOrderDepRow = {
+  project_id: string;
+  work_order_id: string;
+  depends_on_id: string;
+  created_at: string;
 };
 
 let db: Database.Database | null = null;
@@ -106,6 +117,9 @@ function initSchema(database: Database.Database) {
       reviewer_verdict TEXT,
       reviewer_notes TEXT,
       summary TEXT,
+      branch_name TEXT,
+      merge_status TEXT,
+      conflict_with_run_id TEXT,
       run_dir TEXT NOT NULL,
       log_path TEXT NOT NULL,
       created_at TEXT NOT NULL,
@@ -123,6 +137,16 @@ function initSchema(database: Database.Database) {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS work_order_deps (
+      project_id TEXT NOT NULL,
+      work_order_id TEXT NOT NULL,
+      depends_on_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, work_order_id, depends_on_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_work_order_deps_depends_on ON work_order_deps(project_id, depends_on_id);
 
     CREATE TABLE IF NOT EXISTS chat_threads (
       id TEXT PRIMARY KEY,
@@ -218,6 +242,20 @@ function initSchema(database: Database.Database) {
   }
   if (!hasHidden) {
     database.exec("ALTER TABLE projects ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;");
+  }
+
+  const runColumns = database.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
+  const hasBranchName = runColumns.some((c) => c.name === "branch_name");
+  const hasMergeStatus = runColumns.some((c) => c.name === "merge_status");
+  const hasConflictWithRunId = runColumns.some((c) => c.name === "conflict_with_run_id");
+  if (!hasBranchName) {
+    database.exec("ALTER TABLE runs ADD COLUMN branch_name TEXT;");
+  }
+  if (!hasMergeStatus) {
+    database.exec("ALTER TABLE runs ADD COLUMN merge_status TEXT;");
+  }
+  if (!hasConflictWithRunId) {
+    database.exec("ALTER TABLE runs ADD COLUMN conflict_with_run_id TEXT;");
   }
 }
 
@@ -435,9 +473,9 @@ export function createRun(run: RunRow): void {
   database
     .prepare(
       `INSERT INTO runs
-        (id, project_id, work_order_id, provider, status, iteration, reviewer_verdict, reviewer_notes, summary, run_dir, log_path, created_at, started_at, finished_at, error)
+        (id, project_id, work_order_id, provider, status, iteration, reviewer_verdict, reviewer_notes, summary, branch_name, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error)
        VALUES
-        (@id, @project_id, @work_order_id, @provider, @status, @iteration, @reviewer_verdict, @reviewer_notes, @summary, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error)`
+        (@id, @project_id, @work_order_id, @provider, @status, @iteration, @reviewer_verdict, @reviewer_notes, @summary, @branch_name, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error)`
     )
     .run(run);
 }
@@ -452,6 +490,9 @@ export function updateRun(
       | "reviewer_verdict"
       | "reviewer_notes"
       | "summary"
+      | "branch_name"
+      | "merge_status"
+      | "conflict_with_run_id"
       | "started_at"
       | "finished_at"
       | "error"
@@ -465,6 +506,9 @@ export function updateRun(
     { key: "reviewer_verdict", column: "reviewer_verdict" },
     { key: "reviewer_notes", column: "reviewer_notes" },
     { key: "summary", column: "summary" },
+    { key: "branch_name", column: "branch_name" },
+    { key: "merge_status", column: "merge_status" },
+    { key: "conflict_with_run_id", column: "conflict_with_run_id" },
     { key: "started_at", column: "started_at" },
     { key: "finished_at", column: "finished_at" },
     { key: "error", column: "error" },
@@ -538,4 +582,55 @@ export function setSetting(key: string, value: string): SettingRow {
       updated_at: now,
     }
   );
+}
+
+export function syncWorkOrderDeps(
+  projectId: string,
+  workOrderId: string,
+  dependsOn: string[]
+): void {
+  const database = getDb();
+  const now = new Date().toISOString();
+
+  const tx = database.transaction(() => {
+    // Delete existing deps for this work order
+    database
+      .prepare(
+        "DELETE FROM work_order_deps WHERE project_id = ? AND work_order_id = ?"
+      )
+      .run(projectId, workOrderId);
+
+    // Insert new deps
+    const insertStmt = database.prepare(
+      `INSERT INTO work_order_deps (project_id, work_order_id, depends_on_id, created_at)
+       VALUES (?, ?, ?, ?)`
+    );
+    for (const depId of dependsOn) {
+      if (depId && depId !== workOrderId) {
+        insertStmt.run(projectId, workOrderId, depId, now);
+      }
+    }
+  });
+
+  tx();
+}
+
+export function getWorkOrderDependents(
+  projectId: string,
+  workOrderId: string
+): string[] {
+  const database = getDb();
+  const rows = database
+    .prepare(
+      "SELECT work_order_id FROM work_order_deps WHERE project_id = ? AND depends_on_id = ?"
+    )
+    .all(projectId, workOrderId) as Array<{ work_order_id: string }>;
+  return rows.map((r) => r.work_order_id);
+}
+
+export function listAllWorkOrderDeps(projectId: string): WorkOrderDepRow[] {
+  const database = getDb();
+  return database
+    .prepare("SELECT * FROM work_order_deps WHERE project_id = ?")
+    .all(projectId) as WorkOrderDepRow[];
 }

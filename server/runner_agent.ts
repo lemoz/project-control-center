@@ -86,14 +86,18 @@ function writeJson(filePath: string, data: unknown) {
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
-function safeSymlink(target: string, linkPath: string) {
+function removePathIfExists(targetPath: string) {
   try {
-    if (fs.existsSync(linkPath) || fs.lstatSync(linkPath).isSymbolicLink()) {
-      fs.rmSync(linkPath, { force: true, recursive: true });
+    if (fs.existsSync(targetPath) || fs.lstatSync(targetPath).isSymbolicLink()) {
+      fs.rmSync(targetPath, { force: true, recursive: true });
     }
   } catch {
     // ignore
   }
+}
+
+function safeSymlink(target: string, linkPath: string) {
+  removePathIfExists(linkPath);
   fs.symlinkSync(target, linkPath, "dir");
 }
 
@@ -422,6 +426,215 @@ function spawnSyncText(
   return stdout;
 }
 
+type CommandResult = {
+  status: number;
+  stdout: string;
+  stderr: string;
+};
+
+function spawnSyncResult(
+  command: string,
+  args: string[],
+  opts: { cwd: string; env?: NodeJS.ProcessEnv }
+): CommandResult {
+  const res = spawnSync(command, args, {
+    cwd: opts.cwd,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+    env: { ...process.env, ...(opts.env || {}) },
+  });
+
+  return {
+    status: res.status ?? 1,
+    stdout: res.stdout || "",
+    stderr: res.stderr || "",
+  };
+}
+
+function runGit(
+  args: string[],
+  opts: { cwd: string; allowFailure?: boolean; log?: (line: string) => void }
+): CommandResult {
+  opts.log?.(`git ${args.join(" ")}`);
+  const result = spawnSyncResult("git", args, { cwd: opts.cwd });
+  if (!opts.allowFailure && result.status !== 0) {
+    const message = result.stderr.trim() || result.stdout.trim() || "git failed";
+    throw new Error(message);
+  }
+  return result;
+}
+
+function gitBranchExists(repoPath: string, branchName: string): boolean {
+  const result = runGit(
+    ["show-ref", "--verify", `refs/heads/${branchName}`],
+    { cwd: repoPath, allowFailure: true }
+  );
+  return result.status === 0;
+}
+
+function resolveBaseBranch(repoPath: string, log: (line: string) => void): string {
+  for (const candidate of ["main", "master"]) {
+    if (gitBranchExists(repoPath, candidate)) return candidate;
+  }
+  const current = runGit(["rev-parse", "--abbrev-ref", "HEAD"], {
+    cwd: repoPath,
+    allowFailure: true,
+  }).stdout.trim();
+  if (current && current !== "HEAD") {
+    log(`Base branch fallback to ${current}`);
+    return current;
+  }
+  throw new Error("Unable to resolve base branch");
+}
+
+function buildRunBranchName(workOrderId: string, runId: string): string {
+  const shortId = runId.replace(/-/g, "").slice(0, 8) || runId.slice(0, 8);
+  const safeWorkOrder = workOrderId.replace(/[^A-Za-z0-9._-]/g, "-");
+  return `run/${safeWorkOrder}-${shortId}`;
+}
+
+function resolveWorktreePaths(runDir: string) {
+  const worktreePath = path.join(runDir, "worktree");
+  return {
+    worktreeRealPath: worktreePath,
+    worktreePath,
+  };
+}
+
+function ensureWorktreeLink(linkPath: string, realPath: string) {
+  if (path.resolve(linkPath) === path.resolve(realPath)) return;
+  ensureDir(path.dirname(linkPath));
+  safeSymlink(realPath, linkPath);
+}
+
+function removeWorktreeLink(linkPath: string) {
+  try {
+    if (fs.lstatSync(linkPath).isSymbolicLink()) {
+      fs.rmSync(linkPath, { force: true, recursive: true });
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function ensureWorktree(params: {
+  repoPath: string;
+  worktreePath: string;
+  worktreeRealPath: string;
+  branchName: string;
+  baseBranch: string;
+  log: (line: string) => void;
+}) {
+  removeWorktreeLink(params.worktreePath);
+  if (fs.existsSync(params.worktreeRealPath)) {
+    runGit(["worktree", "remove", "--force", params.worktreeRealPath], {
+      cwd: params.repoPath,
+      allowFailure: true,
+      log: params.log,
+    });
+    fs.rmSync(params.worktreeRealPath, { recursive: true, force: true });
+  }
+
+  if (gitBranchExists(params.repoPath, params.branchName)) {
+    runGit(["branch", "-D", params.branchName], {
+      cwd: params.repoPath,
+      allowFailure: true,
+      log: params.log,
+    });
+  }
+
+  ensureDir(path.dirname(params.worktreeRealPath));
+  runGit(
+    [
+      "worktree",
+      "add",
+      "-b",
+      params.branchName,
+      params.worktreeRealPath,
+      params.baseBranch,
+    ],
+    { cwd: params.repoPath, log: params.log }
+  );
+  ensureWorktreeLink(params.worktreePath, params.worktreeRealPath);
+}
+
+function cleanupWorktree(params: {
+  repoPath: string;
+  worktreePath: string;
+  worktreeRealPath: string;
+  branchName: string;
+  log: (line: string) => void;
+}) {
+  runGit(["worktree", "remove", "--force", params.worktreeRealPath], {
+    cwd: params.repoPath,
+    allowFailure: true,
+    log: params.log,
+  });
+  removeWorktreeLink(params.worktreePath);
+  fs.rmSync(params.worktreeRealPath, { recursive: true, force: true });
+  runGit(["branch", "-d", params.branchName], {
+    cwd: params.repoPath,
+    allowFailure: true,
+    log: params.log,
+  });
+}
+
+function ensureNodeModulesSymlink(repoPath: string, worktreePath: string) {
+  const source = path.join(repoPath, "node_modules");
+  const dest = path.join(worktreePath, "node_modules");
+  if (!fs.existsSync(source)) return;
+  safeSymlink(source, dest);
+}
+
+function listUnmergedFiles(repoPath: string): string[] {
+  const result = runGit(
+    ["diff", "--name-only", "--diff-filter=U"],
+    { cwd: repoPath, allowFailure: true }
+  );
+  return result.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .sort();
+}
+
+function listChangedFilesFromGit(repoPath: string, baseRef: string, headRef: string): string[] {
+  const result = runGit(["diff", "--name-only", `${baseRef}...${headRef}`], {
+    cwd: repoPath,
+    allowFailure: true,
+  });
+  return result.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .sort();
+}
+
+function buildGitDiffPatch(repoPath: string, baseRef: string, headRef: string): string {
+  const result = runGit(["diff", "--no-prefix", "--binary", `${baseRef}...${headRef}`], {
+    cwd: repoPath,
+    allowFailure: true,
+  });
+  return result.stdout.trim() ? `${result.stdout.trimEnd()}\n` : "";
+}
+
+function readTextIfExists(filePath: string): string {
+  try {
+    return fs.readFileSync(filePath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function readJsonIfExists<T>(filePath: string): T | null {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
+  } catch {
+    return null;
+  }
+}
+
 async function runCodexExec(params: {
   cwd: string;
   prompt: string;
@@ -570,8 +783,211 @@ function buildReviewerPrompt(params: {
     `Work Order (${params.workOrderId}):\n\n` +
     `${params.workOrderMarkdown}\n\n` +
     `Diff:\n\n` +
-    `${params.diffPatch}\n`
+      `${params.diffPatch}\n`
   );
+}
+
+function buildConflictResolutionPrompt(params: {
+  currentRunId: string;
+  currentWorkOrderId: string;
+  currentWorkOrderMarkdown: string;
+  currentSummary: string;
+  currentDiff: string;
+  conflictingRunId: string | null;
+  conflictingWorkOrderId: string | null;
+  conflictingWorkOrderMarkdown: string;
+  conflictingSummary: string;
+  conflictingDiff: string;
+  conflictFiles: string[];
+  gitConflictOutput: string;
+}) {
+  const conflictList = params.conflictFiles.length
+    ? params.conflictFiles.map((f) => `- ${f}`).join("\n")
+    : "- (none detected)";
+  const conflictingLabel = params.conflictingWorkOrderId
+    ? `${params.conflictingWorkOrderId}${params.conflictingRunId ? ` (${params.conflictingRunId})` : ""}`
+    : params.conflictingRunId
+      ? params.conflictingRunId
+      : "unknown";
+  return (
+    `You are resolving a merge conflict.\n\n` +
+    `Your run (${params.currentWorkOrderId}, ${params.currentRunId}): ${params.currentSummary}\n` +
+    `Conflicting run (${conflictingLabel}): ${params.conflictingSummary}\n\n` +
+    `Conflicting files:\n${conflictList}\n\n` +
+    `Git conflict output:\n${params.gitConflictOutput || "(no conflict output captured)"}\n\n` +
+    `Your task:\n` +
+    `- Understand both intents\n` +
+    `- Resolve the conflict preserving both goals where possible\n` +
+    `- If goals are mutually exclusive, preserve the higher-priority Work Order's intent\n` +
+    `- Document your resolution reasoning in the summary\n\n` +
+    `Current Work Order:\n\n${params.currentWorkOrderMarkdown}\n\n` +
+    `Conflicting Work Order:\n\n${params.conflictingWorkOrderMarkdown}\n\n` +
+    `Current diff:\n\n${params.currentDiff || "(no diff available)"}\n\n` +
+    `Conflicting diff:\n\n${params.conflictingDiff || "(no diff available)"}\n`
+  );
+}
+
+type ConflictContext = {
+  currentRun: {
+    id: string;
+    workOrder: WorkOrder;
+    diff: string;
+    builderSummary: string;
+  };
+  conflictingRun: {
+    id: string;
+    workOrder: WorkOrder | null;
+    diff: string;
+    builderSummary: string;
+    mergedAt: string;
+  } | null;
+  conflictFiles: string[];
+  gitConflictOutput: string;
+};
+
+function buildConflictContext(params: {
+  repoPath: string;
+  runId: string;
+  runDir: string;
+  workOrder: WorkOrder;
+  approvedSummary: string | null;
+  conflictFiles: string[];
+  gitConflictOutput: string;
+  conflictingRun?: { run: RunRow; runDir: string } | null;
+}): {
+  conflictContext: ConflictContext;
+  currentDiff: string;
+  conflictingRunId: string | null;
+  conflictingWorkOrderId: string | null;
+  conflictingWorkOrderMarkdown: string;
+  conflictingSummary: string;
+  conflictingDiff: string;
+} {
+  const currentDiff = readTextIfExists(path.join(params.runDir, "diff.patch"));
+  const conflictingRun =
+    params.conflictingRun ??
+    findConflictingRun({
+      repoPath: params.repoPath,
+      currentRunId: params.runId,
+      conflictFiles: params.conflictFiles,
+    });
+  const conflictingRunId = conflictingRun?.run.id ?? null;
+  const conflictingWorkOrderId = conflictingRun?.run.work_order_id ?? null;
+  const conflictingSummary =
+    conflictingRun?.run.summary || "(summary unavailable)";
+  let conflictingWorkOrderMarkdown = "";
+  if (conflictingRun) {
+    conflictingWorkOrderMarkdown = readTextIfExists(
+      path.join(conflictingRun.runDir, "work_order.md")
+    );
+    if (!conflictingWorkOrderMarkdown && conflictingWorkOrderId) {
+      try {
+        conflictingWorkOrderMarkdown = readWorkOrderMarkdown(
+          params.repoPath,
+          conflictingWorkOrderId
+        );
+      } catch {
+        // ignore
+      }
+    }
+  }
+  if (!conflictingWorkOrderMarkdown) {
+    conflictingWorkOrderMarkdown = "(conflicting work order not found)";
+  }
+  const conflictingDiff = conflictingRun
+    ? readTextIfExists(path.join(conflictingRun.runDir, "diff-merge.patch")) ||
+      readTextIfExists(path.join(conflictingRun.runDir, "diff.patch"))
+    : "";
+
+  const conflictContext: ConflictContext = {
+    currentRun: {
+      id: params.runId,
+      workOrder: params.workOrder,
+      diff: currentDiff,
+      builderSummary: params.approvedSummary || "(no summary)",
+    },
+    conflictingRun: conflictingRun
+      ? {
+          id: conflictingRun.run.id,
+          workOrder: (() => {
+            try {
+              return loadWorkOrder(params.repoPath, conflictingRun.run.work_order_id);
+            } catch {
+              return null;
+            }
+          })(),
+          diff: conflictingDiff,
+          builderSummary: conflictingSummary,
+          mergedAt: conflictingRun.run.finished_at || conflictingRun.run.created_at,
+        }
+      : null,
+    conflictFiles: params.conflictFiles,
+    gitConflictOutput: params.gitConflictOutput,
+  };
+
+  return {
+    conflictContext,
+    currentDiff,
+    conflictingRunId,
+    conflictingWorkOrderId,
+    conflictingWorkOrderMarkdown,
+    conflictingSummary,
+    conflictingDiff,
+  };
+}
+
+function loadRunFilesChanged(runDir: string): string[] {
+  const merged = readJsonIfExists<string[]>(
+    path.join(runDir, "files_changed.merge.json")
+  );
+  if (Array.isArray(merged)) return merged;
+  const original = readJsonIfExists<string[]>(
+    path.join(runDir, "files_changed.json")
+  );
+  if (Array.isArray(original)) return original;
+  return [];
+}
+
+function findConflictingRun(params: {
+  repoPath: string;
+  currentRunId: string;
+  conflictFiles: string[];
+}): { run: RunRow; runDir: string } | null {
+  if (!params.conflictFiles.length) return null;
+  const runsRoot = path.join(params.repoPath, ".system", "runs");
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(runsRoot, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  const conflictSet = new Set(params.conflictFiles);
+  const candidates: Array<{ run: RunRow; runDir: string }> = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const runId = entry.name;
+    if (runId === params.currentRunId) continue;
+    const runDir = path.join(runsRoot, runId);
+    const changedFiles = loadRunFilesChanged(runDir);
+    if (!changedFiles.some((file) => conflictSet.has(file))) continue;
+    const run = getRunById(runId);
+    if (!run) continue;
+    candidates.push({ run, runDir });
+  }
+
+  if (!candidates.length) return null;
+  const preferred = candidates.filter(
+    (c) => c.run.merge_status === "merged" || c.run.status === "you_review"
+  );
+  const pool = preferred.length ? preferred : candidates;
+  pool.sort((a, b) => {
+    const aTime = a.run.finished_at || a.run.started_at || a.run.created_at;
+    const bTime = b.run.finished_at || b.run.started_at || b.run.created_at;
+    return bTime.localeCompare(aTime);
+  });
+  return pool[0] || null;
 }
 
 async function runRepoTests(repoPath: string, runDir: string) {
@@ -693,10 +1109,37 @@ export async function runRun(runId: string) {
     const workOrderFilePath = path.join(runDir, "work_order.md");
     fs.writeFileSync(workOrderFilePath, workOrderMarkdown, "utf8");
 
-    // Move Work Order into building to reflect the run.
+    const baseBranch = resolveBaseBranch(repoPath, log);
+    const branchName =
+      run.branch_name?.trim() || buildRunBranchName(workOrder.id, runId);
+    if (branchName !== run.branch_name) {
+      updateRun(runId, { branch_name: branchName });
+    }
+    const { worktreePath, worktreeRealPath } = resolveWorktreePaths(runDir);
+    try {
+      ensureWorktree({
+        repoPath,
+        worktreePath,
+        worktreeRealPath,
+        branchName,
+        baseBranch,
+        log,
+      });
+    } catch (err) {
+      log(`Failed to create worktree: ${String(err)}`);
+      updateRun(runId, {
+        status: "failed",
+        error: `worktree creation failed: ${String(err)}`,
+        finished_at: nowIso(),
+      });
+      return;
+    }
+    ensureNodeModulesSymlink(repoPath, worktreePath);
+
+    // Move Work Order into building inside the run branch.
     try {
       if (workOrder.status === "ready") {
-        patchWorkOrder(repoPath, run.work_order_id, { status: "building" });
+        patchWorkOrder(worktreePath, run.work_order_id, { status: "building" });
       }
     } catch {
       // ignore; contract enforcement happens elsewhere
@@ -705,7 +1148,7 @@ export async function runRun(runId: string) {
     const baselineRoot = path.join(runDir, "baseline");
     if (!fs.existsSync(baselineRoot)) {
       log("Creating baseline snapshot");
-      copySnapshot(repoPath, baselineRoot);
+      copySnapshot(worktreePath, baselineRoot);
     }
 
     const builderSchemaPath = path.join(runDir, "builder.schema.json");
@@ -750,7 +1193,7 @@ export async function runRun(runId: string) {
 
       try {
         await runCodexExec({
-          cwd: repoPath,
+          cwd: worktreePath,
           prompt: builderPrompt,
           schemaPath: builderSchemaPath,
           outputPath: builderOutputPath,
@@ -782,11 +1225,11 @@ export async function runRun(runId: string) {
         // keep going; reviewer can still evaluate diff
       }
 
-      const changedFiles = computeChangedFiles(baselineRoot, repoPath);
+      const changedFiles = computeChangedFiles(baselineRoot, worktreePath);
       const diffPatch = buildPatchForChangedFiles(
         runDir,
         baselineRoot,
-        repoPath,
+        worktreePath,
         changedFiles
       );
       fs.writeFileSync(
@@ -806,10 +1249,10 @@ export async function runRun(runId: string) {
 
       const reviewerRepoSnapshot = path.join(reviewerDir, "repo");
       try {
-        const copied = copyGitTrackedSnapshot(repoPath, reviewerRepoSnapshot);
+        const copied = copyGitTrackedSnapshot(worktreePath, reviewerRepoSnapshot);
         if (copied === 0) {
           fs.rmSync(reviewerRepoSnapshot, { recursive: true, force: true });
-          copySnapshot(repoPath, reviewerRepoSnapshot);
+          copySnapshot(worktreePath, reviewerRepoSnapshot);
         }
       } catch {
         // ignore; reviewer can still use diff-only review
@@ -900,7 +1343,7 @@ export async function runRun(runId: string) {
     log("Running tests");
     let tests: Array<{ command: string; passed: boolean; output?: string }> = [];
     try {
-      tests = await runRepoTests(repoPath, runDir);
+      tests = await runRepoTests(worktreePath, runDir);
       writeJson(path.join(runDir, "tests", "results.json"), tests);
     } catch (err) {
       tests = [{ command: "tests", passed: false, output: String(err) }];
@@ -921,6 +1364,468 @@ export async function runRun(runId: string) {
       return;
     }
 
+    updateRun(runId, { merge_status: "pending" });
+    log("Preparing merge to main");
+
+    try {
+      patchWorkOrder(worktreePath, run.work_order_id, { status: "you_review" });
+    } catch {
+      // ignore
+    }
+
+    const finishMergeConflict = (
+      message: string,
+      conflictRunId: string | null,
+      conflictFiles: string[]
+    ) => {
+      const finishedAt = nowIso();
+      updateRun(runId, {
+        status: "merge_conflict",
+        merge_status: "conflict",
+        conflict_with_run_id: conflictRunId,
+        error: message,
+        finished_at: finishedAt,
+        reviewer_verdict: "approved",
+        reviewer_notes: JSON.stringify(reviewerNotes),
+        summary: approvedSummary,
+      });
+      log(`Merge conflict: ${message}`);
+      if (conflictFiles.length) {
+        writeJson(path.join(runDir, "conflict_files.json"), conflictFiles);
+      }
+    };
+
+    const statusOutput = runGit(["status", "--porcelain"], {
+      cwd: worktreePath,
+      allowFailure: true,
+    });
+    if (!statusOutput.stdout.trim()) {
+      log("No changes detected; skipping merge");
+      cleanupWorktree({
+        repoPath,
+        worktreePath,
+        worktreeRealPath,
+        branchName,
+        log,
+      });
+
+      const finishedAt = nowIso();
+      updateRun(runId, {
+        status: "you_review",
+        finished_at: finishedAt,
+        reviewer_verdict: "approved",
+        reviewer_notes: JSON.stringify(reviewerNotes),
+        summary: approvedSummary,
+        merge_status: "merged",
+        conflict_with_run_id: null,
+      });
+
+      log("Run completed and approved");
+      return;
+    }
+
+    runGit(["add", "-A"], { cwd: worktreePath, log });
+    const commitTitle = workOrder.title.replace(/\s+/g, " ").trim();
+    const commitMessage = `${workOrder.id}: ${commitTitle || "Update"}`;
+    const commitResult = runGit(
+      [
+        "-c",
+        "user.name=Control Center Runner",
+        "-c",
+        "user.email=runner@local",
+        "commit",
+        "-m",
+        commitMessage,
+      ],
+      { cwd: worktreePath, allowFailure: true, log }
+    );
+    if (commitResult.status !== 0) {
+      updateRun(runId, {
+        status: "failed",
+        error: `git commit failed: ${commitResult.stderr || commitResult.stdout}`,
+        finished_at: nowIso(),
+        merge_status: null,
+      });
+      return;
+    }
+
+    let conflictRunId: string | null = null;
+    let conflictFiles: string[] = [];
+
+    const mergeBaseIntoBranch = async (): Promise<{
+      ok: boolean;
+      conflictRunId: string | null;
+      conflictFiles: string[];
+    }> => {
+      const mergeIntoBranch = runGit(
+        [
+          "-c",
+          "user.name=Control Center Runner",
+          "-c",
+          "user.email=runner@local",
+          "merge",
+          baseBranch,
+          "--no-ff",
+          "-m",
+          `Merge ${baseBranch} into ${branchName}`,
+        ],
+        { cwd: worktreePath, allowFailure: true, log }
+      );
+
+      if (mergeIntoBranch.status === 0) {
+        return { ok: true, conflictRunId: null, conflictFiles: [] };
+      }
+
+      const conflictFiles = listUnmergedFiles(worktreePath);
+      if (!conflictFiles.length) {
+        runGit(["merge", "--abort"], { cwd: worktreePath, allowFailure: true, log });
+        updateRun(runId, {
+          status: "failed",
+          error: `merge into branch failed: ${mergeIntoBranch.stderr || mergeIntoBranch.stdout}`,
+          finished_at: nowIso(),
+          merge_status: null,
+        });
+        return { ok: false, conflictRunId: null, conflictFiles: [] };
+      }
+
+      const gitConflictOutput = runGit(["diff"], {
+        cwd: worktreePath,
+        allowFailure: true,
+      }).stdout;
+
+      const conflictDetails = buildConflictContext({
+        repoPath,
+        runId,
+        runDir,
+        workOrder,
+        approvedSummary,
+        conflictFiles,
+        gitConflictOutput,
+      });
+      writeJson(path.join(runDir, "merge_conflict.json"), conflictDetails.conflictContext);
+
+      const mergeDir = path.join(runDir, "merge");
+      ensureDir(mergeDir);
+
+      const conflictPrompt = buildConflictResolutionPrompt({
+        currentRunId: runId,
+        currentWorkOrderId: workOrder.id,
+        currentWorkOrderMarkdown: workOrderMarkdown,
+        currentSummary: approvedSummary || "(no summary)",
+        currentDiff: conflictDetails.currentDiff,
+        conflictingRunId: conflictDetails.conflictingRunId,
+        conflictingWorkOrderId: conflictDetails.conflictingWorkOrderId,
+        conflictingWorkOrderMarkdown: conflictDetails.conflictingWorkOrderMarkdown,
+        conflictingSummary: conflictDetails.conflictingSummary,
+        conflictingDiff: conflictDetails.conflictingDiff,
+        conflictFiles,
+        gitConflictOutput,
+      });
+      fs.writeFileSync(path.join(mergeDir, "prompt.txt"), conflictPrompt, "utf8");
+
+      const mergeBuilderOutputPath = path.join(mergeDir, "result.json");
+      const mergeBuilderLogPath = path.join(mergeDir, "codex.log");
+      try {
+        await runCodexExec({
+          cwd: worktreePath,
+          prompt: conflictPrompt,
+          schemaPath: builderSchemaPath,
+          outputPath: mergeBuilderOutputPath,
+          logPath: mergeBuilderLogPath,
+          sandbox: "workspace-write",
+          model: runnerSettings.builder.model,
+          cliPath: runnerSettings.builder.cliPath,
+        });
+      } catch (err) {
+        const message = `merge builder failed: ${String(err)}`;
+        log(`Merge builder failed: ${String(err)}`);
+        finishMergeConflict(message, conflictDetails.conflictingRunId, conflictFiles);
+        return {
+          ok: false,
+          conflictRunId: conflictDetails.conflictingRunId,
+          conflictFiles,
+        };
+      }
+
+      const mergeBuilderResult = readJsonIfExists<{
+        summary: string;
+        risks: string[];
+        tests: unknown[];
+      }>(mergeBuilderOutputPath);
+      if (mergeBuilderResult?.summary) {
+        approvedSummary = mergeBuilderResult.summary;
+      }
+
+      const remainingConflicts = listUnmergedFiles(worktreePath);
+      if (remainingConflicts.length) {
+        finishMergeConflict(
+          `Unresolved conflicts: ${remainingConflicts.join(", ")}`,
+          conflictDetails.conflictingRunId,
+          remainingConflicts
+        );
+        return {
+          ok: false,
+          conflictRunId: conflictDetails.conflictingRunId,
+          conflictFiles: remainingConflicts,
+        };
+      }
+
+      runGit(["add", "-A"], { cwd: worktreePath, log });
+      const mergeCommitResult = runGit(
+        [
+          "-c",
+          "user.name=Control Center Runner",
+          "-c",
+          "user.email=runner@local",
+          "commit",
+          "-m",
+          `Merge ${baseBranch} into ${branchName}`,
+        ],
+        { cwd: worktreePath, allowFailure: true, log }
+      );
+      if (mergeCommitResult.status !== 0) {
+        finishMergeConflict(
+          `merge commit failed: ${mergeCommitResult.stderr || mergeCommitResult.stdout}`,
+          conflictDetails.conflictingRunId,
+          conflictFiles
+        );
+        return {
+          ok: false,
+          conflictRunId: conflictDetails.conflictingRunId,
+          conflictFiles,
+        };
+      }
+
+      const resolvedDiff = buildGitDiffPatch(worktreePath, baseBranch, "HEAD");
+      fs.writeFileSync(path.join(mergeDir, "diff.patch"), resolvedDiff, "utf8");
+
+      const mergeReviewerDir = path.join(mergeDir, "reviewer");
+      ensureDir(mergeReviewerDir);
+      const mergeReviewerSnapshot = path.join(mergeReviewerDir, "repo");
+      try {
+        const copied = copyGitTrackedSnapshot(worktreePath, mergeReviewerSnapshot);
+        if (copied === 0) {
+          fs.rmSync(mergeReviewerSnapshot, { recursive: true, force: true });
+          copySnapshot(worktreePath, mergeReviewerSnapshot);
+        }
+      } catch {
+        // ignore
+      }
+
+      const mergeReviewerPrompt = buildReviewerPrompt({
+        workOrderId: workOrder.id,
+        workOrderMarkdown,
+        diffPatch: resolvedDiff || "(no changes detected)",
+      });
+      fs.writeFileSync(
+        path.join(mergeReviewerDir, "prompt.txt"),
+        mergeReviewerPrompt,
+        "utf8"
+      );
+      fs.copyFileSync(
+        workOrderFilePath,
+        path.join(mergeReviewerDir, "work_order.md")
+      );
+      fs.writeFileSync(
+        path.join(mergeReviewerDir, "diff.patch"),
+        resolvedDiff,
+        "utf8"
+      );
+
+      const mergeReviewerOutputPath = path.join(mergeReviewerDir, "verdict.json");
+      const mergeReviewerLogPath = path.join(mergeReviewerDir, "codex.log");
+      try {
+        await runCodexExec({
+          cwd: mergeReviewerDir,
+          prompt: mergeReviewerPrompt,
+          schemaPath: reviewerSchemaPath,
+          outputPath: mergeReviewerOutputPath,
+          logPath: mergeReviewerLogPath,
+          sandbox: "read-only",
+          skipGitRepoCheck: true,
+          model: runnerSettings.reviewer.model,
+          cliPath: runnerSettings.reviewer.cliPath,
+        });
+      } catch (err) {
+        const message = `merge reviewer failed: ${String(err)}`;
+        log(`Merge reviewer failed: ${String(err)}`);
+        finishMergeConflict(message, conflictDetails.conflictingRunId, conflictFiles);
+        return {
+          ok: false,
+          conflictRunId: conflictDetails.conflictingRunId,
+          conflictFiles,
+        };
+      }
+
+      let mergeVerdict:
+        | { status: "approved" | "changes_requested"; notes: string[] }
+        | null = null;
+      try {
+        mergeVerdict = JSON.parse(
+          fs.readFileSync(mergeReviewerOutputPath, "utf8")
+        ) as { status: "approved" | "changes_requested"; notes: string[] };
+      } catch {
+        mergeVerdict = {
+          status: "changes_requested",
+          notes: ["Merge reviewer did not return valid JSON."],
+        };
+      }
+
+      if (mergeVerdict.status !== "approved") {
+        reviewerNotes = mergeVerdict.notes || reviewerNotes;
+        finishMergeConflict(
+          `Merge reviewer requested changes: ${(mergeVerdict.notes || []).join("; ")}`,
+          conflictDetails.conflictingRunId,
+          conflictFiles
+        );
+        return {
+          ok: false,
+          conflictRunId: conflictDetails.conflictingRunId,
+          conflictFiles,
+        };
+      }
+
+      return {
+        ok: true,
+        conflictRunId: conflictDetails.conflictingRunId,
+        conflictFiles,
+      };
+    };
+
+    const mergeResult = await mergeBaseIntoBranch();
+    if (!mergeResult.ok) {
+      return;
+    }
+    if (mergeResult.conflictRunId) conflictRunId = mergeResult.conflictRunId;
+    if (mergeResult.conflictFiles.length) conflictFiles = mergeResult.conflictFiles;
+
+    const writeMergeArtifacts = () => {
+      const mergeChangedFiles = listChangedFilesFromGit(
+        worktreePath,
+        baseBranch,
+        "HEAD"
+      );
+      const mergeDiff = buildGitDiffPatch(worktreePath, baseBranch, "HEAD");
+      writeJson(path.join(runDir, "files_changed.merge.json"), mergeChangedFiles);
+      fs.writeFileSync(path.join(runDir, "diff-merge.patch"), mergeDiff, "utf8");
+    };
+    writeMergeArtifacts();
+
+    const mainStatus = runGit(["status", "--porcelain"], {
+      cwd: repoPath,
+      allowFailure: true,
+    });
+    if (mainStatus.stdout.trim()) {
+      finishMergeConflict(
+        "Main branch has uncommitted changes; merge aborted.",
+        conflictRunId,
+        conflictFiles
+      );
+      return;
+    }
+
+    try {
+      runGit(["checkout", baseBranch], { cwd: repoPath, log });
+    } catch (err) {
+      updateRun(runId, {
+        status: "failed",
+        error: `git checkout failed: ${String(err)}`,
+        finished_at: nowIso(),
+        merge_status: null,
+      });
+      return;
+    }
+
+    const mergeTitle = workOrder.title.replace(/\s+/g, " ").trim();
+    const mergeMessage = `Merge ${workOrder.id}: ${mergeTitle || "Update"}`;
+    const mergeArgs = [
+      "-c",
+      "user.name=Control Center Runner",
+      "-c",
+      "user.email=runner@local",
+      "merge",
+      branchName,
+      "--no-ff",
+      "-m",
+      mergeMessage,
+    ];
+    const mergeMain = runGit(mergeArgs, { cwd: repoPath, allowFailure: true, log });
+    if (mergeMain.status !== 0) {
+      const mainConflictFiles = listUnmergedFiles(repoPath);
+      const mainConflictOutput = runGit(["diff"], {
+        cwd: repoPath,
+        allowFailure: true,
+      }).stdout;
+      runGit(["merge", "--abort"], { cwd: repoPath, allowFailure: true, log });
+      log("Merge to base branch failed; retrying after syncing branch");
+
+      const retryResult = await mergeBaseIntoBranch();
+      if (!retryResult.ok) {
+        return;
+      }
+      if (retryResult.conflictRunId) conflictRunId = retryResult.conflictRunId;
+      if (retryResult.conflictFiles.length) conflictFiles = retryResult.conflictFiles;
+      writeMergeArtifacts();
+
+      const retryMainStatus = runGit(["status", "--porcelain"], {
+        cwd: repoPath,
+        allowFailure: true,
+      });
+      if (retryMainStatus.stdout.trim()) {
+        finishMergeConflict(
+          "Main branch has uncommitted changes; merge aborted.",
+          conflictRunId,
+          conflictFiles
+        );
+        return;
+      }
+
+      const retryMergeMain = runGit(mergeArgs, {
+        cwd: repoPath,
+        allowFailure: true,
+        log,
+      });
+      if (retryMergeMain.status !== 0) {
+        const retryConflictFiles = listUnmergedFiles(repoPath);
+        const retryConflictOutput = runGit(["diff"], {
+          cwd: repoPath,
+          allowFailure: true,
+        }).stdout;
+        runGit(["merge", "--abort"], { cwd: repoPath, allowFailure: true, log });
+        const finalConflictFiles = retryConflictFiles.length
+          ? retryConflictFiles
+          : mainConflictFiles;
+        const finalConflictOutput = retryConflictOutput || mainConflictOutput;
+        const conflictDetails = buildConflictContext({
+          repoPath,
+          runId,
+          runDir,
+          workOrder,
+          approvedSummary,
+          conflictFiles: finalConflictFiles.length ? finalConflictFiles : conflictFiles,
+          gitConflictOutput: finalConflictOutput,
+        });
+        writeJson(path.join(runDir, "merge_conflict.json"), conflictDetails.conflictContext);
+        if (conflictDetails.conflictingRunId) {
+          conflictRunId = conflictDetails.conflictingRunId;
+        }
+        finishMergeConflict(
+          `Merge to ${baseBranch} failed: ${retryMergeMain.stderr || retryMergeMain.stdout}`,
+          conflictRunId,
+          finalConflictFiles.length ? finalConflictFiles : conflictFiles
+        );
+        return;
+      }
+    }
+
+    cleanupWorktree({
+      repoPath,
+      worktreePath,
+      worktreeRealPath,
+      branchName,
+      log,
+    });
+
     const finishedAt = nowIso();
     updateRun(runId, {
       status: "you_review",
@@ -928,15 +1833,11 @@ export async function runRun(runId: string) {
       reviewer_verdict: "approved",
       reviewer_notes: JSON.stringify(reviewerNotes),
       summary: approvedSummary,
+      merge_status: "merged",
+      conflict_with_run_id: null,
     });
 
     log("Run completed and approved");
-
-    try {
-      patchWorkOrder(repoPath, run.work_order_id, { status: "you_review" });
-    } catch {
-      // ignore
-    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log(`Unhandled error: ${message}`);
@@ -972,6 +1873,7 @@ export function enqueueCodexRun(projectId: string, workOrderId: string): RunRow 
 
   const id = crypto.randomUUID();
   const createdAt = nowIso();
+  const branchName = buildRunBranchName(workOrder.id, id);
   const runDir = path.join(project.path, ".system", "runs", id);
   const logPath = path.join(runDir, "run.log");
 
@@ -987,6 +1889,9 @@ export function enqueueCodexRun(projectId: string, workOrderId: string): RunRow 
     reviewer_verdict: null,
     reviewer_notes: null,
     summary: null,
+    branch_name: branchName,
+    merge_status: null,
+    conflict_with_run_id: null,
     run_dir: runDir,
     log_path: logPath,
     created_at: createdAt,
@@ -1046,3 +1951,69 @@ export function getRun(runId: string): RunDetails | null {
     tests_log_tail: tailFile(testsLogPath),
   };
 }
+
+export function finalizeManualRunResolution(
+  runId: string
+): { ok: true } | { ok: false; error: string } {
+  const run = getRunById(runId);
+  if (!run) return { ok: false, error: "Run not found" };
+  if (run.status !== "merge_conflict") {
+    return { ok: false, error: `Run status is ${run.status}, expected merge_conflict` };
+  }
+
+  const project = findProjectById(run.project_id);
+  if (!project) return { ok: false, error: "Project not found" };
+
+  const repoPath = project.path;
+  const branchName = run.branch_name;
+  if (!branchName) return { ok: false, error: "Run has no branch_name" };
+
+  const runDir = run.run_dir;
+  const { worktreePath, worktreeRealPath } = resolveWorktreePaths(runDir);
+  const log = (line: string) => appendLog(path.join(runDir, "run.log"), line);
+
+  try {
+    const baseBranch = resolveBaseBranch(repoPath, log);
+
+    // Attempt merge after manual resolution
+    log("Attempting merge after manual resolution");
+    const mergeResult = runGit(
+      ["merge", branchName, "--no-ff", "-m", `Merge ${run.work_order_id}: manual resolution`],
+      { cwd: repoPath, allowFailure: true, log }
+    );
+
+    if (mergeResult.status !== 0) {
+      log(`Merge still failing: ${mergeResult.stderr}`);
+      return { ok: false, error: "Merge still has conflicts" };
+    }
+
+    // Success - update status and cleanup
+    updateRun(runId, {
+      status: "done",
+      merge_status: "merged",
+      finished_at: new Date().toISOString(),
+    });
+
+    cleanupWorktree({
+      repoPath,
+      worktreePath,
+      worktreeRealPath,
+      branchName,
+      log,
+    });
+
+    log("Manual resolution completed successfully");
+    return { ok: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`Manual resolution failed: ${msg}`);
+    return { ok: false, error: msg };
+  }
+}
+
+export const __test__ = {
+  buildConflictContext,
+  ensureWorktreeLink,
+  removeWorktreeLink,
+  resolveWorktreePaths,
+};

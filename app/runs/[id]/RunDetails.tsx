@@ -9,6 +9,7 @@ type RunStatus =
   | "ai_review"
   | "testing"
   | "you_review"
+  | "merge_conflict"
   | "failed"
   | "canceled";
 
@@ -22,6 +23,9 @@ type RunDetails = {
   reviewer_verdict: "approved" | "changes_requested" | null;
   reviewer_notes: string | null;
   summary: string | null;
+  branch_name: string | null;
+  merge_status: "pending" | "merged" | "conflict" | null;
+  conflict_with_run_id: string | null;
   run_dir: string;
   log_path: string;
   created_at: string;
@@ -115,6 +119,16 @@ export function RunDetails({ runId }: { runId: string }) {
               <code>{run.iteration}</code>
             </div>
             <div className="muted" style={{ fontSize: 12 }}>
+              Branch: <code>{run.branch_name || "n/a"}</code> · Merge:{" "}
+              <code>{run.merge_status || "n/a"}</code>
+              {run.conflict_with_run_id ? (
+                <>
+                  {" "}
+                  · Conflict with: <code>{run.conflict_with_run_id}</code>
+                </>
+              ) : null}
+            </div>
+            <div className="muted" style={{ fontSize: 12 }}>
               Created: <code>{run.created_at}</code>
               {run.started_at ? <> · Started: <code>{run.started_at}</code></> : null}
               {run.finished_at ? <> · Finished: <code>{run.finished_at}</code></> : null}
@@ -143,9 +157,11 @@ export function RunDetails({ runId }: { runId: string }) {
         </section>
       )}
 
-      {run?.status === "failed" && (
+      {(run?.status === "failed" || run?.status === "merge_conflict") && (
         <section className="card">
-          <div style={{ fontWeight: 800 }}>Failed</div>
+          <div style={{ fontWeight: 800 }}>
+            {run.status === "merge_conflict" ? "Merge Conflict" : "Failed"}
+          </div>
           <div className="muted" style={{ marginTop: 8 }}>
             {run.error || "Unknown error"}
           </div>
