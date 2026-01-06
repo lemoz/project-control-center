@@ -1,26 +1,40 @@
 ---
 id: WO-2026-023
 title: Project Success Criteria and Goals
-status: ready
-priority: 1
-tags: [projects, goals, metrics, autonomy]
-created: 2026-01-06
-updated: 2026-01-06
-estimate_hours: 8
-depends_on: [WO-2025-002]
-era: autonomous
-goal: "Every project should define what success looks like - a clear north star that the system can work toward and measure progress against. This enables autonomous operation with a defined finish line."
+goal: Every project should define what success looks like - a clear north star that the system can work toward and measure progress against. This enables autonomous operation with a defined finish line.
+context:
+  - server/repos.ts (project/repo metadata parsing)
+  - server/db.ts (projects table)
+  - app/projects/[id]/page.tsx (project dashboard)
+  - .control.yml sidecar format
 acceptance_criteria:
-  - "Add success_criteria field to project schema (markdown text)"
-  - "Add success_metrics field for measurable KPIs (JSON array)"
-  - "Project dashboard shows success criteria prominently"
-  - "Progress indicators show how close project is to success"
-  - "Chat agent can help user define success criteria through conversation"
-  - "First work order suggestion for new projects: Define success criteria"
-  - "Success criteria stored in .control.yml sidecar for portability"
+  - Add success_criteria field to project schema (markdown text)
+  - Add success_metrics field for measurable KPIs (JSON array)
+  - Project dashboard shows success criteria prominently
+  - Progress indicators show how close project is to success
+  - Chat agent can help user define success criteria through conversation
+  - First work order suggestion for new projects is Define success criteria
+  - Success criteria stored in .control.yml sidecar for portability
+non_goals:
+  - Automatic success detection (v1 is manual definition plus display)
+  - Complex metric aggregation or dashboards
+  - Cross-project success rollups
 stop_conditions:
-  - "If success criteria becomes too complex to be useful, keep it simple (just free-form text)"
-  - "If metrics tracking adds too much overhead, make it optional"
+  - If success criteria becomes too complex to be useful, keep it simple (just free-form text)
+  - If metrics tracking adds too much overhead, make it optional
+priority: 1
+tags:
+  - projects
+  - goals
+  - metrics
+  - autonomy
+estimate_hours: 8
+status: ready
+created_at: 2026-01-06
+updated_at: 2026-01-06
+depends_on:
+  - WO-2025-002
+era: autonomous
 ---
 
 # Project Success Criteria and Goals
