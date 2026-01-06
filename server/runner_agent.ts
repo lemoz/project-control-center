@@ -86,6 +86,11 @@ function writeJson(filePath: string, data: unknown) {
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
+function appendLog(filePath: string, line: string) {
+  const timestamp = new Date().toISOString();
+  fs.appendFileSync(filePath, `[${timestamp}] ${line}\n`, "utf8");
+}
+
 function removePathIfExists(targetPath: string) {
   try {
     if (fs.existsSync(targetPath) || fs.lstatSync(targetPath).isSymbolicLink()) {
@@ -1989,7 +1994,7 @@ export function finalizeManualRunResolution(
 
     // Success - update status and cleanup
     updateRun(runId, {
-      status: "done",
+      status: "you_review",
       merge_status: "merged",
       finished_at: new Date().toISOString(),
     });
