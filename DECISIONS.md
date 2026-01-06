@@ -35,3 +35,8 @@ Key architectural/product choices and why. This file should stay short and curre
 ## Pluggable provider interface
 - **Decision:** Define provider abstraction now; implement Codex first, then Claude Code and Gemini CLI.
 - **Why:** Avoid rewriting flow when adding providers; keep settings-driven.
+
+## Future: isolated execution targets
+- **Topic:** Run agent jobs in pristine, per-project environments with scoped secrets (instead of directly on the laptop filesystem).
+- **Why:** Better isolation/safety, supports cloud CLIs, and reduces cross-project interference.
+- **Directions:** Local containers, a single GCP “runner” VM (SSH/IAP), and/or Cloud Run Jobs once the job pipeline is stable.

@@ -5,17 +5,35 @@ import { readControlMetadata } from "./sidecar.js";
 export const PROVIDERS = ["codex", "claude_code", "gemini_cli"] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
 
+const DEFAULT_TRUSTED_HOSTS = [
+  "github.com",
+  "raw.githubusercontent.com",
+  "api.github.com",
+  "registry.npmjs.org",
+  "npmjs.com",
+  "pypi.org",
+  "files.pythonhosted.org",
+  "crates.io",
+  "static.crates.io",
+  "pkg.go.dev",
+  "golang.org",
+  "developer.mozilla.org",
+];
+
 export type ProviderSettings = {
   provider: ProviderName;
   model: string;
   cliPath: string;
 };
 
-export type ChatSettings = ProviderSettings;
+export type ChatSettings = ProviderSettings & {
+  trusted_hosts: string[];
+};
 
 export type RunnerSettings = {
   builder: ProviderSettings;
   reviewer: ProviderSettings;
+  useWorktree: boolean;
 };
 
 export type RunnerSettingsResponse = {
@@ -33,6 +51,7 @@ export type ChatSettingsResponse = {
   env_overrides: {
     chat_codex_model?: string;
     chat_codex_path?: string;
+    chat_trusted_hosts?: string[];
   };
 };
 
@@ -44,15 +63,21 @@ const ProviderSettingsSchema = z.object({
   cliPath: z.string().default(""),
 });
 
+const ChatSettingsSchema = ProviderSettingsSchema.extend({
+  trusted_hosts: z.array(z.string()).default([]),
+});
+
 const RunnerSettingsSchema = z.object({
   builder: ProviderSettingsSchema,
   reviewer: ProviderSettingsSchema,
+  useWorktree: z.boolean().default(true),
 });
 
 const RunnerSettingsPatchSchema = z
   .object({
     builder: ProviderSettingsSchema.partial().optional(),
     reviewer: ProviderSettingsSchema.partial().optional(),
+    useWorktree: z.boolean().optional(),
   })
   .strict();
 
@@ -60,6 +85,7 @@ const SidecarRunnerOverrideSchema = z
   .object({
     builder: ProviderSettingsSchema.partial().optional(),
     reviewer: ProviderSettingsSchema.partial().optional(),
+    useWorktree: z.boolean().optional(),
   })
   .passthrough();
 
@@ -70,11 +96,31 @@ function defaults(): RunnerSettings {
   return {
     builder: { provider: "codex", model: "", cliPath: "" },
     reviewer: { provider: "codex", model: "", cliPath: "" },
+    useWorktree: true,
   };
 }
 
 function chatDefaults(): ChatSettings {
-  return { provider: "codex", model: "", cliPath: "" };
+  return {
+    provider: "codex",
+    model: "",
+    cliPath: "",
+    trusted_hosts: [...DEFAULT_TRUSTED_HOSTS],
+  };
+}
+
+function parseHostList(value: unknown): string[] {
+  if (!value) return [];
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry).trim()).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value
+      .split(/[,\n]/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+  return [];
 }
 
 function normalizeSettings(value: unknown): RunnerSettings {
@@ -95,13 +141,15 @@ function loadSavedSettings(): RunnerSettings {
 }
 
 function normalizeChatSettings(value: unknown): ChatSettings {
-  const parsed = ProviderSettingsSchema.safeParse(value ?? {});
-  if (parsed.success) return parsed.data;
+  const candidate = typeof value === "object" && value ? (value as Record<string, unknown>) : {};
+  const trusted_hosts =
+    "trusted_hosts" in candidate ? parseHostList(candidate.trusted_hosts) : chatDefaults().trusted_hosts;
   const merged = {
     ...chatDefaults(),
-    ...(typeof value === "object" && value ? value : {}),
+    ...candidate,
+    trusted_hosts,
   };
-  return ProviderSettingsSchema.parse(merged);
+  return ChatSettingsSchema.parse(merged);
 }
 
 function loadSavedChatSettings(): ChatSettings {
@@ -147,6 +195,7 @@ function applyEnvOverrides(settings: RunnerSettings): RunnerSettingsResponse["en
     effective: {
       builder: apply(settings.builder),
       reviewer: apply(settings.reviewer),
+      useWorktree: settings.useWorktree,
     },
   };
 }
@@ -163,22 +212,33 @@ function applyChatEnvOverrides(settings: ChatSettings): ChatSettingsResponse["en
     process.env.CONTROL_CENTER_CHAT_CODEX_PATH ||
     process.env.CONTROL_CENTER_CODEX_PATH ||
     undefined;
+  const chat_trusted_hosts_raw = process.env.CONTROL_CENTER_CHAT_TRUSTED_HOSTS || undefined;
+  const chat_trusted_hosts = chat_trusted_hosts_raw
+    ? parseHostList(chat_trusted_hosts_raw)
+    : undefined;
+
+  const base: ChatSettings = {
+    ...settings,
+    trusted_hosts: chat_trusted_hosts ?? settings.trusted_hosts,
+  };
 
   if (settings.provider !== "codex") {
     return {
       chat_codex_model,
       chat_codex_path,
-      effective: settings,
+      chat_trusted_hosts,
+      effective: base,
     };
   }
 
   return {
     chat_codex_model,
     chat_codex_path,
+    chat_trusted_hosts,
     effective: {
-      ...settings,
-      model: chat_codex_model ?? settings.model,
-      cliPath: chat_codex_path ?? settings.cliPath,
+      ...base,
+      model: chat_codex_model ?? base.model,
+      cliPath: chat_codex_path ?? base.cliPath,
     },
   };
 }
@@ -200,6 +260,8 @@ function applySidecarOverrides(repoPath: string, settings: RunnerSettings): Runn
 
   const override = parsed.data;
   return normalizeSettings({
+    ...settings,
+    ...(override.useWorktree !== undefined ? { useWorktree: override.useWorktree } : {}),
     builder: { ...settings.builder, ...(override.builder || {}) },
     reviewer: { ...settings.reviewer, ...(override.reviewer || {}) },
   });
@@ -222,6 +284,8 @@ export function patchRunnerSettings(input: unknown): RunnerSettingsResponse {
   const saved = loadSavedSettings();
   const patch = RunnerSettingsPatchSchema.parse(input ?? {});
   const merged = normalizeSettings({
+    ...saved,
+    ...(patch.useWorktree !== undefined ? { useWorktree: patch.useWorktree } : {}),
     builder: { ...saved.builder, ...(patch.builder || {}) },
     reviewer: { ...saved.reviewer, ...(patch.reviewer || {}) },
   });
@@ -262,13 +326,14 @@ export function getChatSettingsResponse(): ChatSettingsResponse {
     env_overrides: {
       chat_codex_model: env.chat_codex_model,
       chat_codex_path: env.chat_codex_path,
+      chat_trusted_hosts: env.chat_trusted_hosts,
     },
   };
 }
 
 export function patchChatSettings(input: unknown): ChatSettingsResponse {
   const saved = loadSavedChatSettings();
-  const patch = ProviderSettingsSchema.partial().parse(input ?? {});
+  const patch = typeof input === "object" && input ? (input as Record<string, unknown>) : {};
   const merged = normalizeChatSettings({ ...saved, ...patch });
   const stored = saveChatSettings(merged);
   const env = applyChatEnvOverrides(stored);
@@ -278,6 +343,7 @@ export function patchChatSettings(input: unknown): ChatSettingsResponse {
     env_overrides: {
       chat_codex_model: env.chat_codex_model,
       chat_codex_path: env.chat_codex_path,
+      chat_trusted_hosts: env.chat_trusted_hosts,
     },
   };
 }

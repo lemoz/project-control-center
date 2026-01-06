@@ -10,12 +10,17 @@ type ProviderSettings = {
   cliPath: string;
 };
 
+type ChatSettings = ProviderSettings & {
+  trusted_hosts: string[];
+};
+
 type ChatSettingsResponse = {
-  saved: ProviderSettings;
-  effective: ProviderSettings;
+  saved: ChatSettings;
+  effective: ChatSettings;
   env_overrides: {
     chat_codex_model?: string;
     chat_codex_path?: string;
+    chat_trusted_hosts?: string[];
   };
   error?: string;
 };
@@ -26,15 +31,27 @@ const PROVIDERS: Array<{ value: ProviderName; label: string; enabled: boolean }>
   { value: "gemini_cli", label: "Gemini CLI (soon)", enabled: false },
 ];
 
-function emptySettings(): ProviderSettings {
-  return { provider: "codex", model: "", cliPath: "" };
+function emptySettings(): ChatSettings {
+  return { provider: "codex", model: "", cliPath: "", trusted_hosts: [] };
+}
+
+function formatHosts(hosts: string[]): string {
+  return hosts.join("\n");
+}
+
+function parseHosts(raw: string): string[] {
+  return raw
+    .split(/[,\n]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 export function ChatSettingsForm() {
-  const [saved, setSaved] = useState<ProviderSettings>(emptySettings());
-  const [effective, setEffective] = useState<ProviderSettings>(emptySettings());
+  const [saved, setSaved] = useState<ChatSettings>(emptySettings());
+  const [effective, setEffective] = useState<ChatSettings>(emptySettings());
   const [env, setEnv] = useState<ChatSettingsResponse["env_overrides"]>({});
-  const [draft, setDraft] = useState<ProviderSettings>(emptySettings());
+  const [draft, setDraft] = useState<ChatSettings>(emptySettings());
+  const [trustedHostsInput, setTrustedHostsInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,9 +67,11 @@ export function ChatSettingsForm() {
       const res = await fetch("/api/chat/settings", { cache: "no-store" });
       const json = (await res.json().catch(() => null)) as ChatSettingsResponse | null;
       if (!res.ok) throw new Error(json?.error || "failed to load chat settings");
-      setSaved(json?.saved || emptySettings());
-      setDraft(json?.saved || emptySettings());
-      setEffective(json?.effective || json?.saved || emptySettings());
+      const nextSaved = json?.saved || emptySettings();
+      setSaved(nextSaved);
+      setDraft(nextSaved);
+      setEffective(json?.effective || nextSaved);
+      setTrustedHostsInput(formatHosts(nextSaved.trusted_hosts || []));
       setEnv(json?.env_overrides || {});
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed to load chat settings");
@@ -77,9 +96,11 @@ export function ChatSettingsForm() {
       });
       const json = (await res.json().catch(() => null)) as ChatSettingsResponse | null;
       if (!res.ok) throw new Error(json?.error || "failed to save chat settings");
-      setSaved(json?.saved || draft);
-      setDraft(json?.saved || draft);
-      setEffective(json?.effective || json?.saved || draft);
+      const nextSaved = json?.saved || draft;
+      setSaved(nextSaved);
+      setDraft(nextSaved);
+      setEffective(json?.effective || nextSaved);
+      setTrustedHostsInput(formatHosts(nextSaved.trusted_hosts || []));
       setEnv(json?.env_overrides || {});
       setNotice("Saved.");
       setTimeout(() => setNotice(null), 2500);
@@ -94,9 +115,23 @@ export function ChatSettingsForm() {
     const parts: string[] = [];
     if (env.chat_codex_model) parts.push("model");
     if (env.chat_codex_path) parts.push("cliPath");
+    if (env.chat_trusted_hosts) parts.push("trusted hosts");
     if (!parts.length) return null;
-    return `Chat Codex ${parts.join(" + ")} overridden by env.`;
-  }, [env.chat_codex_model, env.chat_codex_path]);
+    return `Chat settings ${parts.join(" + ")} overridden by env.`;
+  }, [env.chat_codex_model, env.chat_codex_path, env.chat_trusted_hosts]);
+
+  const trustedHostNote = useMemo(() => {
+    if (env.chat_trusted_hosts) return `Trusted hosts overridden by env (${env.chat_trusted_hosts.length}).`;
+    const savedList = saved.trusted_hosts || [];
+    const effectiveList = effective.trusted_hosts || [];
+    if (
+      savedList.length === effectiveList.length &&
+      savedList.every((host, idx) => host === effectiveList[idx])
+    ) {
+      return null;
+    }
+    return `Effective trusted hosts: ${effectiveList.length}.`;
+  }, [env.chat_trusted_hosts, saved.trusted_hosts, effective.trusted_hosts]);
 
   return (
     <section className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -125,7 +160,7 @@ export function ChatSettingsForm() {
         <>
           {!!chatEnvNote && (
             <div className="muted" style={{ fontSize: 12 }}>
-              {chatEnvNote} (<code>CONTROL_CENTER_CHAT_CODEX_MODEL</code>, <code>CONTROL_CENTER_CHAT_CODEX_PATH</code>)
+              {chatEnvNote} (<code>CONTROL_CENTER_CHAT_CODEX_MODEL</code>, <code>CONTROL_CENTER_CHAT_CODEX_PATH</code>, <code>CONTROL_CENTER_CHAT_TRUSTED_HOSTS</code>)
             </div>
           )}
 
@@ -180,6 +215,31 @@ export function ChatSettingsForm() {
                   </div>
                 )}
               </div>
+
+              <div className="field">
+                <div className="fieldLabel muted">Trusted hosts (one per line)</div>
+                <textarea
+                  className="input"
+                  rows={6}
+                  value={trustedHostsInput}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setTrustedHostsInput(next);
+                    setDraft((prev) => ({ ...prev, trusted_hosts: parseHosts(next) }));
+                  }}
+                />
+                <div className="muted" style={{ fontSize: 12 }}>
+                  Used when network access is set to the Trusted pack.
+                </div>
+                <div className="muted" style={{ fontSize: 12 }}>
+                  Hostnames only (no wildcards).
+                </div>
+                {!!trustedHostNote && (
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    {trustedHostNote}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </>
@@ -187,4 +247,3 @@ export function ChatSettingsForm() {
     </section>
   );
 }
-

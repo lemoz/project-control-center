@@ -22,6 +22,15 @@ function waitForStarPatch(page: import("@playwright/test").Page, repoId: string)
   );
 }
 
+function waitForThreadPatch(page: import("@playwright/test").Page, threadId: string) {
+  const expectedPath = `/api/chat/threads/${encodeURIComponent(threadId)}`;
+  return page.waitForResponse(
+    (res) =>
+      res.request().method() === "PATCH" &&
+      new URL(res.url()).pathname === expectedPath
+  );
+}
+
 function trackPageErrors(page: import("@playwright/test").Page) {
   const errors: string[] = [];
   page.on("pageerror", (err) => errors.push(err.message));
@@ -293,6 +302,42 @@ test.describe("Project Control Center smoke", () => {
       .get(betaRepoPath) as { tags: string } | undefined;
     expect(row?.tags).toBe("[]");
     dbAfter.close();
+  });
+
+  test("Chat overlay deep link + rename/archive", async ({ page, request }) => {
+    const apiPort = Number(process.env.E2E_API_PORT || process.env.CONTROL_CENTER_PORT || 4011);
+    const apiBase = `http://127.0.0.1:${apiPort}`;
+    const threadName = `E2E Chat ${Date.now()}`;
+
+    const createThread = await request.post(`${apiBase}/chat/threads`, {
+      data: { scope: "global", name: threadName },
+    });
+    expect(createThread.ok()).toBe(true);
+    const created = (await createThread.json()) as { id?: unknown };
+    expect(typeof created.id).toBe("string");
+    const threadId = String(created.id);
+
+    await page.goto(`/?chat=1&thread=${encodeURIComponent(threadId)}`);
+
+    const overlay = page.locator(".chat-overlay");
+    await expect(overlay).toBeVisible();
+    const header = page.locator(".chat-thread-active-header");
+    await expect(header.getByText(threadName)).toBeVisible();
+
+    await page.getByRole("button", { name: "Rename" }).click();
+    const renameSection = page.locator(".chat-thread-rename");
+    const renamed = `${threadName} renamed`;
+    await renameSection.getByRole("textbox").fill(renamed);
+    const renameResponse = waitForThreadPatch(page, threadId);
+    await renameSection.getByRole("button", { name: "Save" }).click();
+    expect((await renameResponse).ok()).toBe(true);
+    await expect(header.getByText(renamed)).toBeVisible();
+
+    const archiveResponse = waitForThreadPatch(page, threadId);
+    await page.getByRole("button", { name: "Archive" }).click();
+    expect((await archiveResponse).ok()).toBe(true);
+    await expect(page.getByRole("button", { name: "Unarchive" })).toBeVisible();
+    await expect(page.locator(".chat-thread-item.active").getByText("Archived")).toBeVisible();
   });
 
   test("Project page renders Kanban columns", async ({ page }) => {

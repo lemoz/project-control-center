@@ -20,7 +20,10 @@ export default function WorkOrderPage({
         <Link href={`/projects/${encodeURIComponent(id)}`} className="badge">
           ← Project
         </Link>
-        <Link href={`/projects/${encodeURIComponent(id)}/work-orders/${encodeURIComponent(workOrderId)}/chat`} className="badge">
+        <Link
+          href={`/projects/${encodeURIComponent(id)}/work-orders/${encodeURIComponent(workOrderId)}?chat=1`}
+          className="badge"
+        >
           Chat
         </Link>
         <div className="muted" style={{ fontSize: 13 }}>

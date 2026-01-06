@@ -63,6 +63,8 @@ Optional env vars:
 - `CONTROL_CENTER_SCAN_ROOTS=/path/to/repos,/another/path` (comma-separated; defaults to `$HOME`)
 - `CONTROL_CENTER_ALLOWED_ORIGINS=http://localhost:3010` (comma-separated CORS allowlist for browser calls; defaults include `http://localhost:3000` and `http://localhost:3010-3013` plus `127.0.0.1` equivalents)
 - `CONTROL_CENTER_CORS_ALLOW_ALL=1` (dev-only + loopback-only: disables the allowlist when `NODE_ENV != "production"` and `CONTROL_CENTER_HOST` is loopback)
+- `CONTROL_CENTER_CHAT_SUGGESTION_CONTEXT_MESSAGES=10` (how many recent thread messages + run metadata to include when generating Access+Context suggestions)
+- `CONTROL_CENTER_CHAT_TRUSTED_HOSTS=github.com,raw.githubusercontent.com` (comma- or newline-separated host list for the chat "trusted" network pack; overrides Chat Settings)
 
 Database notes:
 - Schema (including `projects` and `work_orders`) is auto-created on server start (see `server/db.ts`), with lightweight startup migrations for existing DBs.
@@ -74,6 +76,16 @@ npm run dev
 ```
 UI runs on `http://localhost:3010` by default and expects the server at `NEXT_PUBLIC_API_BASE_URL` (default `http://localhost:4010`).
 Dev note: `npm run dev` sets `NEXT_DIST_DIR=.next-dev` via `scripts/with-env.mjs` (cross-platform; see `next.config.js`) so dev artifacts don’t pollute the production build output (`.next/`).
+
+### Recommended: run API + UI in tmux
+```bash
+tmux new-session -d -s pcc -c /Users/cdossman/project-control-center -n dev
+tmux send-keys -t pcc:dev.0 "npm run server:dev" C-m
+tmux split-window -h -t pcc:dev -c /Users/cdossman/project-control-center
+tmux send-keys -t pcc:dev.1 "npm run dev" C-m
+tmux attach -t pcc
+```
+Detach anytime with `Ctrl+b` then `d`.
 
 ### Expose UI via ngrok (reserved domain + basic auth)
 1. Install ngrok (for example, `brew install ngrok/ngrok/ngrok` or https://ngrok.com/download), then add your authtoken:

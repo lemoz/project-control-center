@@ -13,6 +13,7 @@ type ProviderSettings = {
 type RunnerSettings = {
   builder: ProviderSettings;
   reviewer: ProviderSettings;
+  useWorktree: boolean;
 };
 
 type SettingsResponse = {
@@ -35,6 +36,7 @@ function emptySettings(): RunnerSettings {
   return {
     builder: { provider: "codex", model: "", cliPath: "" },
     reviewer: { provider: "codex", model: "", cliPath: "" },
+    useWorktree: true,
   };
 }
 
@@ -151,6 +153,23 @@ export function RunnerSettingsForm() {
             </div>
           )}
 
+          <div className="field">
+            <div className="fieldLabel muted">Worktree isolation</div>
+            <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="checkbox"
+                checked={draft.useWorktree}
+                onChange={(e) =>
+                  setDraft((prev) => ({ ...prev, useWorktree: e.target.checked }))
+                }
+              />
+              <span>Run builder in an isolated git worktree</span>
+            </label>
+            <div className="muted" style={{ fontSize: 12 }}>
+              Disable to fall back to the legacy direct-to-repo flow.
+            </div>
+          </div>
+
           <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", alignItems: "start" }}>
             {(["builder", "reviewer"] as const).map((role) => (
               <div key={role} className="field" style={{ gap: 10 }}>
@@ -227,4 +246,3 @@ export function RunnerSettingsForm() {
     </section>
   );
 }
-

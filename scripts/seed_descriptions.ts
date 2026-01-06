@@ -20,7 +20,7 @@ function usage(): string {
     "Notes:",
     "  - Run a repo scan first so the projects exist in the DB.",
     "  - Paths may use ~ or $HOME and will be resolved to absolute paths.",
-  ].join(\"\\n\");
+  ].join("\n");
 }
 
 function parseArgs(argv: string[]): { input?: string; db?: string; help: boolean } {
@@ -29,51 +29,53 @@ function parseArgs(argv: string[]): { input?: string; db?: string; help: boolean
     db: undefined as string | undefined,
     help: false,
   };
+
   const rest = [...argv];
   while (rest.length) {
     const token = rest.shift();
     if (!token) break;
-    if (token === \"--help\" || token === \"-h\") {
+    if (token === "--help" || token === "-h") {
       args.help = true;
       continue;
     }
-    if (token === \"--input\") {
+    if (token === "--input") {
       args.input = rest.shift();
       continue;
     }
-    if (token === \"--db\") {
+    if (token === "--db") {
       args.db = rest.shift();
       continue;
     }
-    // Unknown arg
     args.help = true;
   }
+
   return args;
 }
 
 function expandUserPath(value: string): string {
-  if (value === \"~\") return os.homedir();
-  if (value.startsWith(\"~/\") || value.startsWith(\"~\\\\\")) {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/") || value.startsWith('~\\')) {
     return path.join(os.homedir(), value.slice(2));
   }
-  if (value.startsWith(\"$HOME/\")) {
-    return path.join(os.homedir(), value.slice(\"$HOME/\".length));
+  if (value.startsWith("$HOME/")) {
+    return path.join(os.homedir(), value.slice("$HOME/".length));
   }
-  if (value === \"$HOME\") return os.homedir();
+  if (value === "$HOME") return os.homedir();
   return value;
 }
 
 function readSeedFile(filePath: string): SeedEntry[] {
-  const raw = fs.readFileSync(filePath, \"utf8\");
+  const raw = fs.readFileSync(filePath, "utf8");
   const json = JSON.parse(raw) as unknown;
-  if (!Array.isArray(json)) throw new Error(\"seed file must be a JSON array\");
+  if (!Array.isArray(json)) throw new Error("seed file must be a JSON array");
+
   return json.map((item) => {
     const row = item as Partial<SeedEntry>;
-    if (typeof row.repoPath !== \"string\" || row.repoPath.length === 0) {
-      throw new Error(\"seed entries must include repoPath\");
+    if (typeof row.repoPath !== "string" || row.repoPath.length === 0) {
+      throw new Error("seed entries must include repoPath");
     }
-    if (typeof row.description !== \"string\") {
-      throw new Error(\"seed entries must include description\");
+    if (typeof row.description !== "string") {
+      throw new Error("seed entries must include description");
     }
     return { repoPath: row.repoPath, description: row.description };
   });
@@ -87,28 +89,26 @@ function main() {
     process.exit(0);
   }
 
-  const defaultInput = path.join(process.cwd(), \"scripts\", \"seed_descriptions.local.json\");
+  const defaultInput = path.join(process.cwd(), "scripts", "seed_descriptions.local.json");
   const inputPath = args.input || (fs.existsSync(defaultInput) ? defaultInput : undefined);
   if (!inputPath) {
     // eslint-disable-next-line no-console
     console.error(
-      \"Missing --input. Create scripts/seed_descriptions.local.json (gitignored) or pass --input.\"
+      "Missing --input. Create scripts/seed_descriptions.local.json (gitignored) or pass --input."
     );
     // eslint-disable-next-line no-console
-    console.error(\"\");
+    console.error("");
     // eslint-disable-next-line no-console
     console.error(usage());
     process.exit(2);
   }
 
   const dbPath =
-    args.db ||
-    process.env.CONTROL_CENTER_DB_PATH ||
-    path.join(process.cwd(), \"control-center.db\");
+    args.db || process.env.CONTROL_CENTER_DB_PATH || path.join(process.cwd(), "control-center.db");
 
   const entries = readSeedFile(inputPath);
   const db = new Database(dbPath);
-  const update = db.prepare(\"UPDATE projects SET description = ?, updated_at = ? WHERE path = ?\");
+  const update = db.prepare("UPDATE projects SET description = ?, updated_at = ? WHERE path = ?");
   const now = new Date().toISOString();
 
   let updated = 0;
@@ -125,7 +125,7 @@ function main() {
   console.log(`Seeded descriptions for ${updated} projects.`);
   if (missing.length) {
     // eslint-disable-next-line no-console
-    console.warn(\"No matching DB rows for:\", missing);
+    console.warn("No matching DB rows for:", missing);
   }
 }
 
