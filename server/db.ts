@@ -150,11 +150,20 @@ function initSchema(database: Database.Database) {
 
     CREATE TABLE IF NOT EXISTS chat_threads (
       id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
       scope TEXT NOT NULL,
       project_id TEXT,
       work_order_id TEXT,
       summary TEXT NOT NULL DEFAULT '',
       summarized_count INTEGER NOT NULL DEFAULT 0,
+      default_context_depth TEXT NOT NULL DEFAULT 'messages',
+      default_access_filesystem TEXT NOT NULL DEFAULT 'read-only',
+      default_access_cli TEXT NOT NULL DEFAULT 'off',
+      default_access_network TEXT NOT NULL DEFAULT 'none',
+      default_access_network_allowlist TEXT,
+      last_read_at TEXT,
+      last_ack_at TEXT,
+      archived_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
@@ -170,11 +179,30 @@ function initSchema(database: Database.Database) {
       content TEXT NOT NULL,
       actions_json TEXT,
       run_id TEXT,
+      needs_user_input INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE
     );
 
     CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_seq ON chat_messages(thread_id, seq);
+
+    CREATE TABLE IF NOT EXISTS chat_pending_sends (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      context_depth TEXT NOT NULL DEFAULT 'messages',
+      access_filesystem TEXT NOT NULL DEFAULT 'read-only',
+      access_cli TEXT NOT NULL DEFAULT 'off',
+      access_network TEXT NOT NULL DEFAULT 'none',
+      access_network_allowlist TEXT,
+      suggestion_json TEXT,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT,
+      canceled_at TEXT,
+      FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_pending_sends_thread_id ON chat_pending_sends(thread_id);
 
     CREATE TABLE IF NOT EXISTS chat_runs (
       id TEXT PRIMARY KEY,
@@ -220,6 +248,8 @@ function initSchema(database: Database.Database) {
       undo_payload_json TEXT,
       undone_at TEXT,
       error TEXT,
+      error_at TEXT,
+      work_order_run_id TEXT,
       FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE,
       FOREIGN KEY (run_id) REFERENCES chat_runs(id) ON DELETE CASCADE
     );
@@ -256,6 +286,63 @@ function initSchema(database: Database.Database) {
   }
   if (!hasConflictWithRunId) {
     database.exec("ALTER TABLE runs ADD COLUMN conflict_with_run_id TEXT;");
+  }
+
+  // chat_threads migrations
+  const chatThreadColumns = database.prepare("PRAGMA table_info(chat_threads)").all() as Array<{ name: string }>;
+  const hasThreadName = chatThreadColumns.some((c) => c.name === "name");
+  const hasThreadContextDepth = chatThreadColumns.some((c) => c.name === "default_context_depth");
+  const hasThreadAccessFilesystem = chatThreadColumns.some((c) => c.name === "default_access_filesystem");
+  const hasThreadAccessCli = chatThreadColumns.some((c) => c.name === "default_access_cli");
+  const hasThreadAccessNetwork = chatThreadColumns.some((c) => c.name === "default_access_network");
+  const hasThreadAccessNetworkAllowlist = chatThreadColumns.some((c) => c.name === "default_access_network_allowlist");
+  const hasThreadLastReadAt = chatThreadColumns.some((c) => c.name === "last_read_at");
+  const hasThreadLastAckAt = chatThreadColumns.some((c) => c.name === "last_ack_at");
+  const hasThreadArchivedAt = chatThreadColumns.some((c) => c.name === "archived_at");
+  if (!hasThreadName) {
+    database.exec("ALTER TABLE chat_threads ADD COLUMN name TEXT NOT NULL DEFAULT '';");
+  }
+  if (!hasThreadContextDepth) {
+    database.exec("ALTER TABLE chat_threads ADD COLUMN default_context_depth TEXT NOT NULL DEFAULT 'messages';");
+  }
+  if (!hasThreadAccessFilesystem) {
+    database.exec("ALTER TABLE chat_threads ADD COLUMN default_access_filesystem TEXT NOT NULL DEFAULT 'read-only';");
+  }
+  if (!hasThreadAccessCli) {
+    database.exec("ALTER TABLE chat_threads ADD COLUMN default_access_cli TEXT NOT NULL DEFAULT 'off';");
+  }
+  if (!hasThreadAccessNetwork) {
+    database.exec("ALTER TABLE chat_threads ADD COLUMN default_access_network TEXT NOT NULL DEFAULT 'none';");
+  }
+  if (!hasThreadAccessNetworkAllowlist) {
+    database.exec("ALTER TABLE chat_threads ADD COLUMN default_access_network_allowlist TEXT;");
+  }
+  if (!hasThreadLastReadAt) {
+    database.exec("ALTER TABLE chat_threads ADD COLUMN last_read_at TEXT;");
+  }
+  if (!hasThreadLastAckAt) {
+    database.exec("ALTER TABLE chat_threads ADD COLUMN last_ack_at TEXT;");
+  }
+  if (!hasThreadArchivedAt) {
+    database.exec("ALTER TABLE chat_threads ADD COLUMN archived_at TEXT;");
+  }
+
+  // chat_messages migrations
+  const chatMessageColumns = database.prepare("PRAGMA table_info(chat_messages)").all() as Array<{ name: string }>;
+  const hasNeedsUserInput = chatMessageColumns.some((c) => c.name === "needs_user_input");
+  if (!hasNeedsUserInput) {
+    database.exec("ALTER TABLE chat_messages ADD COLUMN needs_user_input INTEGER NOT NULL DEFAULT 0;");
+  }
+
+  // chat_action_ledger migrations
+  const chatActionLedgerColumns = database.prepare("PRAGMA table_info(chat_action_ledger)").all() as Array<{ name: string }>;
+  const hasErrorAt = chatActionLedgerColumns.some((c) => c.name === "error_at");
+  const hasWorkOrderRunId = chatActionLedgerColumns.some((c) => c.name === "work_order_run_id");
+  if (!hasErrorAt) {
+    database.exec("ALTER TABLE chat_action_ledger ADD COLUMN error_at TEXT;");
+  }
+  if (!hasWorkOrderRunId) {
+    database.exec("ALTER TABLE chat_action_ledger ADD COLUMN work_order_run_id TEXT;");
   }
 }
 
