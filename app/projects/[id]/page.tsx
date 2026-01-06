@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { KanbanBoard } from "./KanbanBoard";
 import { TechTreeView } from "./TechTreeView";
+import { ConstitutionPanel } from "./ConstitutionPanel";
 
 type ViewMode = "kanban" | "tech-tree";
 
@@ -41,6 +42,8 @@ export default function ProjectPage({ params }: { params: { id: string } }) {
           </button>
         </div>
       </section>
+
+      <ConstitutionPanel repoId={id} />
 
       {view === "kanban" && <KanbanBoard repoId={id} />}
       {view === "tech-tree" && <TechTreeView repoId={id} />}

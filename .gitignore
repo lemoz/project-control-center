@@ -15,6 +15,10 @@ build/
 # Local-only seed data
 scripts/seed_descriptions.local.json
 
+# Constitution drafts
+.constitution.md
+.constitution.versions/
+
 # SQLite / local state
 *.sqlite
 *.sqlite3
