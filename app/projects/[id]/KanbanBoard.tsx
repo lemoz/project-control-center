@@ -106,7 +106,19 @@ export function KanbanBoard({ repoId }: { repoId: string }) {
       COLUMNS.map((c) => [c.status, []])
     );
     for (const wo of workOrders) {
-      const arr = map.get(wo.status);
+      // Determine effective status based on active run
+      const latestRun = latestRunByWorkOrderId.get(wo.id);
+      let effectiveStatus = wo.status;
+      if (latestRun) {
+        if (latestRun.status === "queued" || latestRun.status === "building" || latestRun.status === "testing") {
+          effectiveStatus = "building";
+        } else if (latestRun.status === "ai_review") {
+          effectiveStatus = "ai_review";
+        } else if (latestRun.status === "you_review") {
+          effectiveStatus = "you_review";
+        }
+      }
+      const arr = map.get(effectiveStatus);
       if (!arr) continue;
       arr.push(wo);
     }
@@ -118,7 +130,7 @@ export function KanbanBoard({ repoId }: { repoId: string }) {
       map.set(status, items);
     }
     return map;
-  }, [workOrders]);
+  }, [workOrders, latestRunByWorkOrderId]);
 
   const load = useCallback(async () => {
     setLoading(true);
