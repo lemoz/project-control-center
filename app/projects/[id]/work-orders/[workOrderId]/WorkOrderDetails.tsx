@@ -37,6 +37,7 @@ type RunStatus =
   | "ai_review"
   | "testing"
   | "you_review"
+  | "merge_conflict"
   | "failed"
   | "canceled";
 
@@ -350,7 +351,7 @@ export function WorkOrderDetails({
             <Link href={`/runs/${encodeURIComponent(latestRun.id)}`} className="badge">
               open
             </Link>
-            {latestRun.status === "failed" && (
+            {(latestRun.status === "failed" || latestRun.status === "merge_conflict") && (
               <span className="muted" style={{ fontSize: 12 }}>
                 {latestRun.error || "Unknown error"}
               </span>

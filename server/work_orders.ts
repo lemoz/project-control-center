@@ -41,6 +41,8 @@ const FrontmatterSchema = z
     status: WorkOrderStatusSchema.optional(),
     created_at: z.string().optional(),
     updated_at: z.string().optional(),
+    depends_on: z.array(z.string()).optional(),
+    era: z.string().optional(),
   })
   .passthrough();
 
@@ -58,6 +60,8 @@ export type WorkOrder = {
   status: WorkOrderStatus;
   created_at: string;
   updated_at: string;
+  depends_on: string[];
+  era: string | null;
   ready_check: { ok: boolean; errors: string[] };
 };
 
@@ -70,6 +74,8 @@ export type WorkOrderCreateInput = {
   title: string;
   priority?: number;
   tags?: string[];
+  depends_on?: string[];
+  era?: string;
 };
 
 export type WorkOrderPatchInput = Partial<{
@@ -83,6 +89,8 @@ export type WorkOrderPatchInput = Partial<{
   tags: string[];
   estimate_hours: number | null;
   status: WorkOrderStatus;
+  depends_on: string[];
+  era: string | null;
 }>;
 
 export class WorkOrderError extends Error {
@@ -214,6 +222,9 @@ function normalizeWorkOrder(
     typeof data.estimate_hours === "number" && Number.isFinite(data.estimate_hours)
       ? data.estimate_hours
       : null;
+  const depends_on = normalizeStringArray(data.depends_on);
+  const era =
+    typeof data.era === "string" && data.era.trim() ? data.era.trim() : null;
 
   const rc = readyCheck(rawFrontmatter);
 
@@ -231,6 +242,8 @@ function normalizeWorkOrder(
     status,
     created_at,
     updated_at,
+    depends_on,
+    era,
     ready_check: rc,
   };
 }
@@ -415,6 +428,9 @@ export function createWorkOrder(
       ? Math.min(5, Math.max(1, Math.trunc(input.priority)))
       : 3;
   const tags = normalizeStringArray(input.tags);
+  const depends_on = normalizeStringArray(input.depends_on);
+  const era =
+    typeof input.era === "string" && input.era.trim() ? input.era.trim() : null;
 
   const frontmatter: Record<string, unknown> = {
     id,
@@ -430,6 +446,8 @@ export function createWorkOrder(
     status: "backlog",
     created_at: now,
     updated_at: now,
+    depends_on,
+    era,
   };
 
   const body = `\n\n## Notes\n- \n`;
@@ -520,6 +538,13 @@ export function patchWorkOrder(
     }
     frontmatter.status = parsedStatus.data;
   }
+  if (patch.depends_on !== undefined) {
+    frontmatter.depends_on = normalizeStringArray(patch.depends_on);
+  }
+  if (patch.era !== undefined) {
+    frontmatter.era =
+      patch.era === null || !patch.era.trim() ? null : patch.era.trim();
+  }
 
   frontmatter.updated_at = todayIsoDate();
 
@@ -551,6 +576,59 @@ export function patchWorkOrder(
     throw new WorkOrderError("Invalid Work Order after patch", "invalid");
   }
   return normalized;
+}
+
+/**
+ * Auto-transition dependents to 'ready' when all their dependencies are done.
+ * Called after a work order is marked as 'done'.
+ * @returns list of work order IDs that were auto-transitioned
+ */
+export function cascadeAutoReady(
+  repoPath: string,
+  completedWorkOrderId: string,
+  getDependents: (workOrderId: string) => string[]
+): string[] {
+  const transitioned: string[] = [];
+  const allWorkOrders = listWorkOrders(repoPath);
+  const workOrderMap = new Map(allWorkOrders.map((wo) => [wo.id, wo]));
+
+  // Get dependents of the just-completed work order
+  const dependentIds = getDependents(completedWorkOrderId);
+
+  for (const dependentId of dependentIds) {
+    const dependent = workOrderMap.get(dependentId);
+    if (!dependent) continue;
+
+    // Only process backlog items
+    if (dependent.status !== "backlog") continue;
+
+    // Check if ALL dependencies are now done
+    const allDepsDone = dependent.depends_on.every((depId) => {
+      const dep = workOrderMap.get(depId);
+      return dep && dep.status === "done";
+    });
+
+    if (!allDepsDone) continue;
+
+    // Check if ready contract is satisfied
+    const rc = readyCheck({
+      goal: dependent.goal,
+      acceptance_criteria: dependent.acceptance_criteria,
+      stop_conditions: dependent.stop_conditions,
+    });
+
+    if (!rc.ok) continue;
+
+    // Auto-transition to ready
+    try {
+      patchWorkOrder(repoPath, dependentId, { status: "ready" });
+      transitioned.push(dependentId);
+    } catch {
+      // Ignore errors, just skip this one
+    }
+  }
+
+  return transitioned;
 }
 
 export function topActiveWorkOrders(

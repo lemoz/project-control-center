@@ -42,6 +42,7 @@ type RunStatus =
   | "ai_review"
   | "testing"
   | "you_review"
+  | "merge_conflict"
   | "failed"
   | "canceled";
 
@@ -445,9 +446,11 @@ function WorkOrderCard({
         )}
       </div>
 
-      {latestRun?.status === "failed" && (
+      {(latestRun?.status === "failed" || latestRun?.status === "merge_conflict") && (
         <div className="error" style={{ marginTop: 10 }}>
-          <div style={{ fontWeight: 700 }}>Last run failed</div>
+          <div style={{ fontWeight: 700 }}>
+            {latestRun?.status === "merge_conflict" ? "Last run hit merge conflict" : "Last run failed"}
+          </div>
           <div style={{ marginTop: 6 }}>
             {latestRun.error?.trim() || "Unknown error"}
           </div>
