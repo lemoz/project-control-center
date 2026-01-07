@@ -13,6 +13,15 @@ type RunStatus =
   | "failed"
   | "canceled";
 
+type RunIterationHistory = {
+  iteration: number;
+  builder_summary: string | null;
+  builder_risks: string[];
+  tests: Array<{ command: string; passed: boolean; output: string }>;
+  reviewer_verdict: "approved" | "changes_requested" | null;
+  reviewer_notes: string[] | null;
+};
+
 type RunDetails = {
   id: string;
   project_id: string;
@@ -20,6 +29,7 @@ type RunDetails = {
   provider: string;
   status: RunStatus;
   iteration: number;
+  builder_iteration: number;
   reviewer_verdict: "approved" | "changes_requested" | null;
   reviewer_notes: string | null;
   summary: string | null;
@@ -36,6 +46,7 @@ type RunDetails = {
   builder_log_tail?: string;
   reviewer_log_tail?: string;
   tests_log_tail?: string;
+  iteration_history?: RunIterationHistory[];
 };
 
 export function RunDetails({ runId }: { runId: string }) {
@@ -115,8 +126,8 @@ export function RunDetails({ runId }: { runId: string }) {
         {!!run && (
           <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
             <div className="muted" style={{ fontSize: 12 }}>
-              Provider: <code>{run.provider}</code> · Work Order: <code>{run.work_order_id}</code> · Iteration:{" "}
-              <code>{run.iteration}</code>
+              Provider: <code>{run.provider}</code> · Work Order: <code>{run.work_order_id}</code> · Builder iteration:{" "}
+              <code>{run.builder_iteration ?? run.iteration}</code>
             </div>
             <div className="muted" style={{ fontSize: 12 }}>
               Branch: <code>{run.branch_name || "n/a"}</code> · Merge:{" "}
@@ -168,6 +179,80 @@ export function RunDetails({ runId }: { runId: string }) {
         </section>
       )}
 
+      {!!run?.iteration_history?.length && (
+        <section className="card">
+          <div style={{ fontWeight: 800 }}>Builder Iterations</div>
+          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 10 }}>
+            {run.iteration_history.map((entry, idx) => {
+              const failed = entry.tests.some((test) => !test.passed);
+              const isLast = idx === run.iteration_history!.length - 1;
+              return (
+                <details key={entry.iteration} open={isLast}>
+                  <summary className="muted" style={{ cursor: "pointer", userSelect: "none" }}>
+                    Iteration {entry.iteration} · {failed ? "tests failed" : "tests passed"}
+                  </summary>
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontWeight: 700 }}>Builder summary</div>
+                    <div style={{ marginTop: 6, whiteSpace: "pre-wrap", lineHeight: 1.4 }}>
+                      {entry.builder_summary || "(no summary)"}
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ fontWeight: 700 }}>Tests</div>
+                    {entry.tests.length ? (
+                      entry.tests.map((test, testIdx) => (
+                        <div key={`${test.command}-${testIdx}`} style={{ marginTop: 8 }}>
+                          <div className="muted" style={{ fontSize: 12 }}>
+                            {test.command} · {test.passed ? "passed" : "failed"}
+                          </div>
+                          {test.output ? (
+                            <pre
+                              style={{
+                                marginTop: 6,
+                                whiteSpace: "pre-wrap",
+                                fontSize: 12,
+                                lineHeight: 1.35,
+                                maxHeight: 240,
+                                overflow: "auto",
+                              }}
+                            >
+                              {test.output}
+                            </pre>
+                          ) : (
+                            <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                              (no output captured)
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                        (no tests recorded)
+                      </div>
+                    )}
+                  </div>
+                  {entry.reviewer_verdict && (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={{ fontWeight: 700 }}>Reviewer</div>
+                      <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                        {entry.reviewer_verdict}
+                      </div>
+                      {!!entry.reviewer_notes?.length && (
+                        <ul style={{ marginTop: 6, marginBottom: 0, paddingLeft: 18 }}>
+                          {entry.reviewer_notes.map((note, noteIdx) => (
+                            <li key={`${note}-${noteIdx}`}>{note}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                </details>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {!!run && (
         <section className="card">
           <div style={{ fontWeight: 800 }}>Logs</div>
@@ -193,7 +278,7 @@ export function RunDetails({ runId }: { runId: string }) {
             </pre>
             <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
               Builder log file:{" "}
-              <code>{`${run.run_dir}/builder/iter-${run.iteration}/codex.log`}</code>
+              <code>{`${run.run_dir}/builder/iter-${run.builder_iteration ?? run.iteration}/codex.log`}</code>
             </div>
           </details>
 

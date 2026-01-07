@@ -34,6 +34,7 @@ export type RunnerSettings = {
   builder: ProviderSettings;
   reviewer: ProviderSettings;
   useWorktree: boolean;
+  maxBuilderIterations: number;
 };
 
 export type RunnerSettingsResponse = {
@@ -42,6 +43,7 @@ export type RunnerSettingsResponse = {
   env_overrides: {
     codex_model?: string;
     codex_path?: string;
+    max_builder_iterations?: number;
   };
 };
 
@@ -71,6 +73,7 @@ const RunnerSettingsSchema = z.object({
   builder: ProviderSettingsSchema,
   reviewer: ProviderSettingsSchema,
   useWorktree: z.boolean().default(true),
+  maxBuilderIterations: z.number().int().min(1).max(20).default(3),
 });
 
 const RunnerSettingsPatchSchema = z
@@ -78,6 +81,7 @@ const RunnerSettingsPatchSchema = z
     builder: ProviderSettingsSchema.partial().optional(),
     reviewer: ProviderSettingsSchema.partial().optional(),
     useWorktree: z.boolean().optional(),
+    maxBuilderIterations: z.number().int().min(1).max(20).optional(),
   })
   .strict();
 
@@ -86,6 +90,7 @@ const SidecarRunnerOverrideSchema = z
     builder: ProviderSettingsSchema.partial().optional(),
     reviewer: ProviderSettingsSchema.partial().optional(),
     useWorktree: z.boolean().optional(),
+    maxBuilderIterations: z.number().int().min(1).max(20).optional(),
   })
   .passthrough();
 
@@ -97,6 +102,7 @@ function defaults(): RunnerSettings {
     builder: { provider: "codex", model: "", cliPath: "" },
     reviewer: { provider: "codex", model: "", cliPath: "" },
     useWorktree: true,
+    maxBuilderIterations: 3,
   };
 }
 
@@ -179,6 +185,17 @@ function applyEnvOverrides(settings: RunnerSettings): RunnerSettingsResponse["en
 } {
   const codex_model = process.env.CONTROL_CENTER_CODEX_MODEL || process.env.CODEX_MODEL || undefined;
   const codex_path = process.env.CONTROL_CENTER_CODEX_PATH || undefined;
+  const max_builder_iterations_raw =
+    process.env.CONTROL_CENTER_MAX_BUILDER_ITERATIONS ||
+    process.env.CONTROL_CENTER_MAX_RUN_ITERATIONS ||
+    undefined;
+  const max_builder_iterations_value = max_builder_iterations_raw
+    ? Math.trunc(Number(max_builder_iterations_raw))
+    : NaN;
+  const max_builder_iterations =
+    Number.isFinite(max_builder_iterations_value) && max_builder_iterations_value >= 1
+      ? Math.min(max_builder_iterations_value, 20)
+      : undefined;
 
   const apply = (s: ProviderSettings): ProviderSettings => {
     if (s.provider !== "codex") return s;
@@ -192,10 +209,12 @@ function applyEnvOverrides(settings: RunnerSettings): RunnerSettingsResponse["en
   return {
     codex_model,
     codex_path,
+    max_builder_iterations,
     effective: {
       builder: apply(settings.builder),
       reviewer: apply(settings.reviewer),
       useWorktree: settings.useWorktree,
+      maxBuilderIterations: max_builder_iterations ?? settings.maxBuilderIterations,
     },
   };
 }
@@ -262,6 +281,9 @@ function applySidecarOverrides(repoPath: string, settings: RunnerSettings): Runn
   return normalizeSettings({
     ...settings,
     ...(override.useWorktree !== undefined ? { useWorktree: override.useWorktree } : {}),
+    ...(override.maxBuilderIterations !== undefined
+      ? { maxBuilderIterations: override.maxBuilderIterations }
+      : {}),
     builder: { ...settings.builder, ...(override.builder || {}) },
     reviewer: { ...settings.reviewer, ...(override.reviewer || {}) },
   });
@@ -276,6 +298,7 @@ export function getRunnerSettingsResponse(): RunnerSettingsResponse {
     env_overrides: {
       codex_model: env.codex_model,
       codex_path: env.codex_path,
+      max_builder_iterations: env.max_builder_iterations,
     },
   };
 }
@@ -286,6 +309,9 @@ export function patchRunnerSettings(input: unknown): RunnerSettingsResponse {
   const merged = normalizeSettings({
     ...saved,
     ...(patch.useWorktree !== undefined ? { useWorktree: patch.useWorktree } : {}),
+    ...(patch.maxBuilderIterations !== undefined
+      ? { maxBuilderIterations: patch.maxBuilderIterations }
+      : {}),
     builder: { ...saved.builder, ...(patch.builder || {}) },
     reviewer: { ...saved.reviewer, ...(patch.reviewer || {}) },
   });
@@ -299,6 +325,7 @@ export function patchRunnerSettings(input: unknown): RunnerSettingsResponse {
     env_overrides: {
       codex_model: env.codex_model,
       codex_path: env.codex_path,
+      max_builder_iterations: env.max_builder_iterations,
     },
   };
 }
@@ -313,6 +340,7 @@ export function resolveRunnerSettingsForRepo(repoPath: string): RunnerSettingsRe
     env_overrides: {
       codex_model: env.codex_model,
       codex_path: env.codex_path,
+      max_builder_iterations: env.max_builder_iterations,
     },
   };
 }
