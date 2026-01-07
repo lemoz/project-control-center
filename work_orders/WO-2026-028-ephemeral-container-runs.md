@@ -1,48 +1,40 @@
 ---
 id: WO-2026-028
 title: Ephemeral Container Runs
-goal: Execute each builder run in a fresh ephemeral container on the project's VM, providing clean isolated environments that spin up, do the work, and tear down - ensuring reproducible builds with no state leakage between runs.
+goal: Execute each builder run inside a fresh container on the project VM, with cleanup and artifact capture per run.
 context:
-  - server/runner_agent.ts (current runner implementation)
-  - WO-2026-027 (VM-based project isolation - containers run on project VMs)
-  - WO-2026-020 (git worktree isolation - replaced by containers)
+  - work_orders/WO-2026-027-vm-based-project-isolation.md (VM isolation foundation)
+  - server/runner_agent.ts (execution path)
+  - server/index.ts (API wiring)
+  - docs/work_orders.md (contract)
 acceptance_criteria:
-  - Each builder run spins up a fresh Docker container on the project's VM
-  - Container image based on project type (Node, Python, etc.) with appropriate tooling
-  - Repo cloned fresh into container or mounted from VM host
-  - Container has resource limits (CPU, memory) configurable per project
-  - Container torn down after run completes (success or failure)
-  - Container logs captured and stored with run artifacts
-  - Parallel runs use separate containers (true parallelism)
-  - Container startup time under 30 seconds for warm images
-  - Build caches can optionally persist between runs (mounted volume)
-  - Support for custom Dockerfiles per project for special requirements
+  - Each builder run on a VM executes inside a fresh container; the container is removed on completion or failure.
+  - Base image selection is driven by project type with optional .control-container.yml overrides.
+  - Container execution captures logs, exit codes, and diff/test artifacts, and stores them in the run artifacts location.
+  - Optional cache volumes can be mounted to speed installs without polluting the run workspace.
+  - If docker is unavailable or fails to start, runner falls back to non-container execution and records the reason.
 non_goals:
-  - Container orchestration (Kubernetes, Swarm) - simple Docker on VM
-  - Multi-container compositions (docker-compose) - single container per run
-  - Container image registry management - use public images or build locally
-  - Windows containers
+  - Kubernetes or cloud-run orchestration.
+  - Long-lived containers or shared workspaces between runs.
+  - Reviewer or tester isolation beyond the builder/test container.
 stop_conditions:
-  - If container startup consistently exceeds 60 seconds, investigate image optimization or pre-warming
-  - If Docker-in-Docker causes issues, consider alternatives (Podman, direct VM execution)
-  - If resource limits cause OOM kills frequently, improve limit detection and adjustment
-priority: 2
+  - If docker is not installed on the VM and auto-install is not approved, stop and report.
+  - If resource limits or security constraints cannot be enforced, stop and ask.
+priority: 3
 tags:
-  - infrastructure
+  - runner
+  - infra
   - isolation
   - containers
-  - docker
-  - runner
-  - autonomy
-estimate_hours: 12
+estimate_hours: 6
 status: ready
 created_at: 2026-01-06
-updated_at: 2026-01-06
+updated_at: 2026-01-07
 depends_on:
+  - WO-2025-004
   - WO-2026-027
-era: autonomous
+era: v1
 ---
-
 # Ephemeral Container Runs
 
 ## Overview

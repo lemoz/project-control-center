@@ -1,49 +1,41 @@
 ---
 id: WO-2026-027
 title: VM-Based Project Isolation
-goal: Give each project its own dedicated VM so projects are completely isolated from each other - different machines, different resources, no interference. PCC orchestrates remotely while execution happens on project-specific VMs.
+goal: Provision per-project VMs and route runner execution through them with SSH-based lifecycle management and a local fallback.
 context:
-  - server/runner_agent.ts (current local execution)
-  - server/repos.ts (project discovery and metadata)
-  - server/db.ts (project tracking)
-  - DECISIONS.md (mentions isolated execution targets)
+  - docs/work_orders.md (contract)
+  - DECISIONS.md (future isolated execution targets)
+  - server/runner_agent.ts (execution path)
+  - server/index.ts (API routes)
+  - server/db.ts (schema/migrations)
+  - app/projects/[id]/page.tsx (project overview UI)
 acceptance_criteria:
-  - Each project can be assigned a dedicated VM (GCP Compute Engine initially)
-  - VM provisioning API - create VM for project with specified size/resources
-  - VM lifecycle management - start, stop, delete, resize
-  - SSH key management for secure remote execution
-  - Project state (git repo) lives on the VM, cloned on first provision
-  - PCC can execute commands on project VM remotely via SSH
-  - VM status shown in project dashboard (running, stopped, not provisioned)
-  - Cost tracking per project (VM hours, estimated monthly cost)
-  - Support for right-sizing - small projects get small VMs, large projects get more resources
-  - Graceful fallback to local execution if VM not provisioned
+  - Add a project_vms table with fields for instance name, zone, IPs, size, status, timestamps, and usage totals.
+  - Expose VM lifecycle endpoints (provision/start/stop/delete/resize/get) under /repos/:id/vm with input validation and error reporting.
+  - Runner selects remote execution when a VM is configured and running; otherwise it falls back to local execution.
+  - UI exposes VM status, size, and basic controls (provision/start/stop/resize/delete) on the project page.
+  - Per-project SSH keypair is generated and stored locally; outbound SSH is the only required access path.
 non_goals:
-  - Multi-cloud support (GCP only for v1)
-  - Auto-scaling or load balancing
-  - Kubernetes or container orchestration platforms
-  - Windows VMs (Linux only)
-  - GPU instances (future work order)
+  - Containerized runs (handled in WO-2026-028).
+  - Multi-cloud providers or autoscaling.
+  - Automatic secrets distribution beyond existing env handling.
 stop_conditions:
-  - If GCP provisioning is too slow (over 2 minutes), investigate preemptible pools or warm instances
-  - If SSH connectivity is unreliable, consider alternative remote execution (Cloud Run, etc.)
-  - If costs exceed reasonable limits, add hard caps and alerts
-priority: 2
+  - If GCP API access or credentials are unavailable, stop and report.
+  - If SSH key storage or VM networking is unclear, stop and ask.
+priority: 3
 tags:
-  - infrastructure
+  - runner
+  - infra
   - isolation
   - vm
-  - gcp
-  - autonomy
-estimate_hours: 16
+estimate_hours: 8
 status: ready
 created_at: 2026-01-06
-updated_at: 2026-01-06
+updated_at: 2026-01-07
 depends_on:
   - WO-2025-004
-era: autonomous
+era: v1
 ---
-
 # VM-Based Project Isolation
 
 ## Overview
