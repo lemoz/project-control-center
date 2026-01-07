@@ -63,6 +63,7 @@ Optional env vars:
 - `CONTROL_CENTER_SCAN_ROOTS=/path/to/repos,/another/path` (comma-separated; defaults to `$HOME`)
 - `CONTROL_CENTER_ALLOWED_ORIGINS=http://localhost:3010` (comma-separated CORS allowlist for browser calls; defaults include `http://localhost:3000` and `http://localhost:3010-3013` plus `127.0.0.1` equivalents)
 - `CONTROL_CENTER_CORS_ALLOW_ALL=1` (dev-only + loopback-only: disables the allowlist when `NODE_ENV != "production"` and `CONTROL_CENTER_HOST` is loopback)
+- `CONTROL_CENTER_MAX_BUILDER_ITERATIONS=3` (caps builder/test retries before failing a run)
 - `CONTROL_CENTER_CHAT_SUGGESTION_CONTEXT_MESSAGES=10` (how many recent thread messages + run metadata to include when generating Access+Context suggestions)
 - `CONTROL_CENTER_CHAT_TRUSTED_HOSTS=github.com,raw.githubusercontent.com` (comma- or newline-separated host list for the chat "trusted" network pack; overrides Chat Settings)
 

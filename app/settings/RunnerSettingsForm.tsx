@@ -14,6 +14,7 @@ type RunnerSettings = {
   builder: ProviderSettings;
   reviewer: ProviderSettings;
   useWorktree: boolean;
+  maxBuilderIterations: number;
 };
 
 type SettingsResponse = {
@@ -22,6 +23,7 @@ type SettingsResponse = {
   env_overrides: {
     codex_model?: string;
     codex_path?: string;
+    max_builder_iterations?: number;
   };
   error?: string;
 };
@@ -37,6 +39,7 @@ function emptySettings(): RunnerSettings {
     builder: { provider: "codex", model: "", cliPath: "" },
     reviewer: { provider: "codex", model: "", cliPath: "" },
     useWorktree: true,
+    maxBuilderIterations: 3,
   };
 }
 
@@ -121,6 +124,11 @@ export function RunnerSettingsForm() {
     return `Codex ${parts.join(" + ")} overridden by env.`;
   }, [env.codex_model, env.codex_path]);
 
+  const maxIterationsEnvNote = useMemo(() => {
+    if (!env.max_builder_iterations) return null;
+    return `Max builder iterations overridden by env.`;
+  }, [env.max_builder_iterations]);
+
   return (
     <section className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
@@ -152,6 +160,11 @@ export function RunnerSettingsForm() {
               {codexEnvNote} (`CONTROL_CENTER_CODEX_MODEL` / `CODEX_MODEL`, `CONTROL_CENTER_CODEX_PATH`)
             </div>
           )}
+          {!!maxIterationsEnvNote && (
+            <div className="muted" style={{ fontSize: 12 }}>
+              {maxIterationsEnvNote} (`CONTROL_CENTER_MAX_BUILDER_ITERATIONS`)
+            </div>
+          )}
 
           <div className="field">
             <div className="fieldLabel muted">Worktree isolation</div>
@@ -167,6 +180,31 @@ export function RunnerSettingsForm() {
             </label>
             <div className="muted" style={{ fontSize: 12 }}>
               Disable to fall back to the legacy direct-to-repo flow.
+            </div>
+          </div>
+
+          <div className="field">
+            <div className="fieldLabel muted">Max builder iterations</div>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={20}
+              value={draft.maxBuilderIterations}
+              onChange={(e) =>
+                setDraft((prev) => ({
+                  ...prev,
+                  maxBuilderIterations: Math.max(1, Math.min(20, Math.trunc(Number(e.target.value) || 1))),
+                }))
+              }
+            />
+            {effective.maxBuilderIterations !== saved.maxBuilderIterations && (
+              <div className="muted" style={{ fontSize: 12 }}>
+                Effective: <code>{effective.maxBuilderIterations}</code>
+              </div>
+            )}
+            <div className="muted" style={{ fontSize: 12 }}>
+              Caps test-failure retries before the run is marked failed.
             </div>
           </div>
 

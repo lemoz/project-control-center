@@ -33,6 +33,7 @@ export type RunRow = {
     | "failed"
     | "canceled";
   iteration: number;
+  builder_iteration: number;
   reviewer_verdict: "approved" | "changes_requested" | null;
   reviewer_notes: string | null; // JSON array
   summary: string | null;
@@ -114,6 +115,7 @@ function initSchema(database: Database.Database) {
       provider TEXT NOT NULL,
       status TEXT NOT NULL,
       iteration INTEGER NOT NULL DEFAULT 1,
+      builder_iteration INTEGER NOT NULL DEFAULT 1,
       reviewer_verdict TEXT,
       reviewer_notes TEXT,
       summary TEXT,
@@ -278,6 +280,7 @@ function initSchema(database: Database.Database) {
   const hasBranchName = runColumns.some((c) => c.name === "branch_name");
   const hasMergeStatus = runColumns.some((c) => c.name === "merge_status");
   const hasConflictWithRunId = runColumns.some((c) => c.name === "conflict_with_run_id");
+  const hasBuilderIteration = runColumns.some((c) => c.name === "builder_iteration");
   if (!hasBranchName) {
     database.exec("ALTER TABLE runs ADD COLUMN branch_name TEXT;");
   }
@@ -286,6 +289,9 @@ function initSchema(database: Database.Database) {
   }
   if (!hasConflictWithRunId) {
     database.exec("ALTER TABLE runs ADD COLUMN conflict_with_run_id TEXT;");
+  }
+  if (!hasBuilderIteration) {
+    database.exec("ALTER TABLE runs ADD COLUMN builder_iteration INTEGER NOT NULL DEFAULT 1;");
   }
 
   // chat_threads migrations
@@ -560,9 +566,9 @@ export function createRun(run: RunRow): void {
   database
     .prepare(
       `INSERT INTO runs
-        (id, project_id, work_order_id, provider, status, iteration, reviewer_verdict, reviewer_notes, summary, branch_name, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error)
+        (id, project_id, work_order_id, provider, status, iteration, builder_iteration, reviewer_verdict, reviewer_notes, summary, branch_name, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error)
        VALUES
-        (@id, @project_id, @work_order_id, @provider, @status, @iteration, @reviewer_verdict, @reviewer_notes, @summary, @branch_name, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error)`
+        (@id, @project_id, @work_order_id, @provider, @status, @iteration, @builder_iteration, @reviewer_verdict, @reviewer_notes, @summary, @branch_name, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error)`
     )
     .run(run);
 }
@@ -574,6 +580,7 @@ export function updateRun(
       RunRow,
       | "status"
       | "iteration"
+      | "builder_iteration"
       | "reviewer_verdict"
       | "reviewer_notes"
       | "summary"
@@ -590,6 +597,7 @@ export function updateRun(
   const fields: Array<{ key: keyof typeof patch; column: string }> = [
     { key: "status", column: "status" },
     { key: "iteration", column: "iteration" },
+    { key: "builder_iteration", column: "builder_iteration" },
     { key: "reviewer_verdict", column: "reviewer_verdict" },
     { key: "reviewer_notes", column: "reviewer_notes" },
     { key: "summary", column: "summary" },

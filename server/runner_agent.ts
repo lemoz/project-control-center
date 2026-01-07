@@ -18,7 +18,8 @@ import {
 } from "./work_orders.js";
 import { resolveRunnerSettingsForRepo } from "./settings.js";
 
-const DEFAULT_MAX_ITERATIONS = 5;
+const DEFAULT_MAX_BUILDER_ITERATIONS = 3;
+const MAX_TEST_OUTPUT_LINES = 200;
 
 const IGNORE_DIRS = new Set([
   ".git",
@@ -243,6 +244,59 @@ function tailFile(filePath: string, maxBytes = 24_000): string {
   } catch {
     return "";
   }
+}
+
+function createOutputCapture(maxLines: number) {
+  let buffer = "";
+  const lines: string[] = [];
+  let truncated = false;
+
+  const pushChunk = (buf: Buffer) => {
+    buffer += buf.toString("utf8");
+    const parts = buffer.split(/\r?\n/);
+    buffer = parts.pop() ?? "";
+    for (const line of parts) {
+      lines.push(line);
+      if (lines.length > maxLines) {
+        lines.shift();
+        truncated = true;
+      }
+    }
+  };
+
+  const finalize = () => {
+    if (buffer) {
+      lines.push(buffer);
+      buffer = "";
+      if (lines.length > maxLines) {
+        lines.splice(0, lines.length - maxLines);
+        truncated = true;
+      }
+    }
+    return { text: lines.join("\n").trimEnd(), truncated };
+  };
+
+  return { pushChunk, finalize };
+}
+
+function formatTestOutput(output: string, truncated: boolean, maxLines: number): string {
+  const trimmed = output.trim();
+  if (!trimmed) return "(no test output captured)";
+  if (!truncated) return output.trimEnd();
+  return `...(truncated to last ${maxLines} lines)\n${output.trimEnd()}`;
+}
+
+function buildTestFailureOutput(
+  tests: Array<{ command: string; passed: boolean; output?: string }>
+): string | null {
+  const failures = tests.filter((t) => !t.passed);
+  if (!failures.length) return null;
+  return failures
+    .map((test) => {
+      const output = test.output?.trim();
+      return `Command: ${test.command}\n${output || "(no output)"}`;
+    })
+    .join("\n\n");
 }
 
 function copySnapshot(srcRoot: string, dstRoot: string) {
@@ -751,9 +805,21 @@ function buildBuilderPrompt(params: {
   workOrderMarkdown: string;
   workOrder: WorkOrder;
   iteration: number;
+  maxIterations: number;
   reviewerFeedback?: string;
+  testFailureOutput?: string | null;
 }) {
   const feedback = params.reviewerFeedback?.trim();
+  const testFailureOutput = params.testFailureOutput?.trim();
+  const iterationLine = `This is iteration ${params.iteration} of ${params.maxIterations}.\n\n`;
+  const failureBlock = testFailureOutput
+    ? `## Previous Attempt Failed\n\n` +
+      `Your previous implementation failed tests. Here's the output:\n\n` +
+      "```\n" +
+      `${testFailureOutput}\n` +
+      "```\n\n" +
+      "Please analyze the failure and fix the issues.\n\n"
+    : "";
   return `You are the Builder agent.\n\n` +
     `Task: Implement the Work Order in this repository.\n\n` +
     `Rules:\n` +
@@ -762,6 +828,8 @@ function buildBuilderPrompt(params: {
     `- Do NOT edit the Work Order file itself.\n` +
     `- Prefer minimal, high-quality changes; update docs/tests if needed.\n` +
     `- At the end, output a JSON object matching the required schema.\n\n` +
+    iterationLine +
+    failureBlock +
     (feedback ? `Reviewer feedback to address:\n${feedback}\n\n` : "") +
     `Work Order (${params.workOrder.id}):\n\n` +
     `${params.workOrderMarkdown}\n`;
@@ -848,6 +916,15 @@ type ConflictContext = {
   } | null;
   conflictFiles: string[];
   gitConflictOutput: string;
+};
+
+type RunIterationHistoryEntry = {
+  iteration: number;
+  builder_summary: string | null;
+  builder_risks: string[];
+  tests: Array<{ command: string; passed: boolean; output: string }>;
+  reviewer_verdict: "approved" | "changes_requested" | null;
+  reviewer_notes: string[] | null;
 };
 
 function buildConflictContext(params: {
@@ -995,7 +1072,7 @@ function findConflictingRun(params: {
   return pool[0] || null;
 }
 
-async function runRepoTests(repoPath: string, runDir: string) {
+async function runRepoTests(repoPath: string, runDir: string, iteration: number) {
   const pkgPath = path.join(repoPath, "package.json");
   if (!fs.existsSync(pkgPath)) {
     return [{ command: "(no tests)", passed: true, output: "No package.json found." }];
@@ -1020,7 +1097,8 @@ async function runRepoTests(repoPath: string, runDir: string) {
   const logPath = path.join(runDir, "tests", "npm-test.log");
   ensureDir(path.dirname(logPath));
   const logStream = fs.createWriteStream(logPath, { flags: "a" });
-  logStream.write(`[${nowIso()}] npm test start\n`);
+  logStream.write(`[${nowIso()}] npm test start (iter ${iteration})\n`);
+  const outputCapture = createOutputCapture(MAX_TEST_OUTPUT_LINES);
 
   const child = spawn(npmCommand(), ["test"], {
     cwd: repoPath,
@@ -1032,18 +1110,30 @@ async function runRepoTests(repoPath: string, runDir: string) {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  child.stdout?.on("data", (buf) => logStream.write(buf));
-  child.stderr?.on("data", (buf) => logStream.write(buf));
+  child.stdout?.on("data", (buf) => {
+    logStream.write(buf);
+    outputCapture.pushChunk(buf);
+  });
+  child.stderr?.on("data", (buf) => {
+    logStream.write(buf);
+    outputCapture.pushChunk(buf);
+  });
 
   const exitCode: number = await new Promise((resolve) => {
     child.on("close", (code) => resolve(code ?? 1));
     child.on("error", () => resolve(1));
   });
 
+  const captured = outputCapture.finalize();
+  const outputTail = formatTestOutput(
+    captured.text,
+    captured.truncated,
+    MAX_TEST_OUTPUT_LINES
+  );
+
   logStream.write(`[${nowIso()}] npm test end exit=${exitCode}\n`);
   logStream.end();
 
-  const outputTail = tailFile(logPath, 12_000);
   return [
     {
       command: "npm test",
@@ -1163,18 +1253,30 @@ export async function runRun(runId: string) {
     if (!fs.existsSync(reviewerSchemaPath))
       writeJson(reviewerSchemaPath, reviewerSchema());
 
-    const maxIterations = Number(
-      process.env.CONTROL_CENTER_MAX_RUN_ITERATIONS || DEFAULT_MAX_ITERATIONS
+    const maxIterations = Math.max(
+      1,
+      Math.trunc(
+        Number.isFinite(runnerSettings.maxBuilderIterations)
+          ? runnerSettings.maxBuilderIterations
+          : DEFAULT_MAX_BUILDER_ITERATIONS
+      )
     );
     let reviewerFeedback: string | undefined;
     let approvedSummary: string | null = null;
     let reviewerVerdict: "approved" | "changes_requested" | null = null;
     let reviewerNotes: string[] = [];
+    let testFailureOutput: string | null = null;
+    const iterationHistory: RunIterationHistoryEntry[] = [];
+    const iterationHistoryPath = path.join(runDir, "iteration_history.json");
+    const writeIterationHistory = () => {
+      writeJson(iterationHistoryPath, iterationHistory);
+    };
 
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
       updateRun(runId, {
         status: "building",
         iteration,
+        builder_iteration: iteration,
         reviewer_verdict: null,
         reviewer_notes: null,
       });
@@ -1189,7 +1291,9 @@ export async function runRun(runId: string) {
         workOrderMarkdown,
         workOrder,
         iteration,
+        maxIterations,
         reviewerFeedback,
+        testFailureOutput,
       });
       fs.writeFileSync(path.join(builderDir, "prompt.txt"), builderPrompt, "utf8");
 
@@ -1248,6 +1352,55 @@ export async function runRun(runId: string) {
         diffPatch,
         "utf8"
       );
+
+      const historyEntry: RunIterationHistoryEntry = {
+        iteration,
+        builder_summary: builderResult?.summary ?? null,
+        builder_risks: builderResult?.risks ?? [],
+        tests: [],
+        reviewer_verdict: null,
+        reviewer_notes: null,
+      };
+
+      updateRun(runId, { status: "testing" });
+      log(`Running tests (iter ${iteration})`);
+      let tests: Array<{ command: string; passed: boolean; output?: string }> = [];
+      try {
+        tests = await runRepoTests(worktreePath, runDir, iteration);
+        writeJson(path.join(runDir, "tests", "results.json"), tests);
+      } catch (err) {
+        tests = [{ command: "tests", passed: false, output: String(err) }];
+        writeJson(path.join(runDir, "tests", "results.json"), tests);
+      }
+
+      historyEntry.tests = tests.map((test) => ({
+        command: test.command,
+        passed: test.passed,
+        output: test.output ?? "",
+      }));
+
+      const anyFailed = tests.some((t) => !t.passed);
+      if (anyFailed) {
+        testFailureOutput = buildTestFailureOutput(tests);
+        iterationHistory.push(historyEntry);
+        writeIterationHistory();
+        log(`Tests failed on iteration ${iteration}`);
+        if (iteration >= maxIterations) {
+          updateRun(runId, {
+            status: "failed",
+            error: `Tests failed after ${iteration} iterations`,
+            finished_at: nowIso(),
+            reviewer_verdict: reviewerVerdict,
+            reviewer_notes: reviewerNotes.length ? JSON.stringify(reviewerNotes) : null,
+            summary: builderResult?.summary || approvedSummary || null,
+          });
+          log("Tests failed; run marked failed");
+          return;
+        }
+        continue;
+      }
+
+      testFailureOutput = null;
 
       updateRun(runId, { status: "ai_review" });
       log(`Reviewer iteration ${iteration} starting`);
@@ -1323,6 +1476,11 @@ export async function runRun(runId: string) {
         reviewer_notes: JSON.stringify(reviewerNotes),
       });
 
+      historyEntry.reviewer_verdict = reviewerVerdict;
+      historyEntry.reviewer_notes = reviewerNotes;
+      iterationHistory.push(historyEntry);
+      writeIterationHistory();
+
       if (verdict.status === "approved") {
         approvedSummary = builderResult?.summary || "(no builder summary)";
         log(`Reviewer approved on iteration ${iteration}`);
@@ -1339,33 +1497,8 @@ export async function runRun(runId: string) {
         error: "Reviewer did not approve within max iterations",
         finished_at: nowIso(),
         reviewer_verdict: reviewerVerdict,
-        reviewer_notes: JSON.stringify(reviewerNotes),
+        reviewer_notes: reviewerNotes.length ? JSON.stringify(reviewerNotes) : null,
       });
-      return;
-    }
-
-    updateRun(runId, { status: "testing" });
-    log("Running tests");
-    let tests: Array<{ command: string; passed: boolean; output?: string }> = [];
-    try {
-      tests = await runRepoTests(worktreePath, runDir);
-      writeJson(path.join(runDir, "tests", "results.json"), tests);
-    } catch (err) {
-      tests = [{ command: "tests", passed: false, output: String(err) }];
-      writeJson(path.join(runDir, "tests", "results.json"), tests);
-    }
-
-    const anyFailed = tests.some((t) => !t.passed);
-    if (anyFailed) {
-      updateRun(runId, {
-        status: "failed",
-        error: "Tests failed",
-        finished_at: nowIso(),
-        reviewer_verdict: "approved",
-        reviewer_notes: JSON.stringify(reviewerNotes),
-        summary: approvedSummary,
-      });
-      log("Tests failed; run marked failed");
       return;
     }
 
@@ -1891,6 +2024,7 @@ export function enqueueCodexRun(projectId: string, workOrderId: string): RunRow 
     provider: "codex",
     status: "queued",
     iteration: 1,
+    builder_iteration: 1,
     reviewer_verdict: null,
     reviewer_notes: null,
     summary: null,
@@ -1929,24 +2063,31 @@ export type RunDetails = RunRow & {
   builder_log_tail: string;
   reviewer_log_tail: string;
   tests_log_tail: string;
+  iteration_history: RunIterationHistoryEntry[];
 };
 
 export function getRun(runId: string): RunDetails | null {
   const run = getRunById(runId);
   if (!run) return null;
+  const builderIteration = run.builder_iteration || run.iteration || 1;
+  const reviewerIteration = run.iteration || builderIteration;
   const builderLogPath = path.join(
     run.run_dir,
     "builder",
-    `iter-${run.iteration}`,
+    `iter-${builderIteration}`,
     "codex.log"
   );
   const reviewerLogPath = path.join(
     run.run_dir,
     "reviewer",
-    `iter-${run.iteration}`,
+    `iter-${reviewerIteration}`,
     "codex.log"
   );
   const testsLogPath = path.join(run.run_dir, "tests", "npm-test.log");
+  const iterationHistory =
+    readJsonIfExists<RunIterationHistoryEntry[]>(
+      path.join(run.run_dir, "iteration_history.json")
+    ) || [];
 
   return {
     ...run,
@@ -1954,6 +2095,7 @@ export function getRun(runId: string): RunDetails | null {
     builder_log_tail: tailFile(builderLogPath),
     reviewer_log_tail: tailFile(reviewerLogPath),
     tests_log_tail: tailFile(testsLogPath),
+    iteration_history: iterationHistory,
   };
 }
 

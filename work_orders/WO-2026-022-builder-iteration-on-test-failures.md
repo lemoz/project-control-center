@@ -29,14 +29,13 @@ tags:
   - testing
   - autonomy
 estimate_hours: 6
-status: ready
+status: you_review
 created_at: 2026-01-06
-updated_at: 2026-01-06
+updated_at: 2026-01-07
 depends_on:
   - WO-2025-004
 era: autonomous
 ---
-
 # Builder Iteration on Test Failures
 
 ## Goal
