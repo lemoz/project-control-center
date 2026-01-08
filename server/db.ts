@@ -166,6 +166,8 @@ function initSchema(database: Database.Database) {
       last_read_at TEXT,
       last_ack_at TEXT,
       archived_at TEXT,
+      worktree_path TEXT,
+      has_pending_changes INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
@@ -305,6 +307,8 @@ function initSchema(database: Database.Database) {
   const hasThreadLastReadAt = chatThreadColumns.some((c) => c.name === "last_read_at");
   const hasThreadLastAckAt = chatThreadColumns.some((c) => c.name === "last_ack_at");
   const hasThreadArchivedAt = chatThreadColumns.some((c) => c.name === "archived_at");
+  const hasThreadWorktreePath = chatThreadColumns.some((c) => c.name === "worktree_path");
+  const hasThreadPendingChanges = chatThreadColumns.some((c) => c.name === "has_pending_changes");
   if (!hasThreadName) {
     database.exec("ALTER TABLE chat_threads ADD COLUMN name TEXT NOT NULL DEFAULT '';");
   }
@@ -331,6 +335,12 @@ function initSchema(database: Database.Database) {
   }
   if (!hasThreadArchivedAt) {
     database.exec("ALTER TABLE chat_threads ADD COLUMN archived_at TEXT;");
+  }
+  if (!hasThreadWorktreePath) {
+    database.exec("ALTER TABLE chat_threads ADD COLUMN worktree_path TEXT;");
+  }
+  if (!hasThreadPendingChanges) {
+    database.exec("ALTER TABLE chat_threads ADD COLUMN has_pending_changes INTEGER NOT NULL DEFAULT 0;");
   }
 
   // chat_messages migrations

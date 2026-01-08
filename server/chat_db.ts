@@ -28,6 +28,8 @@ export type ChatThreadRow = {
   last_read_at: string | null;
   last_ack_at: string | null;
   archived_at: string | null;
+  worktree_path: string | null;
+  has_pending_changes: number;
   created_at: string;
   updated_at: string;
 };
@@ -259,6 +261,8 @@ export function createChatThread(params: {
       last_read_at,
       last_ack_at,
       archived_at,
+      worktree_path,
+      has_pending_changes,
       created_at,
       updated_at
     ) VALUES (
@@ -277,6 +281,8 @@ export function createChatThread(params: {
       NULL,
       NULL,
       NULL,
+      NULL,
+      0,
       @created_at,
       @updated_at
     )`
@@ -357,6 +363,8 @@ export function updateChatThread(params: {
   lastReadAt?: string | null;
   lastAckAt?: string | null;
   archivedAt?: string | null;
+  worktreePath?: string | null;
+  hasPendingChanges?: boolean;
 }): ChatThreadRow | null {
   const db = getDb();
   const existing = getChatThreadById(params.threadId);
@@ -391,6 +399,14 @@ export function updateChatThread(params: {
     params.lastAckAt === undefined ? existing.last_ack_at : params.lastAckAt;
   const archived_at =
     params.archivedAt === undefined ? existing.archived_at : params.archivedAt;
+  const worktree_path =
+    params.worktreePath === undefined ? existing.worktree_path : params.worktreePath;
+  const has_pending_changes =
+    params.hasPendingChanges === undefined
+      ? existing.has_pending_changes
+      : params.hasPendingChanges
+        ? 1
+        : 0;
 
   const threadUpdated =
     name !== existing.name ||
@@ -402,7 +418,9 @@ export function updateChatThread(params: {
     default_access_cli !== existing.default_access_cli ||
     default_access_network !== existing.default_access_network ||
     default_access_network_allowlist !== existing.default_access_network_allowlist ||
-    archived_at !== existing.archived_at;
+    archived_at !== existing.archived_at ||
+    worktree_path !== existing.worktree_path ||
+    has_pending_changes !== existing.has_pending_changes;
   const ackChanged = last_ack_at !== existing.last_ack_at;
 
   db.prepare(
@@ -419,6 +437,8 @@ export function updateChatThread(params: {
          last_read_at = ?,
          last_ack_at = ?,
          archived_at = ?,
+         worktree_path = ?,
+         has_pending_changes = ?,
          updated_at = ?
      WHERE id = ?`
   ).run(
@@ -434,6 +454,8 @@ export function updateChatThread(params: {
     last_read_at,
     last_ack_at,
     archived_at,
+    worktree_path,
+    has_pending_changes,
     now,
     params.threadId
   );
@@ -598,7 +620,12 @@ export function updateChatRun(
   patch: Partial<
     Pick<
       ChatRunRow,
-      "assistant_message_id" | "status" | "started_at" | "finished_at" | "error"
+      | "assistant_message_id"
+      | "status"
+      | "started_at"
+      | "finished_at"
+      | "error"
+      | "cwd"
     >
   >
 ): boolean {
@@ -609,6 +636,7 @@ export function updateChatRun(
     { key: "started_at", column: "started_at" },
     { key: "finished_at", column: "finished_at" },
     { key: "error", column: "error" },
+    { key: "cwd", column: "cwd" },
   ];
   const sets = fields
     .filter((f) => patch[f.key] !== undefined)

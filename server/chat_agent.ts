@@ -22,6 +22,7 @@ import {
   markChatPendingSendResolved,
   replaceChatRunCommands,
   updateChatRun,
+  updateChatThread,
   updateChatThreadSummary,
   type ChatMessageRole,
   type ChatRunCommandRow,
@@ -46,6 +47,7 @@ import {
 import { listWorkOrders, type WorkOrder } from "./work_orders.js";
 import { resolveChatSettings } from "./settings.js";
 import { ensurePortfolioWorkspace } from "./portfolio_workspace.js";
+import { ensureChatWorktree, readWorktreeStatus } from "./chat_worktree.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -407,6 +409,7 @@ function chatResponseJsonSchema(): object {
                 "work_order_set_status",
                 "repos_rescan",
                 "work_order_start_run",
+                "worktree_merge",
               ],
             },
             title: { type: "string" },
@@ -704,6 +707,8 @@ For every action, set \`payload_json\` to a JSON string encoding the payload obj
   When status changes to "done", dependents in backlog with satisfied ready contracts auto-transition to "ready".
 - repos_rescan payload_json: {}
 - work_order_start_run payload_json: {"projectId":"...","workOrderId":"..."}
+- worktree_merge payload_json: {}
+  Merge pending chat worktree changes into main and clean up the worktree.
 
 Guidelines for dependencies:
 - Use depends_on when a work order requires another to be completed first
@@ -755,7 +760,7 @@ Guidelines for dependencies:
     `\n` +
     `Behavior:\n` +
     `- If CLI access is enabled, use shell commands to discover context and perform operations like creating new project directories (mkdir + git init), then propose repos_rescan to register them.\n` +
-    `- Do NOT edit files inside existing repos directly; code changes go through Work Orders and the Builder.\n` +
+    `- If filesystem write access is granted, work only inside the isolated chat worktree; changes stay pending until the user merges them.\n` +
     `- Actions do nothing until the human clicks Apply.\n` +
     `- Prefer small, explicit, reviewable actions.\n` +
     `- Avoid network calls unless network access is enabled.\n` +
@@ -2239,7 +2244,7 @@ export async function runChatRun(runId: string): Promise<void> {
     // best-effort; keep going
   }
 
-  const refreshedThread = getChatThreadById(run.thread_id) ?? thread;
+  let refreshedThread = getChatThreadById(run.thread_id) ?? thread;
   const parsedContext = ChatContextSelectionSchema.safeParse({ depth: run.context_depth });
   const contextDepth = parsedContext.success ? parsedContext.data.depth : DEFAULT_CONTEXT.depth;
   const accessAllowlist = (() => {
@@ -2270,6 +2275,60 @@ export async function runChatRun(runId: string): Promise<void> {
     return;
   }
   const allowlist = buildAllowlist(access, settings.trusted_hosts ?? []);
+
+  let repoPath: string | null = null;
+  if (refreshedThread.scope !== "global") {
+    const projectId = refreshedThread.project_id;
+    const project = projectId ? findProjectById(projectId) : null;
+    if (!project) {
+      updateChatRun(runId, {
+        status: "failed",
+        error: "project not found",
+        finished_at: nowIso(),
+      });
+      return;
+    }
+    repoPath = project.path;
+  }
+
+  let runCwd = run.cwd;
+  let worktreeInfo:
+    | { worktreePath: string; branchName: string; baseBranch: string }
+    | null = null;
+  if (
+    repoPath &&
+    (access.filesystem === "read-write" ||
+      access.cli === "read-write" ||
+      refreshedThread.worktree_path)
+  ) {
+    try {
+      const ensured = ensureChatWorktree({
+        repoPath,
+        threadId: refreshedThread.id,
+        worktreePath: refreshedThread.worktree_path,
+      });
+      worktreeInfo = ensured;
+      runCwd = ensured.worktreePath;
+      if (runCwd !== run.cwd) {
+        updateChatRun(runId, { cwd: runCwd });
+      }
+      if (refreshedThread.worktree_path !== ensured.worktreePath) {
+        const updated = updateChatThread({
+          threadId: refreshedThread.id,
+          worktreePath: ensured.worktreePath,
+        });
+        if (updated) refreshedThread = updated;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      updateChatRun(runId, {
+        status: "failed",
+        error: `worktree creation failed: ${message}`,
+        finished_at: nowIso(),
+      });
+      return;
+    }
+  }
 
   const lastMessages = (() => {
     if (contextDepth === "minimal") {
@@ -2332,7 +2391,7 @@ export async function runChatRun(runId: string): Promise<void> {
 
   let commandSeq = 0;
   const insertCommand = (cwd: string | undefined, command: string) => {
-    const resolvedCwd = cwd ?? run.cwd;
+    const resolvedCwd = cwd ?? runCwd;
     commandSeq += 1;
     insertChatRunCommand({
       runId,
@@ -2348,7 +2407,7 @@ export async function runChatRun(runId: string): Promise<void> {
     if (!parsed.length) return false;
 
     const normalized = parsed.map((cmd) => ({
-      cwd: cmd.cwd ?? run.cwd,
+      cwd: cmd.cwd ?? runCwd,
       command: cmd.command,
     }));
 
@@ -2360,7 +2419,7 @@ export async function runChatRun(runId: string): Promise<void> {
   };
 
   const { skipGitRepoCheck } = (() => ({
-    skipGitRepoCheck: shouldSkipGitRepoCheck(run.cwd),
+    skipGitRepoCheck: shouldSkipGitRepoCheck(runCwd),
   }))();
 
   const workOrderRunContext = buildWorkOrderRunContext(refreshedThread.id);
@@ -2381,9 +2440,21 @@ export async function runChatRun(runId: string): Promise<void> {
     workOrderRunContext,
   });
 
+  const updatePendingChanges = (): boolean => {
+    if (!worktreeInfo) return false;
+    const status = readWorktreeStatus(worktreeInfo.worktreePath);
+    const updated = updateChatThread({
+      threadId: refreshedThread.id,
+      worktreePath: worktreeInfo.worktreePath,
+      hasPendingChanges: status.hasPendingChanges,
+    });
+    if (updated) refreshedThread = updated;
+    return status.hasPendingChanges;
+  };
+
   try {
     await runCodexExecJson({
-      cwd: run.cwd,
+      cwd: runCwd,
       prompt,
       schemaPath: chatSchemaPath,
       outputPath,
@@ -2391,7 +2462,7 @@ export async function runChatRun(runId: string): Promise<void> {
       sandbox: enforcement.sandbox,
       model: run.model,
       cliPath: run.cli_path,
-      skipGitRepoCheck: skipGitRepoCheck || shouldSkipGitRepoCheck(run.cwd),
+      skipGitRepoCheck: skipGitRepoCheck || shouldSkipGitRepoCheck(runCwd),
       networkEnabled: access.network !== "none",
       onEventJsonLine: (line, control) => {
         let parsed: unknown;
@@ -2448,6 +2519,15 @@ export async function runChatRun(runId: string): Promise<void> {
       actions.push(validated.data);
     }
 
+    const pendingChanges = updatePendingChanges();
+    if (pendingChanges && !actions.some((action) => action.type === "worktree_merge")) {
+      actions.push({
+        type: "worktree_merge",
+        title: "Merge pending changes",
+        payload: {},
+      });
+    }
+
     const assistantMessage = createChatMessage({
       threadId: run.thread_id,
       role: "assistant",
@@ -2472,11 +2552,20 @@ export async function runChatRun(runId: string): Promise<void> {
       }
     }
     const message = err instanceof Error ? err.message : String(err);
+    const actions: ChatAction[] = [];
+    const pendingChanges = updatePendingChanges();
+    if (pendingChanges) {
+      actions.push({
+        type: "worktree_merge",
+        title: "Merge pending changes",
+        payload: {},
+      });
+    }
     const assistantMessage = createChatMessage({
       threadId: run.thread_id,
       role: "assistant",
       content: `Chat run failed: ${message}`,
-      actions: [],
+      actions,
       runId,
     });
     updateChatRun(runId, {

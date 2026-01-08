@@ -1,4 +1,5 @@
 import "./env.js";
+import fs from "fs";
 import express, { type Response } from "express";
 import cors from "cors";
 import {
@@ -52,6 +53,7 @@ import {
 } from "./chat_agent.js";
 import { applyChatAction, undoChatAction } from "./chat_actions.js";
 import { listChatAttention, listChatAttentionSummaries } from "./chat_attention.js";
+import { buildWorktreeDiff, cleanupChatWorktree, resolveChatWorktreeConfig } from "./chat_worktree.js";
 import {
   createChatThread,
   getChatThreadById,
@@ -94,6 +96,29 @@ function isLoopbackAddress(value: string | undefined): boolean {
     return v4.startsWith("127.");
   }
   return normalized.startsWith("127.");
+}
+
+function cleanupThreadWorktree(thread: {
+  id: string;
+  scope: string;
+  project_id: string | null;
+  worktree_path: string | null;
+}): void {
+  if (thread.scope === "global") return;
+  if (!thread.worktree_path) return;
+  const projectId = thread.project_id;
+  if (!projectId) return;
+  const project = findProjectById(projectId);
+  if (!project) return;
+  const { worktreePath, branchName } = resolveChatWorktreeConfig(
+    thread.id,
+    thread.worktree_path
+  );
+  cleanupChatWorktree({
+    repoPath: project.path,
+    worktreePath,
+    branchName,
+  });
 }
 
 if (!allowLan && !isLoopbackHost(host)) {
@@ -596,6 +621,33 @@ app.get("/chat/threads/:threadId", (req, res) => {
   return res.json({ ...details, thread: threadWithAttention, action_ledger: ledger });
 });
 
+app.get("/chat/threads/:threadId/worktree/diff", (req, res) => {
+  try {
+    const thread = getChatThreadById(req.params.threadId);
+    if (!thread) return res.status(404).json({ error: "thread not found" });
+    if (thread.scope === "global") {
+      return res.status(400).json({ error: "global threads do not support worktree diffs" });
+    }
+    const projectId = thread.project_id;
+    if (!projectId) return res.status(400).json({ error: "thread missing project_id" });
+    const project = findProjectById(projectId);
+    if (!project) return res.status(404).json({ error: "project not found" });
+    const { worktreePath } = resolveChatWorktreeConfig(thread.id, thread.worktree_path);
+    if (!fs.existsSync(worktreePath)) {
+      return res.status(404).json({ error: "worktree not found" });
+    }
+    const diff = buildWorktreeDiff({ worktreePath, repoPath: project.path });
+    updateChatThread({
+      threadId: thread.id,
+      worktreePath: thread.worktree_path ?? worktreePath,
+      hasPendingChanges: diff.hasPendingChanges,
+    });
+    return res.json({ diff: diff.diff, has_pending_changes: diff.hasPendingChanges });
+  } catch (err) {
+    return res.status(400).json({ error: String(err instanceof Error ? err.message : err) });
+  }
+});
+
 app.patch("/chat/threads/:threadId", (req, res) => {
   const threadId = req.params.threadId;
   const existing = getChatThreadById(threadId);
@@ -615,6 +667,7 @@ app.patch("/chat/threads/:threadId", (req, res) => {
         : payload.archived
           ? new Date().toISOString()
           : null;
+    const willArchive = payload.archived === true && !existing.archived_at;
 
     const nextProjectId = (() => {
       if (!payload.scope) return undefined;
@@ -661,8 +714,18 @@ app.patch("/chat/threads/:threadId", (req, res) => {
       defaultContextDepth: payload.defaults?.context?.depth,
       defaultAccess: payload.defaults?.access,
       archivedAt,
+      worktreePath: willArchive ? null : undefined,
+      hasPendingChanges: willArchive ? false : undefined,
     });
     if (!updated) return res.status(404).json({ error: "thread not found" });
+    if (willArchive) {
+      try {
+        cleanupThreadWorktree(existing);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(`Failed to clean up worktree for thread ${existing.id}: ${String(err)}`);
+      }
+    }
     return res.json(updated);
   } catch (err) {
     return res.status(400).json({ error: String(err instanceof Error ? err.message : err) });

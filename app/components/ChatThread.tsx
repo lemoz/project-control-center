@@ -11,7 +11,8 @@ type ChatAction = {
     | "work_order_update"
     | "work_order_set_status"
     | "repos_rescan"
-    | "work_order_start_run";
+    | "work_order_start_run"
+    | "worktree_merge";
   title: string;
   payload: Record<string, unknown>;
 };
@@ -49,6 +50,8 @@ type ChatThread = {
   last_read_at: string | null;
   last_ack_at: string | null;
   archived_at: string | null;
+  worktree_path: string | null;
+  has_pending_changes: number;
   created_at: string;
   updated_at: string;
   attention?: {
@@ -628,6 +631,11 @@ export function ChatThread({
   const [runDetailsFetchedAt, setRunDetailsFetchedAt] = useState<number | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [runPreviews, setRunPreviews] = useState<Record<string, RunPreview>>({});
+  const [worktreeDiff, setWorktreeDiff] = useState<string | null>(null);
+  const [worktreeDiffError, setWorktreeDiffError] = useState<string | null>(null);
+  const [worktreeDiffLoading, setWorktreeDiffLoading] = useState(false);
+  const [worktreeDiffOpenKey, setWorktreeDiffOpenKey] = useState<string | null>(null);
+  const [worktreeDiffFetchedAt, setWorktreeDiffFetchedAt] = useState<number | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
@@ -652,6 +660,7 @@ export function ChatThread({
   const attention = data?.thread?.attention ?? null;
   const attentionReasons = attention?.reasons ?? [];
   const hasAttention = attention?.needs_you ?? false;
+  const threadHasPendingChanges = (data?.thread?.has_pending_changes ?? 0) > 0;
 
   const neededProjectIds = useMemo(() => {
     const set = new Set<string>();
@@ -940,6 +949,11 @@ export function ChatThread({
     setRunDetails(null);
     setRunDetailsFetchedAt(null);
     setRunError(null);
+    setWorktreeDiff(null);
+    setWorktreeDiffError(null);
+    setWorktreeDiffLoading(false);
+    setWorktreeDiffOpenKey(null);
+    setWorktreeDiffFetchedAt(null);
     setApplying({});
     setUndoing({});
     setClearingAttention(false);
@@ -1081,6 +1095,29 @@ export function ChatThread({
     setRunDetailsFetchedAt(Date.now());
   }, []);
 
+  const fetchWorktreeDiff = useCallback(async () => {
+    setWorktreeDiffLoading(true);
+    setWorktreeDiffError(null);
+    try {
+      const res = await fetch(
+        `/api/chat/threads/${encodeURIComponent(threadId)}/worktree/diff`,
+        { cache: "no-store" }
+      );
+      const json = (await res.json().catch(() => null)) as
+        | { diff?: string; has_pending_changes?: boolean; error?: string }
+        | null;
+      if (!res.ok) throw new Error(json?.error || "failed to load diff");
+      setWorktreeDiff(typeof json?.diff === "string" ? json.diff : "");
+      setWorktreeDiffFetchedAt(Date.now());
+    } catch (e) {
+      setWorktreeDiffError(e instanceof Error ? e.message : "failed to load diff");
+      setWorktreeDiff(null);
+      setWorktreeDiffFetchedAt(null);
+    } finally {
+      setWorktreeDiffLoading(false);
+    }
+  }, [threadId]);
+
   useEffect(() => {
     if (!selectedRunId) {
       setRunDetails(null);
@@ -1107,6 +1144,15 @@ export function ChatThread({
         : false,
     }));
   }, [normalizedAccess]);
+
+  useEffect(() => {
+    if (threadHasPendingChanges) return;
+    setWorktreeDiffOpenKey(null);
+    setWorktreeDiff(null);
+    setWorktreeDiffError(null);
+    setWorktreeDiffFetchedAt(null);
+    setWorktreeDiffLoading(false);
+  }, [threadHasPendingChanges]);
 
   const applyAction = useCallback(async (messageId: string, actionIndex: number) => {
     const key = `${messageId}:${actionIndex}`;
@@ -1366,11 +1412,79 @@ export function ChatThread({
                             const ledger = ledgerByKey.get(key) || null;
                             const applied = ledger && !ledger.undone_at;
                             const undoable = applied && !!ledger?.undo_payload_json;
+                            const isWorktreeMerge = a.type === "worktree_merge";
+                            const diffOpen = worktreeDiffOpenKey === key;
                             const ref = extractWorkOrderRef(a);
                             const workOrderMeta = ref
                               ? workOrdersByProject[ref.projectId]?.[ref.workOrderId] ?? null
                               : null;
                             const workOrderLoading = ref ? !!workOrdersLoading[ref.projectId] : false;
+                            if (isWorktreeMerge) {
+                              const canViewDiff = threadHasPendingChanges || diffOpen;
+                              return (
+                                <div key={key} style={{ display: "flex", flexDirection: "column", gap: 6, border: "1px solid rgba(124,138,176,0.2)", borderRadius: 10, padding: 10 }}>
+                                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+                                    <div style={{ fontWeight: 700 }}>{a.title}</div>
+                                    <div className="muted" style={{ fontSize: 12 }}>{a.type}</div>
+                                  </div>
+                                  <div className="muted" style={{ fontSize: 12 }}>
+                                    {threadHasPendingChanges ? "Pending worktree changes ready to merge." : "No pending changes."}
+                                  </div>
+                                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                                    <button
+                                      className="btnSecondary"
+                                      onClick={() => {
+                                        if (diffOpen) {
+                                          setWorktreeDiffOpenKey(null);
+                                          return;
+                                        }
+                                        setWorktreeDiffOpenKey(key);
+                                        if (!worktreeDiffLoading) {
+                                          void fetchWorktreeDiff();
+                                        }
+                                      }}
+                                      disabled={!canViewDiff || worktreeDiffLoading}
+                                    >
+                                      {diffOpen ? "Hide diff" : "View diff"}
+                                    </button>
+                                    {!ledger && (
+                                      <button
+                                        className="btn"
+                                        onClick={() => void applyAction(m.id, idx)}
+                                        disabled={!!applying[key] || !threadHasPendingChanges}
+                                      >
+                                        {applying[key] ? "Merging…" : "Merge"}
+                                      </button>
+                                    )}
+                                    {!!ledger && (
+                                      <span className="badge">
+                                        {ledger.undone_at ? "undone" : "merged"} @ {formatTime(ledger.applied_at)}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {diffOpen && (
+                                    <div style={{ marginTop: 6 }}>
+                                      {worktreeDiffLoading && (
+                                        <div className="muted" style={{ fontSize: 12 }}>Loading diff…</div>
+                                      )}
+                                      {!!worktreeDiffError && (
+                                        <div className="error" style={{ marginTop: 6 }}>{worktreeDiffError}</div>
+                                      )}
+                                      {!worktreeDiffLoading && !worktreeDiffError && (
+                                        <pre style={{ marginTop: 6, whiteSpace: "pre-wrap", maxHeight: 320, overflow: "auto" }}>
+                                          {worktreeDiff || "(no diff available)"}
+                                        </pre>
+                                      )}
+                                      {!!worktreeDiffFetchedAt && (
+                                        <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                                          Updated {formatAgo(nowTick - worktreeDiffFetchedAt)} ago
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            }
                             return (
                               <div key={key} style={{ display: "flex", flexDirection: "column", gap: 6, border: "1px solid rgba(124,138,176,0.2)", borderRadius: 10, padding: 10 }}>
                                 <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
