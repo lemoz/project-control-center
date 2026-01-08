@@ -212,6 +212,19 @@ export function cleanupChatWorktree(params: {
   });
 }
 
+function branchHasUnmergedCommits(
+  repoPath: string,
+  branchName: string,
+  baseBranch: string
+): boolean {
+  const result = runGit(
+    ["rev-list", "--count", `${baseBranch}..${branchName}`],
+    { cwd: repoPath, allowFailure: true }
+  );
+  const count = parseInt(result.stdout.trim(), 10);
+  return !isNaN(count) && count > 0;
+}
+
 export function mergeChatWorktree(params: {
   repoPath: string;
   threadId: string;
@@ -220,32 +233,43 @@ export function mergeChatWorktree(params: {
 }): { merged: boolean; message?: string } {
   const baseBranch = resolveBaseBranch(params.repoPath);
   const status = readWorktreeStatus(params.worktreePath);
-  if (!status.hasPendingChanges) {
+
+  // If there are uncommitted changes, commit them first
+  if (status.hasPendingChanges) {
+    runGit(["add", "-A"], { cwd: params.worktreePath });
+    const commitMessage = `Chat thread ${params.threadId}`;
+    const commitResult = runGit(
+      [
+        "-c",
+        "user.name=Control Center Chat",
+        "-c",
+        "user.email=chat@local",
+        "commit",
+        "-m",
+        commitMessage,
+      ],
+      { cwd: params.worktreePath, allowFailure: true }
+    );
+    if (commitResult.status !== 0) {
+      const detail = commitResult.stderr.trim() || commitResult.stdout.trim() || "git commit failed";
+      throw new Error(detail);
+    }
+  }
+
+  // Check if branch has any commits ahead of base (including just-committed ones)
+  const hasUnmergedCommits = branchHasUnmergedCommits(
+    params.repoPath,
+    params.branchName,
+    baseBranch
+  );
+
+  if (!hasUnmergedCommits) {
     cleanupChatWorktree({
       repoPath: params.repoPath,
       worktreePath: params.worktreePath,
       branchName: params.branchName,
     });
     return { merged: true, message: "No changes to merge." };
-  }
-
-  runGit(["add", "-A"], { cwd: params.worktreePath });
-  const commitMessage = `Chat thread ${params.threadId}`;
-  const commitResult = runGit(
-    [
-      "-c",
-      "user.name=Control Center Chat",
-      "-c",
-      "user.email=chat@local",
-      "commit",
-      "-m",
-      commitMessage,
-    ],
-    { cwd: params.worktreePath, allowFailure: true }
-  );
-  if (commitResult.status !== 0) {
-    const detail = commitResult.stderr.trim() || commitResult.stdout.trim() || "git commit failed";
-    throw new Error(detail);
   }
 
   const mainStatus = runGit(["status", "--porcelain"], {
