@@ -4,11 +4,17 @@ import express, { type Response } from "express";
 import cors from "cors";
 import {
   findProjectById,
+  getProjectVm,
   markInProgressRunsFailed,
   setProjectStar,
+  updateProjectIsolationSettings,
   syncWorkOrderDeps,
   listAllWorkOrderDeps,
   getWorkOrderDependents,
+  type ProjectIsolationMode,
+  type ProjectRow,
+  type ProjectVmRow,
+  type ProjectVmSize,
 } from "./db.js";
 import { getDiscoveredRepoPaths, syncAndListRepoSummaries } from "./projects_catalog.js";
 import {
@@ -171,7 +177,7 @@ app.use(
           if (allowedOrigins.has(origin)) return callback(null, true);
           return callback(null, false);
         },
-    methods: ["GET", "POST", "PATCH", "PUT", "OPTIONS"],
+    methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
   })
 );
 app.use(express.json());
@@ -277,6 +283,119 @@ app.put("/repos/:id/constitution", (req, res) => {
   }
   const result = writeProjectConstitution(project.path, content);
   return res.json({ ok: true, version: result.version });
+});
+
+const VM_ISOLATION_MODES = new Set(["local", "vm", "vm+container"]);
+const VM_SIZES = new Set(["small", "medium", "large", "xlarge"]);
+
+function buildVmResponse(project: ProjectRow, vm: ProjectVmRow | null) {
+  const fallbackVm = {
+    project_id: project.id,
+    gcp_instance_name: null,
+    gcp_zone: null,
+    external_ip: null,
+    internal_ip: null,
+    status: "not_provisioned",
+    size: null,
+    created_at: null,
+    last_started_at: null,
+    last_activity_at: null,
+    last_error: null,
+    total_hours_used: 0,
+  };
+  const mergedVm = { ...fallbackVm, ...(vm ?? {}) };
+  return {
+    project: {
+      id: project.id,
+      name: project.name,
+      isolation_mode: project.isolation_mode || "local",
+      vm_size: project.vm_size || "medium",
+    },
+    vm: mergedVm,
+  };
+}
+
+function sendVmNotImplemented(res: Response, action: string) {
+  return res.status(501).json({
+    error: "not_implemented",
+    message: `VM ${action} is not implemented yet (WO-2026-039).`,
+  });
+}
+
+app.get("/repos/:id/vm", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const vm = getProjectVm(project.id);
+  return res.json(buildVmResponse(project, vm));
+});
+
+app.patch("/repos/:id/vm", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const isolation_mode = req.body?.isolation_mode;
+  const vm_size = req.body?.vm_size;
+
+  if (isolation_mode === undefined && vm_size === undefined) {
+    return res.status(400).json({ error: "no vm settings provided" });
+  }
+  if (
+    isolation_mode !== undefined &&
+    (typeof isolation_mode !== "string" || !VM_ISOLATION_MODES.has(isolation_mode))
+  ) {
+    return res.status(400).json({
+      error: "`isolation_mode` must be one of local, vm, vm+container",
+    });
+  }
+  if (vm_size !== undefined && (typeof vm_size !== "string" || !VM_SIZES.has(vm_size))) {
+    return res.status(400).json({
+      error: "`vm_size` must be one of small, medium, large, xlarge",
+    });
+  }
+
+  const patch: { isolation_mode?: ProjectIsolationMode; vm_size?: ProjectVmSize } = {};
+  if (isolation_mode !== undefined) patch.isolation_mode = isolation_mode as ProjectIsolationMode;
+  if (vm_size !== undefined) patch.vm_size = vm_size as ProjectVmSize;
+  const updated = updateProjectIsolationSettings(project.id, patch);
+  const vm = getProjectVm(project.id);
+  return res.json(buildVmResponse(updated ?? project, vm));
+});
+
+app.post("/repos/:id/vm/provision", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  return sendVmNotImplemented(res, "provisioning");
+});
+
+app.post("/repos/:id/vm/start", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  return sendVmNotImplemented(res, "start");
+});
+
+app.post("/repos/:id/vm/stop", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  return sendVmNotImplemented(res, "stop");
+});
+
+app.put("/repos/:id/vm/resize", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  return sendVmNotImplemented(res, "resize");
+});
+
+app.delete("/repos/:id/vm", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  return sendVmNotImplemented(res, "deletion");
 });
 
 function sendWorkOrderError(res: Response, err: unknown) {

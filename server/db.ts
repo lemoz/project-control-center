@@ -1,6 +1,9 @@
 import Database from "better-sqlite3";
 import path from "path";
 
+export type ProjectIsolationMode = "local" | "vm" | "vm+container";
+export type ProjectVmSize = "small" | "medium" | "large" | "xlarge";
+
 export type ProjectRow = {
   id: string;
   path: string;
@@ -13,9 +16,34 @@ export type ProjectRow = {
   starred: 0 | 1;
   hidden: 0 | 1;
   tags: string; // JSON array
+  isolation_mode: ProjectIsolationMode;
+  vm_size: ProjectVmSize;
   last_run_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type ProjectVmStatus =
+  | "not_provisioned"
+  | "provisioning"
+  | "running"
+  | "stopped"
+  | "deleted"
+  | "error";
+
+export type ProjectVmRow = {
+  project_id: string;
+  gcp_instance_name: string | null;
+  gcp_zone: string | null;
+  external_ip: string | null;
+  internal_ip: string | null;
+  status: ProjectVmStatus;
+  size: ProjectVmSize | null;
+  created_at: string | null;
+  last_started_at: string | null;
+  last_activity_at: string | null;
+  last_error: string | null;
+  total_hours_used: number;
 };
 
 export type RunRow = {
@@ -89,9 +117,27 @@ function initSchema(database: Database.Database) {
       starred INTEGER NOT NULL DEFAULT 0,
       hidden INTEGER NOT NULL DEFAULT 0,
       tags TEXT NOT NULL DEFAULT '[]',
+      isolation_mode TEXT NOT NULL DEFAULT 'local',
+      vm_size TEXT NOT NULL DEFAULT 'medium',
       last_run_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS project_vms (
+      project_id TEXT PRIMARY KEY,
+      gcp_instance_name TEXT,
+      gcp_zone TEXT,
+      external_ip TEXT,
+      internal_ip TEXT,
+      status TEXT NOT NULL DEFAULT 'not_provisioned',
+      size TEXT,
+      created_at TEXT,
+      last_started_at TEXT,
+      last_activity_at TEXT,
+      last_error TEXT,
+      total_hours_used REAL NOT NULL DEFAULT 0,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS work_orders (
@@ -268,6 +314,8 @@ function initSchema(database: Database.Database) {
   const hasStarred = projectColumns.some((c) => c.name === "starred");
   const hasDescription = projectColumns.some((c) => c.name === "description");
   const hasHidden = projectColumns.some((c) => c.name === "hidden");
+  const hasIsolationMode = projectColumns.some((c) => c.name === "isolation_mode");
+  const hasVmSize = projectColumns.some((c) => c.name === "vm_size");
   if (!hasStarred) {
     database.exec("ALTER TABLE projects ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;");
   }
@@ -276,6 +324,26 @@ function initSchema(database: Database.Database) {
   }
   if (!hasHidden) {
     database.exec("ALTER TABLE projects ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;");
+  }
+  if (!hasIsolationMode) {
+    database.exec("ALTER TABLE projects ADD COLUMN isolation_mode TEXT NOT NULL DEFAULT 'local';");
+  }
+  if (!hasVmSize) {
+    database.exec("ALTER TABLE projects ADD COLUMN vm_size TEXT NOT NULL DEFAULT 'medium';");
+  }
+
+  const projectVmColumns = database.prepare("PRAGMA table_info(project_vms)").all() as Array<{ name: string }>;
+  const hasVmLastActivityAt = projectVmColumns.some((c) => c.name === "last_activity_at");
+  const hasVmLastError = projectVmColumns.some((c) => c.name === "last_error");
+  const hasVmTotalHours = projectVmColumns.some((c) => c.name === "total_hours_used");
+  if (!hasVmLastActivityAt) {
+    database.exec("ALTER TABLE project_vms ADD COLUMN last_activity_at TEXT;");
+  }
+  if (!hasVmLastError) {
+    database.exec("ALTER TABLE project_vms ADD COLUMN last_error TEXT;");
+  }
+  if (!hasVmTotalHours) {
+    database.exec("ALTER TABLE project_vms ADD COLUMN total_hours_used REAL NOT NULL DEFAULT 0;");
   }
 
   const runColumns = database.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
@@ -530,8 +598,8 @@ export function upsertProject(p: Omit<ProjectRow, "created_at" | "updated_at"> &
   const updatedAt = p.updated_at || now;
   database
     .prepare(
-      `INSERT INTO projects (id, path, name, description, type, stage, status, priority, starred, hidden, tags, last_run_at, created_at, updated_at)
-       VALUES (@id, @path, @name, @description, @type, @stage, @status, @priority, @starred, @hidden, @tags, @last_run_at, @created_at, @updated_at)
+      `INSERT INTO projects (id, path, name, description, type, stage, status, priority, starred, hidden, tags, isolation_mode, vm_size, last_run_at, created_at, updated_at)
+       VALUES (@id, @path, @name, @description, @type, @stage, @status, @priority, @starred, @hidden, @tags, @isolation_mode, @vm_size, @last_run_at, @created_at, @updated_at)
        ON CONFLICT(id) DO UPDATE SET
          path=excluded.path,
          name=excluded.name,
@@ -543,6 +611,8 @@ export function upsertProject(p: Omit<ProjectRow, "created_at" | "updated_at"> &
          starred=excluded.starred,
          hidden=excluded.hidden,
          tags=excluded.tags,
+         isolation_mode=excluded.isolation_mode,
+         vm_size=excluded.vm_size,
          last_run_at=COALESCE(excluded.last_run_at, projects.last_run_at),
          updated_at=excluded.updated_at`
     )
@@ -569,6 +639,34 @@ export function setProjectHidden(id: string, hidden: boolean): boolean {
     .prepare("UPDATE projects SET hidden = ?, updated_at = ? WHERE id = ?")
     .run(hidden ? 1 : 0, now, id);
   return result.changes > 0;
+}
+
+export function updateProjectIsolationSettings(
+  id: string,
+  patch: Partial<Pick<ProjectRow, "isolation_mode" | "vm_size">>
+): ProjectRow | null {
+  const database = getDb();
+  const fields: Array<{ key: keyof typeof patch; column: string }> = [
+    { key: "isolation_mode", column: "isolation_mode" },
+    { key: "vm_size", column: "vm_size" },
+  ];
+  const sets = fields
+    .filter((f) => patch[f.key] !== undefined)
+    .map((f) => `${f.column} = @${f.key}`);
+  if (!sets.length) return findProjectById(id);
+  const now = new Date().toISOString();
+  database
+    .prepare(`UPDATE projects SET ${sets.join(", ")}, updated_at = @updated_at WHERE id = @id`)
+    .run({ id, updated_at: now, ...patch });
+  return findProjectById(id);
+}
+
+export function getProjectVm(projectId: string): ProjectVmRow | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM project_vms WHERE project_id = ? LIMIT 1")
+    .get(projectId) as ProjectVmRow | undefined;
+  return row || null;
 }
 
 export function createRun(run: RunRow): void {

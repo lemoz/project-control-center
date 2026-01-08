@@ -30,7 +30,7 @@ tags:
   - vm
   - ui
 estimate_hours: 2
-status: ready
+status: you_review
 created_at: 2026-01-08
 updated_at: 2026-01-08
 depends_on:
