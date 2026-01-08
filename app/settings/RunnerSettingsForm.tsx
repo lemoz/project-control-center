@@ -39,7 +39,7 @@ function emptySettings(): RunnerSettings {
     builder: { provider: "codex", model: "", cliPath: "" },
     reviewer: { provider: "codex", model: "", cliPath: "" },
     useWorktree: true,
-    maxBuilderIterations: 3,
+    maxBuilderIterations: 10,
   };
 }
 
