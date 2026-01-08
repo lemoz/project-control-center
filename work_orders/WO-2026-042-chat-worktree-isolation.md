@@ -7,6 +7,10 @@ context:
   - server/chat_actions.ts (action handlers)
   - app/components/ChatThread.tsx (chat UI)
   - .system/notes/chat-worktree-isolation-idea.md (detailed notes)
+files_created:
+  - server/chat_worktree.ts (worktree manager)
+  - app/api/chat/threads/[threadId]/worktree/diff/route.ts (Next.js proxy)
+  - app/api/chat/threads/[threadId]/worktree/merge/route.ts (Next.js proxy)
 acceptance_criteria:
   - When a chat thread first needs write access, auto-create a git worktree at `.system/chat-worktrees/thread-{id}/` on branch `chat/thread-{id}`.
   - Route agent file write operations to the worktree path instead of the main repo.
