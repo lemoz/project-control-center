@@ -165,6 +165,8 @@ export function syncAndListRepoSummaries(params?: { forceRescan?: boolean }): Re
     const status = meta?.status || existingFallback?.status || ("active" as const);
     const priority = meta?.priority ?? existingFallback?.priority ?? 3;
     const tags = JSON.stringify(meta?.tags ?? safeParseStringArrayJson(existingFallback?.tags));
+    const isolation_mode = existingFallback?.isolation_mode || "local";
+    const vm_size = existingFallback?.vm_size || "medium";
     const persistedStarred = Boolean(existingById?.starred) || anyStarred;
     const starred =
       meta?.starred !== undefined ? (meta.starred ? 1 : 0) : persistedStarred ? 1 : 0;
@@ -190,6 +192,8 @@ export function syncAndListRepoSummaries(params?: { forceRescan?: boolean }): Re
       starred,
       hidden,
       tags,
+      isolation_mode,
+      vm_size,
       last_run_at: lastRunAt,
       created_at: now,
       updated_at: now,

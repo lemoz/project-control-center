@@ -5,6 +5,7 @@ import Link from "next/link";
 import { KanbanBoard } from "./KanbanBoard";
 import { TechTreeView } from "./TechTreeView";
 import { ConstitutionPanel } from "./ConstitutionPanel";
+import { VMPanel } from "./VMPanel";
 
 type ViewMode = "kanban" | "tech-tree";
 
@@ -44,6 +45,7 @@ export default function ProjectPage({ params }: { params: { id: string } }) {
       </section>
 
       <ConstitutionPanel repoId={id} />
+      <VMPanel repoId={id} />
 
       {view === "kanban" && <KanbanBoard repoId={id} />}
       {view === "tech-tree" && <TechTreeView repoId={id} />}
