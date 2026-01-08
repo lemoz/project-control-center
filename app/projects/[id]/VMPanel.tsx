@@ -14,7 +14,9 @@ type VmResponse = {
   };
   vm: {
     project_id: string;
+    gcp_instance_id: string | null;
     gcp_instance_name: string | null;
+    gcp_project: string | null;
     gcp_zone: string | null;
     external_ip: string | null;
     internal_ip: string | null;
@@ -29,6 +31,8 @@ type VmResponse = {
   error?: string;
 };
 
+type LifecycleAction = "provision" | "start" | "stop" | "resize" | "delete";
+
 function formatTimestamp(value: string | null | undefined): string {
   if (!value) return "n/a";
   const ms = Date.parse(value);
@@ -40,6 +44,7 @@ export function VMPanel({ repoId }: { repoId: string }) {
   const [data, setData] = useState<VmResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [lifecycleAction, setLifecycleAction] = useState<LifecycleAction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -91,19 +96,105 @@ export function VMPanel({ repoId }: { repoId: string }) {
     [data, repoId]
   );
 
+  const runLifecycleAction = useCallback(
+    async (action: LifecycleAction) => {
+      if (!data) return;
+      setLifecycleAction(action);
+      setError(null);
+      setNotice(null);
+
+      let url = `/api/repos/${encodeURIComponent(repoId)}/vm`;
+      let method = "POST";
+      let body: Record<string, unknown> | undefined;
+
+      switch (action) {
+        case "provision":
+          url = `${url}/provision`;
+          break;
+        case "start":
+          url = `${url}/start`;
+          break;
+        case "stop":
+          url = `${url}/stop`;
+          break;
+        case "resize":
+          url = `${url}/resize`;
+          method = "PUT";
+          body = { vm_size: data.project.vm_size };
+          break;
+        case "delete":
+          method = "DELETE";
+          break;
+      }
+
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: body ? { "Content-Type": "application/json" } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        const json = (await res.json().catch(() => null)) as VmResponse | null;
+        if (!res.ok) {
+          throw new Error(json?.error || `failed to ${action} VM`);
+        }
+        if (!json) {
+          throw new Error(`invalid response while trying to ${action} VM`);
+        }
+        setData(json);
+        const successMessage =
+          action === "provision"
+            ? "Provisioned."
+            : action === "start"
+              ? "Started."
+              : action === "stop"
+                ? "Stopped."
+                : action === "resize"
+                  ? "Resized."
+                  : "Deleted.";
+        setNotice(successMessage);
+        setTimeout(() => setNotice(null), 2500);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : `failed to ${action} VM`);
+      } finally {
+        setLifecycleAction(null);
+      }
+    },
+    [data, repoId]
+  );
+
   const status = data?.vm?.status || "not_provisioned";
   const lastActivity = formatTimestamp(
     data?.vm?.last_activity_at ?? data?.vm?.last_started_at ?? null
   );
   const lastError = data?.vm?.last_error || "n/a";
-  const notProvisioned = status === "not_provisioned" || status === "deleted";
+  const allowAnyAction = status === "error";
+  const actionLocked = loading || saving || lifecycleAction !== null || status === "provisioning";
+  const canProvision =
+    !actionLocked && (allowAnyAction || status === "not_provisioned" || status === "deleted");
+  const canStart = !actionLocked && (allowAnyAction || status === "stopped");
+  const canStop = !actionLocked && (allowAnyAction || status === "running");
+  const canResize =
+    !actionLocked && (allowAnyAction || status === "running" || status === "stopped");
+  const canDelete = !actionLocked && (allowAnyAction || status !== "deleted");
 
   const lifecycleReason = useMemo(() => {
-    if (notProvisioned) {
-      return "VM not provisioned yet. Provisioning will be available in WO-2026-039.";
+    switch (status) {
+      case "not_provisioned":
+        return "VM not provisioned yet. Use Provision to create a GCP instance.";
+      case "provisioning":
+        return "VM action in progress. This can take a few minutes.";
+      case "running":
+        return "VM is running. Stop or resize when needed.";
+      case "stopped":
+        return "VM is stopped. Start to resume or resize while stopped.";
+      case "deleted":
+        return "VM deleted. Provision to create a new instance.";
+      case "error":
+        return "VM action failed. Review the last error and retry.";
+      default:
+        return "VM status unknown. Refresh to retry.";
     }
-    return "VM lifecycle actions are not implemented yet (WO-2026-039).";
-  }, [notProvisioned]);
+  }, [status]);
 
   return (
     <section className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -115,7 +206,11 @@ export function VMPanel({ repoId }: { repoId: string }) {
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <button className="btnSecondary" onClick={() => void load()} disabled={loading || saving}>
+          <button
+            className="btnSecondary"
+            onClick={() => void load()}
+            disabled={loading || saving || lifecycleAction !== null}
+          >
             Refresh
           </button>
         </div>
@@ -182,20 +277,40 @@ export function VMPanel({ repoId }: { repoId: string }) {
           </div>
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            <button className="btn" disabled>
-              Provision
+            <button
+              className="btn"
+              disabled={!canProvision}
+              onClick={() => void runLifecycleAction("provision")}
+            >
+              {lifecycleAction === "provision" ? "Provisioning..." : "Provision"}
             </button>
-            <button className="btnSecondary" disabled>
-              Start
+            <button
+              className="btnSecondary"
+              disabled={!canStart}
+              onClick={() => void runLifecycleAction("start")}
+            >
+              {lifecycleAction === "start" ? "Starting..." : "Start"}
             </button>
-            <button className="btnSecondary" disabled>
-              Stop
+            <button
+              className="btnSecondary"
+              disabled={!canStop}
+              onClick={() => void runLifecycleAction("stop")}
+            >
+              {lifecycleAction === "stop" ? "Stopping..." : "Stop"}
             </button>
-            <button className="btnSecondary" disabled>
-              Resize
+            <button
+              className="btnSecondary"
+              disabled={!canResize}
+              onClick={() => void runLifecycleAction("resize")}
+            >
+              {lifecycleAction === "resize" ? "Resizing..." : "Resize"}
             </button>
-            <button className="btnSecondary" disabled>
-              Delete
+            <button
+              className="btnSecondary"
+              disabled={!canDelete}
+              onClick={() => void runLifecycleAction("delete")}
+            >
+              {lifecycleAction === "delete" ? "Deleting..." : "Delete"}
             </button>
           </div>
 

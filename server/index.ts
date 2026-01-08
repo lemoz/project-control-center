@@ -16,6 +16,14 @@ import {
   type ProjectVmRow,
   type ProjectVmSize,
 } from "./db.js";
+import {
+  deleteVM,
+  provisionVM,
+  resizeVM,
+  startVM,
+  stopVM,
+  VmManagerError,
+} from "./vm_manager.js";
 import { getDiscoveredRepoPaths, syncAndListRepoSummaries } from "./projects_catalog.js";
 import {
   cascadeAutoReady,
@@ -291,7 +299,9 @@ const VM_SIZES = new Set(["small", "medium", "large", "xlarge"]);
 function buildVmResponse(project: ProjectRow, vm: ProjectVmRow | null) {
   const fallbackVm = {
     project_id: project.id,
+    gcp_instance_id: null,
     gcp_instance_name: null,
+    gcp_project: null,
     gcp_zone: null,
     external_ip: null,
     internal_ip: null,
@@ -315,11 +325,14 @@ function buildVmResponse(project: ProjectRow, vm: ProjectVmRow | null) {
   };
 }
 
-function sendVmNotImplemented(res: Response, action: string) {
-  return res.status(501).json({
-    error: "not_implemented",
-    message: `VM ${action} is not implemented yet (WO-2026-039).`,
-  });
+function sendVmError(res: Response, err: unknown) {
+  const message = err instanceof Error ? err.message : "vm action failed";
+  if (err instanceof VmManagerError) {
+    const status =
+      err.code === "not_found" ? 404 : err.code === "not_provisioned" ? 409 : 400;
+    return res.status(status).json({ error: message });
+  }
+  return res.status(500).json({ error: message });
 }
 
 app.get("/repos/:id/vm", (req, res) => {
@@ -363,39 +376,79 @@ app.patch("/repos/:id/vm", (req, res) => {
   return res.json(buildVmResponse(updated ?? project, vm));
 });
 
-app.post("/repos/:id/vm/provision", (req, res) => {
+app.post("/repos/:id/vm/provision", async (req, res) => {
   const { id } = req.params;
   const project = findProjectById(id);
   if (!project) return res.status(404).json({ error: "project not found" });
-  return sendVmNotImplemented(res, "provisioning");
+  const zone = typeof req.body?.zone === "string" ? req.body.zone : undefined;
+  const image = typeof req.body?.image === "string" ? req.body.image : undefined;
+
+  try {
+    const vm = await provisionVM({
+      projectId: project.id,
+      size: project.vm_size || "medium",
+      zone,
+      image,
+    });
+    return res.json(buildVmResponse(project, vm));
+  } catch (err) {
+    return sendVmError(res, err);
+  }
 });
 
-app.post("/repos/:id/vm/start", (req, res) => {
+app.post("/repos/:id/vm/start", async (req, res) => {
   const { id } = req.params;
   const project = findProjectById(id);
   if (!project) return res.status(404).json({ error: "project not found" });
-  return sendVmNotImplemented(res, "start");
+  try {
+    const vm = await startVM(project.id);
+    return res.json(buildVmResponse(project, vm));
+  } catch (err) {
+    return sendVmError(res, err);
+  }
 });
 
-app.post("/repos/:id/vm/stop", (req, res) => {
+app.post("/repos/:id/vm/stop", async (req, res) => {
   const { id } = req.params;
   const project = findProjectById(id);
   if (!project) return res.status(404).json({ error: "project not found" });
-  return sendVmNotImplemented(res, "stop");
+  try {
+    const vm = await stopVM(project.id);
+    return res.json(buildVmResponse(project, vm));
+  } catch (err) {
+    return sendVmError(res, err);
+  }
 });
 
-app.put("/repos/:id/vm/resize", (req, res) => {
+app.put("/repos/:id/vm/resize", async (req, res) => {
   const { id } = req.params;
   const project = findProjectById(id);
   if (!project) return res.status(404).json({ error: "project not found" });
-  return sendVmNotImplemented(res, "resize");
+  const requestedSize = req.body?.vm_size ?? req.body?.size ?? project.vm_size;
+  if (typeof requestedSize !== "string" || !VM_SIZES.has(requestedSize)) {
+    return res.status(400).json({
+      error: "`vm_size` must be one of small, medium, large, xlarge",
+    });
+  }
+
+  try {
+    const vm = await resizeVM(project.id, requestedSize as ProjectVmSize);
+    return res.json(buildVmResponse(project, vm));
+  } catch (err) {
+    return sendVmError(res, err);
+  }
 });
 
-app.delete("/repos/:id/vm", (req, res) => {
+app.delete("/repos/:id/vm", async (req, res) => {
   const { id } = req.params;
   const project = findProjectById(id);
   if (!project) return res.status(404).json({ error: "project not found" });
-  return sendVmNotImplemented(res, "deletion");
+  try {
+    const vm = await deleteVM(project.id);
+    return res.json(buildVmResponse(project, vm));
+  } catch (err) {
+    return sendVmError(res, err);
+  }
 });
 
 function sendWorkOrderError(res: Response, err: unknown) {
