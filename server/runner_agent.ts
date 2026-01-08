@@ -18,7 +18,7 @@ import {
 } from "./work_orders.js";
 import { resolveRunnerSettingsForRepo } from "./settings.js";
 
-const DEFAULT_MAX_BUILDER_ITERATIONS = 3;
+const DEFAULT_MAX_BUILDER_ITERATIONS = 10;
 const MAX_TEST_OUTPUT_LINES = 200;
 
 const IGNORE_DIRS = new Set([

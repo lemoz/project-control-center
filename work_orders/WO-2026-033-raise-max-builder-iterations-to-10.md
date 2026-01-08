@@ -24,7 +24,7 @@ tags:
   - runner
   - settings
 estimate_hours: 0.5
-status: ready
+status: you_review
 created_at: 2026-01-08
 updated_at: 2026-01-08
 depends_on: []

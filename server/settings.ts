@@ -73,7 +73,7 @@ const RunnerSettingsSchema = z.object({
   builder: ProviderSettingsSchema,
   reviewer: ProviderSettingsSchema,
   useWorktree: z.boolean().default(true),
-  maxBuilderIterations: z.number().int().min(1).max(20).default(3),
+  maxBuilderIterations: z.number().int().min(1).max(20).default(10),
 });
 
 const RunnerSettingsPatchSchema = z
@@ -102,7 +102,7 @@ function defaults(): RunnerSettings {
     builder: { provider: "codex", model: "", cliPath: "" },
     reviewer: { provider: "codex", model: "", cliPath: "" },
     useWorktree: true,
-    maxBuilderIterations: 3,
+    maxBuilderIterations: 10,
   };
 }
 
