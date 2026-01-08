@@ -1,7 +1,7 @@
 ---
 id: WO-2026-027
-title: VM-Based Project Isolation
-goal: Provision per-project VMs and route runner execution through them with SSH-based lifecycle management and a local fallback.
+title: Persistent Project VM Isolation
+goal: Provide a persistent per-project VM that hosts the repo and run workspace, routing runs through the VM with lifecycle controls and artifact egress.
 context:
   - docs/work_orders.md (contract)
   - DECISIONS.md (future isolated execution targets)
@@ -10,18 +10,20 @@ context:
   - server/db.ts (schema/migrations)
   - app/projects/[id]/page.tsx (project overview UI)
 acceptance_criteria:
-  - Add a project_vms table with fields for instance name, zone, IPs, size, status, timestamps, and usage totals.
-  - Expose VM lifecycle endpoints (provision/start/stop/delete/resize/get) under /repos/:id/vm with input validation and error reporting.
-  - Runner selects remote execution when a VM is configured and running; otherwise it falls back to local execution.
-  - UI exposes VM status, size, and basic controls (provision/start/stop/resize/delete) on the project page.
-  - Per-project SSH keypair is generated and stored locally; outbound SSH is the only required access path.
+  - Project config stores a VM isolation mode (vm or vm+container) plus persistent VM metadata (provider/instance id, status, size, repo path).
+  - Provisioning creates a per-project VM and initializes the repo inside the VM (clone or sync) with base runtime prerequisites.
+  - Runner routes runs into the VM when VM mode is enabled; if the VM is stopped, it is started or the run fails with a clear error.
+  - VM lifecycle actions are available (provision, start, stop, delete, resize) with status reporting and error handling.
+  - Run artifacts (logs, diffs, test outputs) are copied back to host .system/runs/... and linked to the run record.
+  - Project UI surfaces VM status, last activity, and lifecycle controls.
 non_goals:
-  - Containerized runs (handled in WO-2026-028).
-  - Multi-cloud providers or autoscaling.
+  - Per-run containers (WO-2026-028).
+  - Multi-cloud orchestration or autoscaling.
+  - Deep network isolation beyond the VM boundary.
   - Automatic secrets distribution beyond existing env handling.
 stop_conditions:
-  - If GCP API access or credentials are unavailable, stop and report.
-  - If SSH key storage or VM networking is unclear, stop and ask.
+  - If VM provisioning tooling or credentials are unavailable, stop and report.
+  - If repo sync or artifact egress between host and VM is unclear, stop and ask.
 priority: 3
 tags:
   - runner
@@ -31,7 +33,7 @@ tags:
 estimate_hours: 8
 status: ready
 created_at: 2026-01-06
-updated_at: 2026-01-07
+updated_at: 2026-01-08
 depends_on:
   - WO-2025-004
 era: v1

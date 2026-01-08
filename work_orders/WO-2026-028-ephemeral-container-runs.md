@@ -1,25 +1,26 @@
 ---
 id: WO-2026-028
-title: Ephemeral Container Runs
-goal: Execute each builder run inside a fresh container on the project VM, with cleanup and artifact capture per run.
+title: Per-Run Containers Inside Project VM
+goal: Execute each run inside a fresh container on the project's persistent VM, with cleanup and artifact capture per run.
 context:
   - work_orders/WO-2026-027-vm-based-project-isolation.md (VM isolation foundation)
   - server/runner_agent.ts (execution path)
   - server/index.ts (API wiring)
   - docs/work_orders.md (contract)
 acceptance_criteria:
-  - Each builder run on a VM executes inside a fresh container; the container is removed on completion or failure.
-  - Base image selection is driven by project type with optional .control-container.yml overrides.
-  - Container execution captures logs, exit codes, and diff/test artifacts, and stores them in the run artifacts location.
-  - Optional cache volumes can be mounted to speed installs without polluting the run workspace.
-  - If docker is unavailable or fails to start, runner falls back to non-container execution and records the reason.
+  - When project mode is vm+container, each run creates a fresh container inside the project VM and removes it on completion or failure.
+  - Run workspace is isolated per run; repo is copied from the VM-hosted repo and optional cache volumes are mounted.
+  - Container execution captures stdout/stderr, exit codes, diffs/tests, and exports artifacts to host .system/runs/....
+  - Base image selection follows project type with optional .control-container.yml overrides.
+  - If the container runtime is unavailable or fails to start, runner falls back to VM-only execution and records the reason.
+  - Container resource limits (cpu/memory/timeout) are applied from project defaults or overrides.
 non_goals:
-  - Kubernetes or cloud-run orchestration.
+  - Kubernetes or multi-host orchestration.
   - Long-lived containers or shared workspaces between runs.
   - Reviewer or tester isolation beyond the builder/test container.
 stop_conditions:
-  - If docker is not installed on the VM and auto-install is not approved, stop and report.
-  - If resource limits or security constraints cannot be enforced, stop and ask.
+  - If the container runtime cannot be installed or configured safely on the VM, stop and report.
+  - If mount permissions or artifact egress are unclear, stop and ask.
 priority: 3
 tags:
   - runner
@@ -29,7 +30,7 @@ tags:
 estimate_hours: 6
 status: ready
 created_at: 2026-01-06
-updated_at: 2026-01-07
+updated_at: 2026-01-08
 depends_on:
   - WO-2025-004
   - WO-2026-027

@@ -475,6 +475,7 @@ type CodexExecParams = {
   model?: string;
   cliPath?: string;
   skipGitRepoCheck?: boolean;
+  networkEnabled?: boolean;
   onEventJsonLine?: (line: string, control: { abort: (reason: string) => void }) => void;
 };
 
@@ -495,6 +496,11 @@ async function runCodexExecJson(params: CodexExecParams): Promise<void> {
   );
 
   if (params.skipGitRepoCheck) args.push("--skip-git-repo-check");
+
+  // Enable network access in sandbox when user has granted network permissions
+  if (params.networkEnabled) {
+    args.push("-c", "sandbox_workspace_write.network_access=true");
+  }
 
   args.push("-");
 
@@ -1522,7 +1528,9 @@ export function getChatThreadDetailsById(threadId: string): ChatThreadDetails | 
   const thread = getChatThreadById(threadId);
   if (!thread) return null;
 
-  const messages = listChatMessages({ threadId: thread.id, limit: 200, order: "asc" });
+  // Skip summarized messages - they've been rolled into thread.summary
+  const offset = thread.summarized_count;
+  const messages = listChatMessages({ threadId: thread.id, limit: 200, order: "asc", offset });
   const runs = listChatRunsForThread(thread.id, 200);
   const runById = new Map(runs.map((r) => [r.id, r]));
   const runByMessageId = new Map<string, ChatRunRow>();
@@ -1796,7 +1804,9 @@ export async function suggestChatSettingsForThread(params: {
 
 export function getChatThreadDetails(params: ChatScopeParams): ChatThreadDetails {
   const thread = ensureChatThread(params);
-  const messages = listChatMessages({ threadId: thread.id, limit: 200, order: "asc" });
+  // Skip summarized messages - they've been rolled into thread.summary
+  const offset = thread.summarized_count;
+  const messages = listChatMessages({ threadId: thread.id, limit: 200, order: "asc", offset });
   const runs = listChatRunsForThread(thread.id, 200);
   const runById = new Map(runs.map((r) => [r.id, r]));
   const runByMessageId = new Map<string, ChatRunRow>();
@@ -2382,6 +2392,7 @@ export async function runChatRun(runId: string): Promise<void> {
       model: run.model,
       cliPath: run.cli_path,
       skipGitRepoCheck: skipGitRepoCheck || shouldSkipGitRepoCheck(run.cwd),
+      networkEnabled: access.network !== "none",
       onEventJsonLine: (line, control) => {
         let parsed: unknown;
         try {
