@@ -92,6 +92,7 @@ export const CHAT_ACTION_TYPES = [
   "work_order_set_status",
   "repos_rescan",
   "work_order_start_run",
+  "worktree_merge",
 ] as const;
 
 export type ChatActionType = (typeof CHAT_ACTION_TYPES)[number];

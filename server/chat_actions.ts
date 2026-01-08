@@ -1,14 +1,18 @@
+import fs from "fs";
 import { z } from "zod";
 import { findProjectById, getDb, setProjectHidden, setProjectStar } from "./db.js";
 import {
   createChatActionLedgerEntry,
   getChatActionLedgerEntry,
   getChatMessageById,
+  getChatThreadById,
   markChatActionUndone,
+  updateChatThread,
 } from "./chat_db.js";
 import { ChatActionSchema, type ChatAction } from "./chat_contract.js";
 import { syncAndListRepoSummaries } from "./projects_catalog.js";
 import { enqueueCodexRun } from "./runner_agent.js";
+import { mergeChatWorktree, resolveChatWorktreeConfig } from "./chat_worktree.js";
 import {
   createWorkOrder,
   deleteWorkOrder,
@@ -93,6 +97,8 @@ const WorkOrderStartRunPayloadSchema = z
     workOrderId: z.string().min(1),
   })
   .strict();
+
+const WorktreeMergePayloadSchema = z.object({}).strict();
 
 type UndoPayload =
   | { type: "project_set_star"; payload: z.infer<typeof ProjectSetStarPayloadSchema> }
@@ -251,6 +257,37 @@ export function applyChatAction(input: unknown) {
         const payload = WorkOrderStartRunPayloadSchema.parse(action.payload);
         const run = enqueueCodexRun(payload.projectId, payload.workOrderId);
         return { undoPayload: null, result: { run }, workOrderRunId: run.id };
+      }
+      case "worktree_merge": {
+        WorktreeMergePayloadSchema.parse(action.payload);
+        const thread = getChatThreadById(threadId);
+        if (!thread) throw new Error("thread not found");
+        if (thread.scope === "global") {
+          throw new Error("global threads do not support worktree merge");
+        }
+        const projectId = thread.project_id;
+        if (!projectId) throw new Error("thread missing project_id");
+        const project = findProjectById(projectId);
+        if (!project) throw new Error("project not found");
+        const { worktreePath, branchName } = resolveChatWorktreeConfig(
+          thread.id,
+          thread.worktree_path
+        );
+        if (!fs.existsSync(worktreePath)) {
+          throw new Error("worktree not found on disk");
+        }
+        const merged = mergeChatWorktree({
+          repoPath: project.path,
+          threadId: thread.id,
+          worktreePath,
+          branchName,
+        });
+        updateChatThread({
+          threadId: thread.id,
+          worktreePath: null,
+          hasPendingChanges: false,
+        });
+        return { undoPayload: null, result: { merged } };
       }
       default: {
         const neverType: never = action.type;

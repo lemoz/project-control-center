@@ -30,7 +30,7 @@ tags:
   - isolation
   - ux
 estimate_hours: 6
-status: ready
+status: building
 created_at: 2026-01-08
 updated_at: 2026-01-08
 depends_on: []
