@@ -709,6 +709,9 @@ async function runCodexExec(params: {
   const model = params.model?.trim();
   if (model) args.push("--model", model);
 
+  // Enable full network access for agent runs (will be properly isolated when moved to VMs)
+  args.push("-c", 'sandbox_permissions=["network-full-access"]');
+
   args.push(
     "--sandbox",
     params.sandbox,
