@@ -42,6 +42,8 @@ import {
   patchRunnerSettings,
 } from "./settings.js";
 import {
+  type ConstitutionInsightCategory,
+  type ConstitutionInsightInput,
   listGlobalConstitutionVersions,
   listProjectConstitutionVersions,
   mergeConstitutions,
@@ -50,6 +52,12 @@ import {
   writeGlobalConstitution,
   writeProjectConstitution,
 } from "./constitution.js";
+import {
+  analyzeConstitutionSources,
+  generateConstitutionDraft,
+  listConstitutionGenerationSources,
+  markConstitutionGenerationComplete,
+} from "./constitution_generation.js";
 import {
   enqueueCodexRun,
   finalizeManualRunResolution,
@@ -270,6 +278,91 @@ app.get("/constitution/versions", (req, res) => {
   const project = findProjectById(projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   return res.json({ versions: listProjectConstitutionVersions(project.path) });
+});
+
+const INSIGHT_CATEGORY_SET = new Set([
+  "decision",
+  "style",
+  "anti",
+  "success",
+  "communication",
+]);
+
+function isInsightCategory(value: string): value is ConstitutionInsightCategory {
+  return INSIGHT_CATEGORY_SET.has(value);
+}
+
+app.post("/constitution/generation/sources", (req, res) => {
+  try {
+    const projectId = typeof req.body?.projectId === "string" ? req.body.projectId : null;
+    const range =
+      req.body?.range && typeof req.body.range === "object" ? req.body.range : null;
+    const result = listConstitutionGenerationSources({ projectId, range });
+    return res.json(result);
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "failed to load sources",
+    });
+  }
+});
+
+app.post("/constitution/generation/analyze", async (req, res) => {
+  try {
+    const projectId = typeof req.body?.projectId === "string" ? req.body.projectId : null;
+    const range =
+      req.body?.range && typeof req.body.range === "object" ? req.body.range : null;
+    const maxConversations =
+      typeof req.body?.maxConversations === "number" ? req.body.maxConversations : undefined;
+    const result = await analyzeConstitutionSources({
+      projectId,
+      range,
+      maxConversations,
+      sources: req.body?.sources ?? {},
+    });
+    return res.json(result);
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "analysis failed",
+    });
+  }
+});
+
+app.post("/constitution/generation/draft", async (req, res) => {
+  try {
+    const projectId = typeof req.body?.projectId === "string" ? req.body.projectId : null;
+    const base = typeof req.body?.base === "string" ? req.body.base : null;
+    const insightsRaw: unknown[] = Array.isArray(req.body?.insights) ? req.body.insights : [];
+    const insights: ConstitutionInsightInput[] = insightsRaw
+      .map((entry): ConstitutionInsightInput | null => {
+        if (!entry || typeof entry !== "object") return null;
+        const record = entry as Record<string, unknown>;
+        const category = typeof record.category === "string" ? record.category : "";
+        const text = typeof record.text === "string" ? record.text : "";
+        if (!isInsightCategory(category) || !text.trim()) return null;
+        return { category, text: text.trim() };
+      })
+      .filter((entry): entry is ConstitutionInsightInput => Boolean(entry));
+    const result = await generateConstitutionDraft({ projectId, insights, base });
+    return res.json(result);
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "draft generation failed",
+    });
+  }
+});
+
+app.post("/constitution/generation/complete", (req, res) => {
+  try {
+    const projectId = typeof req.body?.projectId === "string" ? req.body.projectId : null;
+    const lastGeneratedAt =
+      typeof req.body?.lastGeneratedAt === "string" ? req.body.lastGeneratedAt : null;
+    const result = markConstitutionGenerationComplete({ projectId, lastGeneratedAt });
+    return res.json({ ok: true, meta: result });
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "failed to update generation metadata",
+    });
+  }
 });
 
 app.get("/repos", (_req, res) => {

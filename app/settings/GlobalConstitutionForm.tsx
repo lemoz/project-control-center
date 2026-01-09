@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CONSTITUTION_TEMPLATE } from "../constitutionTemplate";
+import { ConstitutionGenerationWizard } from "../components/ConstitutionGenerationWizard";
 
 type ConstitutionResponse = {
   global: string;
@@ -23,6 +24,7 @@ export function GlobalConstitutionForm() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [showGenerator, setShowGenerator] = useState(false);
 
   const dirty = useMemo(() => draft !== saved, [draft, saved]);
 
@@ -75,49 +77,66 @@ export function GlobalConstitutionForm() {
   }, []);
 
   return (
-    <section className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
-        <div>
-          <h2 style={{ margin: 0 }}>Constitution (Global)</h2>
-          <div className="muted" style={{ fontSize: 13 }}>
-            Shared preferences and decision heuristics for all projects.
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <button className="btnSecondary" onClick={applyTemplate} disabled={loading || saving}>
-            Insert template
-          </button>
-          <button className="btnSecondary" onClick={() => void load()} disabled={loading || saving}>
-            Refresh
-          </button>
-          <button className="btn" onClick={() => void save()} disabled={loading || saving || !dirty}>
-            {saving ? "Saving…" : dirty ? "Save" : "Saved"}
-          </button>
-        </div>
-      </div>
-
-      {!!error && <div className="error">{error}</div>}
-      {!!notice && <div className="badge">{notice}</div>}
-      {loading && <div className="muted">Loading…</div>}
-
-      {!loading && (
-        <>
-          {!saved && (
-            <div className="muted" style={{ fontSize: 12 }}>
-              No global constitution yet. Insert the template or write your own.
+    <>
+      <section className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+          <div>
+            <h2 style={{ margin: 0 }}>Constitution (Global)</h2>
+            <div className="muted" style={{ fontSize: 13 }}>
+              Shared preferences and decision heuristics for all projects.
             </div>
-          )}
-          <div className="field">
-            <div className="fieldLabel muted">Markdown</div>
-            <textarea
-              className="input"
-              rows={18}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-            />
           </div>
-        </>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              className="btnSecondary"
+              onClick={() => setShowGenerator(true)}
+              disabled={loading || saving}
+            >
+              Generate Constitution
+            </button>
+            <button className="btnSecondary" onClick={applyTemplate} disabled={loading || saving}>
+              Insert template
+            </button>
+            <button className="btnSecondary" onClick={() => void load()} disabled={loading || saving}>
+              Refresh
+            </button>
+            <button className="btn" onClick={() => void save()} disabled={loading || saving || !dirty}>
+              {saving ? "Saving…" : dirty ? "Save" : "Saved"}
+            </button>
+          </div>
+        </div>
+
+        {!!error && <div className="error">{error}</div>}
+        {!!notice && <div className="badge">{notice}</div>}
+        {loading && <div className="muted">Loading…</div>}
+
+        {!loading && (
+          <>
+            {!saved && (
+              <div className="muted" style={{ fontSize: 12 }}>
+                No global constitution yet. Insert the template or write your own.
+              </div>
+            )}
+            <div className="field">
+              <div className="fieldLabel muted">Markdown</div>
+              <textarea
+                className="input"
+                rows={18}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+              />
+            </div>
+          </>
+        )}
+      </section>
+
+      {showGenerator && (
+        <ConstitutionGenerationWizard
+          scope="global"
+          onClose={() => setShowGenerator(false)}
+          onSaved={() => void load()}
+        />
       )}
-    </section>
+    </>
   );
 }

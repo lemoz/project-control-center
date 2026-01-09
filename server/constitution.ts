@@ -46,10 +46,16 @@ export type ConstitutionVersion = { timestamp: string; content: string };
 const GLOBAL_DIR = path.join(os.homedir(), ".control-center");
 const GLOBAL_FILE = path.join(GLOBAL_DIR, "constitution.md");
 const GLOBAL_VERSIONS_DIR = path.join(GLOBAL_DIR, "constitution.versions");
+const GLOBAL_META_FILE = path.join(GLOBAL_DIR, "constitution.meta.json");
 
 const LOCAL_FILE = ".constitution.md";
 const LOCAL_VERSIONS_DIR = ".constitution.versions";
-const LOCAL_IGNORE_ENTRIES = [`/${LOCAL_FILE}`, `/${LOCAL_VERSIONS_DIR}/`];
+const LOCAL_META_FILE = ".constitution.meta.json";
+const LOCAL_IGNORE_ENTRIES = [
+  `/${LOCAL_FILE}`,
+  `/${LOCAL_VERSIONS_DIR}/`,
+  `/${LOCAL_META_FILE}`,
+];
 
 const MAX_VERSIONS = 5;
 const VERSION_RE = /^constitution\.(.+)\.md$/;
@@ -70,6 +76,22 @@ export type ConstitutionSelection = {
   truncated: boolean;
   usedSelection: boolean;
   sourceLength: number;
+};
+
+export type ConstitutionInsightCategory =
+  | "decision"
+  | "style"
+  | "anti"
+  | "success"
+  | "communication";
+
+export type ConstitutionInsightInput = {
+  category: ConstitutionInsightCategory;
+  text: string;
+};
+
+export type ConstitutionGenerationMeta = {
+  last_generated_at: string | null;
 };
 
 function ensureDir(dir: string): void {
@@ -314,6 +336,58 @@ export function listProjectConstitutionVersions(
   return listConstitutionVersions(versionsDir);
 }
 
+function readGenerationMeta(filePath: string): ConstitutionGenerationMeta {
+  if (!fs.existsSync(filePath)) return { last_generated_at: null };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return { last_generated_at: null };
+    const record = parsed as Record<string, unknown>;
+    const lastGenerated =
+      typeof record.last_generated_at === "string" ? record.last_generated_at : null;
+    return { last_generated_at: lastGenerated };
+  } catch {
+    return { last_generated_at: null };
+  }
+}
+
+function writeGenerationMeta(
+  filePath: string,
+  meta: ConstitutionGenerationMeta
+): ConstitutionGenerationMeta {
+  ensureDir(path.dirname(filePath));
+  const payload: ConstitutionGenerationMeta = {
+    last_generated_at: meta.last_generated_at ?? null,
+  };
+  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  return payload;
+}
+
+export function readGlobalConstitutionGenerationMeta(): ConstitutionGenerationMeta {
+  return readGenerationMeta(GLOBAL_META_FILE);
+}
+
+export function readProjectConstitutionGenerationMeta(
+  repoPath: string
+): ConstitutionGenerationMeta {
+  const filePath = path.join(repoPath, LOCAL_META_FILE);
+  return readGenerationMeta(filePath);
+}
+
+export function writeGlobalConstitutionGenerationMeta(
+  meta: ConstitutionGenerationMeta
+): ConstitutionGenerationMeta {
+  return writeGenerationMeta(GLOBAL_META_FILE, meta);
+}
+
+export function writeProjectConstitutionGenerationMeta(
+  repoPath: string,
+  meta: ConstitutionGenerationMeta
+): ConstitutionGenerationMeta {
+  ensureProjectConstitutionIgnored(repoPath);
+  const filePath = path.join(repoPath, LOCAL_META_FILE);
+  return writeGenerationMeta(filePath, meta);
+}
+
 function listConstitutionVersions(dir: string): ConstitutionVersion[] {
   const versions = listVersionFiles(dir).slice(0, MAX_VERSIONS);
   return versions.map((entry) => ({
@@ -368,6 +442,90 @@ export function mergeConstitutions(
   return serializeConstitution(globalParsed, mergedSections);
 }
 
+const INSIGHT_SECTION_TITLES: Record<ConstitutionInsightCategory, string> = {
+  decision: "Decision Heuristics",
+  style: "Style & Taste",
+  anti: "Anti-Patterns (Learned Failures)",
+  success: "Success Patterns",
+  communication: "Communication",
+};
+
+function extractBulletText(line: string): string | null {
+  const match = /^[-*]\s+(.*)$/.exec(line.trim());
+  if (!match) return null;
+  const text = match[1]?.trim();
+  return text ? text : null;
+}
+
+function normalizeBulletText(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function mergeSectionContent(content: string, additions: string[]): string {
+  const normalized = normalizeNewlines(content ?? "");
+  const lines = normalized.split("\n");
+  const existing = new Set(
+    lines
+      .map((line) => extractBulletText(line))
+      .filter((entry): entry is string => Boolean(entry))
+      .map((entry) => normalizeBulletText(entry))
+  );
+
+  const newLines = additions
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .filter((entry) => !existing.has(normalizeBulletText(entry)))
+    .map((entry) => `- ${entry}`);
+
+  if (newLines.length === 0) return normalized.trimEnd();
+  const base = normalized.trimEnd();
+  return base ? `${base}\n${newLines.join("\n")}` : newLines.join("\n");
+}
+
+export function mergeConstitutionWithInsights(params: {
+  base: string;
+  insights: ConstitutionInsightInput[];
+  fallbackTemplate?: string;
+}): string {
+  const rawBase = params.base.trim();
+  const base = rawBase || params.fallbackTemplate?.trim() || "";
+  if (!base && params.insights.length === 0) return "";
+
+  const parsed = parseConstitution(base);
+  const sections = parsed.sections.map((section) => ({ ...section }));
+  const sectionIndex = new Map(
+    sections.map((section, index) => [normalizeSectionKey(section.title), index])
+  );
+
+  const grouped = new Map<string, string[]>();
+  for (const insight of params.insights) {
+    const title = INSIGHT_SECTION_TITLES[insight.category];
+    const key = normalizeSectionKey(title);
+    const bucket = grouped.get(key) ?? [];
+    bucket.push(insight.text);
+    grouped.set(key, bucket);
+  }
+
+  for (const [key, texts] of grouped.entries()) {
+    const existingIndex = sectionIndex.get(key);
+    if (existingIndex === undefined) {
+      const titleEntry = Object.entries(INSIGHT_SECTION_TITLES).find(
+        ([, title]) => normalizeSectionKey(title) === key
+      );
+      const title = titleEntry ? titleEntry[1] : "Insights";
+      const content = mergeSectionContent("", texts);
+      sectionIndex.set(key, sections.length);
+      sections.push({ title, content });
+      continue;
+    }
+
+    const section = sections[existingIndex];
+    section.content = mergeSectionContent(section.content, texts);
+  }
+
+  return serializeConstitution(parsed, sections);
+}
+
 export function getConstitutionForProject(repoPath: string | null): string {
   const globalContent = readGlobalConstitution();
   const localContent = repoPath ? readProjectConstitution(repoPath) : null;
@@ -375,7 +533,8 @@ export function getConstitutionForProject(repoPath: string | null): string {
 }
 
 function normalizeSectionKey(title: string): string {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const withoutParentheticals = title.replace(/\s*\([^)]*\)\s*/g, " ");
+  return withoutParentheticals.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function truncateConstitution(content: string, maxChars: number): string {
