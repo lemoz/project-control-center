@@ -21,7 +21,7 @@ non_goals:
   - Remote execution.
 stop_conditions:
   - If safety checks are insufficient, default autopilot to disabled and stop.
-priority: 2
+priority: 4
 tags:
   - runner
   - autonomous

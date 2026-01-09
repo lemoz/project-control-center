@@ -10,7 +10,7 @@ acceptance_criteria:
   - "Enabled/disabled in settings."
 non_goals:
   - "Twilio or email notifications."
-priority: 6
+priority: 5
 tags: ["notifications", "imessage"]
 estimate_hours: 3
 status: backlog

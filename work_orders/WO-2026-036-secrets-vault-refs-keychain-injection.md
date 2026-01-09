@@ -20,7 +20,7 @@ non_goals:
 stop_conditions:
   - If keychain integration is unavailable, stop and ask for a fallback (do not default to `.env`).
   - If injection into VM/container cannot be scrubbed safely, stop and ask.
-priority: 2
+priority: 3
 tags:
   - security
   - secrets
