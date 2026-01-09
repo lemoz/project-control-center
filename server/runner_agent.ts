@@ -8,9 +8,12 @@ import {
   getProjectVm,
   getRunById,
   listRunsByProject,
+  type ProjectVmRow,
   type RunRow,
+  updateProjectVm,
   updateRun,
 } from "./db.js";
+import { VmManagerError, startVM } from "./vm_manager.js";
 import {
   listWorkOrders,
   patchWorkOrder,
@@ -103,6 +106,13 @@ function parseNumberEnv(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+type VmStatusView = Pick<ProjectVmRow, "status">;
+
+function shouldFallbackToLocalVm(vm: VmStatusView | null): boolean {
+  if (!vm) return true;
+  return vm.status === "not_provisioned" || vm.status === "deleted";
 }
 
 function ensureDir(dir: string) {
@@ -1579,40 +1589,81 @@ export async function runRun(runId: string) {
     ensureNodeModulesSymlink(repoPath, worktreePath);
 
     const isolationMode = project.isolation_mode || "local";
-    const vm = getProjectVm(project.id);
+    let vm = getProjectVm(project.id);
     const wantsVmIsolation = VM_ISOLATION_MODES.has(isolationMode);
+    let fallbackToLocal = wantsVmIsolation && shouldFallbackToLocalVm(vm);
     if (wantsVmIsolation) {
       if (!vm) {
         remoteFallbackReason = "VM not configured";
-      } else if (vm.status !== "running") {
-        remoteFallbackReason = `VM not running (status=${vm.status})`;
-      } else if (!vm.external_ip) {
-        remoteFallbackReason = "VM missing external IP";
+      } else if (fallbackToLocal) {
+        const statusLabel = vm.status.replace("_", " ");
+        remoteFallbackReason = `VM ${statusLabel}`;
       } else {
-        const remotePaths = buildRemoteRunPaths(runId);
-        remoteConfig = {
-          projectId: project.id,
-          workspacePath: remotePaths.workspacePath,
-          artifactsPath: remotePaths.artifactsPath,
-        };
+        if (vm.status === "stopped") {
+          log("VM is stopped; attempting to start before run");
+          try {
+            vm = await startVM(project.id);
+          } catch (err) {
+            if (
+              err instanceof VmManagerError &&
+              (err.code === "not_provisioned" || err.code === "not_found")
+            ) {
+              fallbackToLocal = true;
+            }
+            const message = err instanceof Error ? err.message : String(err);
+            remoteFallbackReason = `Failed to start VM: ${message}`;
+          }
+        }
+        if (!remoteFallbackReason) {
+          if (vm.status !== "running") {
+            const suffix = vm.last_error ? ` (${vm.last_error})` : "";
+            remoteFallbackReason = `VM not running (status=${vm.status})${suffix}`;
+          } else if (!vm.external_ip) {
+            remoteFallbackReason = "VM missing external IP";
+          } else {
+            const remotePaths = buildRemoteRunPaths(runId);
+            remoteConfig = {
+              projectId: project.id,
+              workspacePath: remotePaths.workspacePath,
+              artifactsPath: remotePaths.artifactsPath,
+            };
+          }
+        }
       }
     }
 
-    if (remoteFallbackReason) {
-      log(`VM isolation requested; falling back to local: ${remoteFallbackReason}`);
+    const requiresRemote = wantsVmIsolation && !fallbackToLocal;
+    if (remoteFallbackReason && wantsVmIsolation) {
+      if (requiresRemote) {
+        log(`VM isolation required but unavailable: ${remoteFallbackReason}`);
+      } else {
+        log(`VM isolation unavailable; running locally: ${remoteFallbackReason}`);
+      }
     }
 
     writeJson(path.join(runDir, "execution.json"), {
       requested_isolation_mode: isolationMode,
       vm_status: vm?.status ?? null,
-      execution_mode: remoteConfig ? "remote" : "local",
+      execution_mode: remoteConfig ? "remote" : requiresRemote ? "blocked" : "local",
       fallback_reason: remoteFallbackReason,
       remote_workspace_path: remoteConfig?.workspacePath ?? null,
       remote_artifacts_path: remoteConfig?.artifactsPath ?? null,
       recorded_at: nowIso(),
     });
 
+    if (requiresRemote && !remoteConfig) {
+      const message = `VM isolation required but unavailable: ${remoteFallbackReason || "unknown error"}`;
+      updateRun(runId, {
+        status: "failed",
+        error: message,
+        finished_at: nowIso(),
+      });
+      log(message);
+      return;
+    }
+
     if (remoteConfig) {
+      updateProjectVm(project.id, { last_activity_at: nowIso(), last_error: null });
       try {
         await prepareRemoteRun(remoteConfig, log);
       } catch (err) {
@@ -2630,4 +2681,5 @@ export const __test__ = {
   ensureWorktreeLink,
   removeWorktreeLink,
   resolveWorktreePaths,
+  shouldFallbackToLocalVm,
 };

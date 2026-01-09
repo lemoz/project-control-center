@@ -31,9 +31,9 @@ tags:
   - isolation
   - vm
 estimate_hours: 8
-status: ready
+status: you_review
 created_at: 2026-01-06
-updated_at: 2026-01-08
+updated_at: 2026-01-09
 depends_on:
   - WO-2025-004
 era: v1

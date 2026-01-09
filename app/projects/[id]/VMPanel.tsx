@@ -14,6 +14,8 @@ type VmResponse = {
   };
   vm: {
     project_id: string;
+    provider: string | null;
+    repo_path: string | null;
     gcp_instance_id: string | null;
     gcp_instance_name: string | null;
     gcp_project: string | null;

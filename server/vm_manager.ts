@@ -5,11 +5,13 @@ import {
   getProjectVm,
   updateProjectVm,
   upsertProjectVm,
+  type ProjectVmProvider,
   type ProjectVmPatch,
   type ProjectVmRow,
   type ProjectVmSize,
   type ProjectVmStatus,
 } from "./db.js";
+import { RemoteExecError, remoteExec, remoteUpload } from "./remote_exec.js";
 import { slugify } from "./utils.js";
 
 export type VMConfig = {
@@ -18,6 +20,7 @@ export type VMConfig = {
   zone?: string;
   image?: string;
   gcpProject?: string;
+  repoPath?: string;
 };
 
 export type VMInstance = {
@@ -80,6 +83,8 @@ const MACHINE_TYPES: Record<ProjectVmSize, string> = {
 
 const GCLOUD_COMMAND = process.env.CONTROL_CENTER_GCLOUD_PATH || "gcloud";
 const SSH_COMMAND = process.env.CONTROL_CENTER_SSH_PATH || "ssh";
+const DEFAULT_VM_REPO_ROOT = "/home/project/repo";
+const VM_PROVIDER: ProjectVmProvider = "gcp";
 const SSH_USER_ENV = "CONTROL_CENTER_GCP_SSH_USER";
 const SSH_KEY_ENV = "CONTROL_CENTER_GCP_SSH_KEY_PATH";
 const GCP_PROJECT_ENV = "CONTROL_CENTER_GCP_PROJECT";
@@ -94,6 +99,24 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function resolveVmRepoRoot(): string {
+  const root = (process.env.CONTROL_CENTER_VM_REPO_ROOT || DEFAULT_VM_REPO_ROOT).trim();
+  if (!root.startsWith("/")) {
+    throw new VmManagerError(
+      "preflight",
+      `VM repo root must be an absolute POSIX path. Got "${root}".`
+    );
+  }
+  const normalized = path.posix.normalize(root);
+  if (normalized.includes("..")) {
+    throw new VmManagerError(
+      "preflight",
+      `VM repo root must not include traversal segments. Got "${root}".`
+    );
+  }
+  return normalized.replace(/\/+$/g, "") || "/";
+}
+
 function truncate(value: string, maxLength = 500): string {
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength - 3)}...`;
@@ -106,6 +129,10 @@ function commandOutput(result: CommandResult): string {
 
 function buildCommandLabel(command: string, args: string[]): string {
   return `${command} ${args.join(" ")}`.trim();
+}
+
+function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
@@ -125,6 +152,8 @@ function isAlreadyExistsOutput(message: string): boolean {
 function defaultVmRow(projectId: string): ProjectVmRow {
   return {
     project_id: projectId,
+    provider: null,
+    repo_path: null,
     gcp_instance_id: null,
     gcp_instance_name: null,
     gcp_project: null,
@@ -189,6 +218,83 @@ function sshTimeoutMs(): number {
 
 function sshRetryMs(): number {
   return parseNumberEnv(process.env.CONTROL_CENTER_VM_SSH_RETRY_MS, 2500);
+}
+
+function extractRemoteDetail(details: Record<string, unknown> | undefined, key: string): string | null {
+  if (!details) return null;
+  const value = details[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function wrapRemoteError(context: string, err: unknown): VmManagerError {
+  if (err instanceof RemoteExecError) {
+    const stderr = extractRemoteDetail(err.details, "stderr");
+    const stdout = extractRemoteDetail(err.details, "stdout");
+    const detail = stderr || stdout;
+    const suffix = detail ? ` ${detail}` : "";
+    const code: VmManagerError["code"] =
+      err.code === "ssh_failed"
+        ? "ssh_failed"
+        : err.code === "not_running" || err.code === "not_configured"
+          ? "not_provisioned"
+          : err.code === "preflight" || err.code === "tool_missing"
+            ? "preflight"
+            : "command_failed";
+    return new VmManagerError(code, `${context}: ${err.message}${suffix}`);
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return new VmManagerError("command_failed", `${context}: ${message}`);
+}
+
+function buildPrereqInstallScript(): string {
+  return [
+    "set -e",
+    "missing=''",
+    "for tool in git rsync node npm python3 docker; do",
+    "  if ! command -v \"$tool\" >/dev/null 2>&1; then",
+    "    missing=\"$missing $tool\"",
+    "  fi",
+    "done",
+    "if [ -z \"$missing\" ]; then",
+    "  exit 0",
+    "fi",
+    "if command -v apt-get >/dev/null 2>&1; then",
+    "  sudo -n apt-get update -y",
+    "  sudo -n apt-get install -y git rsync nodejs npm python3 docker.io",
+    "  if command -v systemctl >/dev/null 2>&1; then sudo -n systemctl enable --now docker >/dev/null 2>&1 || true; fi",
+    "elif command -v yum >/dev/null 2>&1; then",
+    "  sudo -n yum install -y git rsync nodejs npm python3 docker",
+    "  if command -v systemctl >/dev/null 2>&1; then sudo -n systemctl enable --now docker >/dev/null 2>&1 || true; fi",
+    "elif command -v dnf >/dev/null 2>&1; then",
+    "  sudo -n dnf install -y git rsync nodejs npm python3 docker",
+    "  if command -v systemctl >/dev/null 2>&1; then sudo -n systemctl enable --now docker >/dev/null 2>&1 || true; fi",
+    "else",
+    "  echo \"Missing tools:$missing. Install git, rsync, node, npm, python3, docker manually.\" >&2",
+    "  exit 1",
+    "fi",
+  ].join("; ");
+}
+
+async function ensureVmPrereqs(projectId: string): Promise<void> {
+  const script = buildPrereqInstallScript();
+  try {
+    await remoteExec(projectId, `bash -lc ${shellEscape(script)}`);
+  } catch (err) {
+    throw wrapRemoteError("Failed to install VM prerequisites", err);
+  }
+}
+
+async function syncVmRepo(projectId: string, repoPath: string): Promise<void> {
+  try {
+    await remoteUpload(projectId, repoPath, ".", {
+      allowDelete: true,
+      exclude: [".system", "*.db*"],
+    });
+  } catch (err) {
+    throw wrapRemoteError("Failed to sync repo to VM", err);
+  }
 }
 
 function resolveSshConfig(): SshConfig {
@@ -580,6 +686,7 @@ export async function provisionVM(config: VMConfig): Promise<ProjectVmRow> {
       requireSsh: true,
     });
     const instanceName = vm.gcp_instance_name || buildInstanceName(config.projectId);
+    const repoRoot = resolveVmRepoRoot();
     const now = nowIso();
 
     updateVm(config.projectId, {
@@ -588,6 +695,8 @@ export async function provisionVM(config: VMConfig): Promise<ProjectVmRow> {
       gcp_instance_name: instanceName,
       gcp_project: gcp.project,
       gcp_zone: gcp.zone,
+      provider: VM_PROVIDER,
+      repo_path: repoRoot,
       created_at: vm.created_at ?? now,
       last_activity_at: now,
       last_error: null,
@@ -627,7 +736,20 @@ export async function provisionVM(config: VMConfig): Promise<ProjectVmRow> {
       gcp_instance_name: instanceName,
       gcp_project: gcp.project,
       gcp_zone: gcp.zone,
+      provider: VM_PROVIDER,
+      repo_path: repoRoot,
     });
+
+    if (config.repoPath) {
+      await ensureVmPrereqs(config.projectId);
+      await syncVmRepo(config.projectId, config.repoPath);
+      updateVm(config.projectId, {
+        last_activity_at: nowIso(),
+        last_error: null,
+        provider: VM_PROVIDER,
+        repo_path: repoRoot,
+      });
+    }
 
     return getProjectVm(config.projectId) ?? defaultVmRow(config.projectId);
   });

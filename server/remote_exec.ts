@@ -20,6 +20,7 @@ export type RemoteExecOptions = {
 export type RemoteSyncOptions = {
   allowDelete?: boolean;
   allowAbsolute?: boolean;
+  exclude?: string[];
 };
 
 export type RemoteExecErrorCode =
@@ -544,6 +545,19 @@ function buildDeleteArgs(
   return ["--delete"];
 }
 
+function buildExcludeArgs(extraExcludes?: string[]): string[] {
+  if (!extraExcludes || extraExcludes.length === 0) {
+    return DEFAULT_EXCLUDES.flatMap((pattern) => ["--exclude", pattern]);
+  }
+  const excludes = new Set(DEFAULT_EXCLUDES);
+  for (const pattern of extraExcludes) {
+    const trimmed = pattern.trim();
+    if (!trimmed) continue;
+    excludes.add(trimmed);
+  }
+  return Array.from(excludes).flatMap((pattern) => ["--exclude", pattern]);
+}
+
 async function ensureRemoteDir(config: VmTarget, dirPath: string): Promise<void> {
   const args = [
     ...buildSshArgs(config),
@@ -666,7 +680,7 @@ export async function remoteUpload(
   const rsyncArgs = [
     "-az",
     ...deleteArgs,
-    ...DEFAULT_EXCLUDES.flatMap((pattern) => ["--exclude", pattern]),
+    ...buildExcludeArgs(options?.exclude),
     "-e",
     buildRsyncShell(target),
     formatRsyncSource(local.fullPath, local.isDir),
@@ -757,7 +771,7 @@ export async function remoteDownload(
   const rsyncArgs = [
     "-az",
     ...deleteArgs,
-    ...DEFAULT_EXCLUDES.flatMap((pattern) => ["--exclude", pattern]),
+    ...buildExcludeArgs(options?.exclude),
     "-e",
     buildRsyncShell(target),
     formatRsyncRemote(target, remote.fullPath, remoteIsDir),

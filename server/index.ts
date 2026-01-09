@@ -360,6 +360,8 @@ const VM_SIZES = new Set(["small", "medium", "large", "xlarge"]);
 function buildVmResponse(project: ProjectRow, vm: ProjectVmRow | null) {
   const fallbackVm = {
     project_id: project.id,
+    provider: null,
+    repo_path: null,
     gcp_instance_id: null,
     gcp_instance_name: null,
     gcp_project: null,
@@ -481,6 +483,7 @@ app.post("/repos/:id/vm/provision", async (req, res) => {
       size: project.vm_size || "medium",
       zone,
       image,
+      repoPath: project.path,
     });
     return res.json(buildVmResponse(project, vm));
   } catch (err) {
