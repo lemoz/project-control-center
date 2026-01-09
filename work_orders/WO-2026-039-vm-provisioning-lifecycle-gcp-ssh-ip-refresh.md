@@ -31,7 +31,7 @@ tags:
   - infra
   - vm
 estimate_hours: 5
-status: you_review
+status: done
 created_at: 2026-01-08
 updated_at: 2026-01-08
 depends_on:
