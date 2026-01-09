@@ -48,6 +48,12 @@ import { listWorkOrders, type WorkOrder } from "./work_orders.js";
 import { resolveChatSettings } from "./settings.js";
 import { ensurePortfolioWorkspace } from "./portfolio_workspace.js";
 import { ensureChatWorktree, readWorktreeStatus } from "./chat_worktree.js";
+import {
+  formatConstitutionBlock,
+  getConstitutionForProject,
+  selectRelevantConstitutionSections,
+  type ConstitutionSelection,
+} from "./constitution.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -242,6 +248,35 @@ function validateChatAccess(
 function ensureDir(dir: string) {
   if (fs.existsSync(dir)) return;
   fs.mkdirSync(dir, { recursive: true });
+}
+
+function appendLogLine(filePath: string, line: string) {
+  try {
+    ensureDir(path.dirname(filePath));
+    fs.appendFileSync(filePath, `[${nowIso()}] ${line}\n`, "utf8");
+  } catch {
+    // ignore log failures
+  }
+}
+
+function logConstitutionSelection(
+  logPath: string,
+  context: string,
+  selection: ConstitutionSelection
+) {
+  if (!selection.content.trim()) {
+    appendLogLine(logPath, `[constitution] ${context}: none found, proceeding without`);
+    return;
+  }
+  const sections = selection.sectionTitles.length
+    ? selection.sectionTitles.join(", ")
+    : "(none)";
+  const strategy = selection.usedSelection ? "selected" : "full";
+  const truncated = selection.truncated ? " truncated" : "";
+  appendLogLine(
+    logPath,
+    `[constitution] ${context}: injecting ${selection.content.length} chars (${strategy}${truncated}); sections: ${sections}`
+  );
 }
 
 function tailFile(filePath: string, maxBytes = 24_000): string {
@@ -680,6 +715,7 @@ function buildChatPrompt(params: {
   outputTail?: string;
   blendedContext?: string;
   workOrderRunContext?: string;
+  constitution?: string;
 }): string {
   const scopeLine =
     params.scope === "global"
@@ -754,9 +790,11 @@ Guidelines for dependencies:
       : params.contextDepth === "blended"
         ? "Recent messages (last 50, with tiered run context above):"
         : "Recent messages (last 50, verbatim):";
+  const constitutionBlock = formatConstitutionBlock(params.constitution ?? "");
 
   return (
     `You are the in-app Control Center assistant for Project Control Center.\n` +
+    constitutionBlock +
     `${scopeLine}\n` +
     `Access: ${accessLine}\n` +
     `${trustedLine}\n` +
@@ -826,6 +864,7 @@ function buildSuggestionPrompt(params: {
   context: ChatContextSelection;
   access: ChatAccess;
   trustedHosts: string[];
+  constitution?: string;
 }): string {
   const scopeLine =
     params.scope === "global"
@@ -850,9 +889,11 @@ function buildSuggestionPrompt(params: {
   const trustedLine = params.trustedHosts.length
     ? `Trusted hosts pack: ${params.trustedHosts.join(", ")}`
     : "Trusted hosts pack: (none)";
+  const constitutionBlock = formatConstitutionBlock(params.constitution ?? "");
 
   return (
     `You recommend context depth and access settings for the Control Center chat.\n` +
+    constitutionBlock +
     `${scopeLine}\n` +
     `Current settings: ${accessLine} · Context depth: ${params.context.depth}\n` +
     `${trustedLine}\n` +
@@ -1496,6 +1537,18 @@ function loadWorkOrder(repoPath: string, workOrderId: string): WorkOrder {
   return found;
 }
 
+function readWorkOrderTags(
+  repoPath: string | null,
+  workOrderId?: string | null
+): string[] | undefined {
+  if (!repoPath || !workOrderId) return undefined;
+  try {
+    return loadWorkOrder(repoPath, workOrderId).tags;
+  } catch {
+    return undefined;
+  }
+}
+
 function resolveChatWorkspace(params: ChatScopeParams): { cwd: string; skipGitRepoCheck: boolean } {
   if (params.scope === "global") {
     const cwd = ensurePortfolioWorkspace();
@@ -1622,6 +1675,19 @@ export async function suggestChatSettings(
     limit: suggestionContextMessageLimit(),
   });
 
+  const repoPath = params.scope === "global" ? null : cwd;
+  const workOrderTags = readWorkOrderTags(
+    repoPath,
+    params.scope === "work_order" ? params.workOrderId : null
+  );
+  const mergedConstitution = getConstitutionForProject(repoPath);
+  const suggestionConstitution = selectRelevantConstitutionSections({
+    constitution: mergedConstitution,
+    context: "chat_suggestion",
+    workOrderTags,
+  });
+  logConstitutionSelection(logPath, "chat_suggestion", suggestionConstitution);
+
   const prompt = buildSuggestionPrompt({
     scope: params.scope,
     projectId: "projectId" in params ? params.projectId : undefined,
@@ -1632,6 +1698,7 @@ export async function suggestChatSettings(
     context,
     access,
     trustedHosts: settings.trusted_hosts ?? [],
+    constitution: suggestionConstitution.content,
   });
 
   const suggestionAccess: ChatAccess = {
@@ -1736,6 +1803,19 @@ export async function suggestChatSettingsForThread(params: {
     limit: suggestionContextMessageLimit(),
   });
 
+  const repoPath = scopeParams.scope === "global" ? null : cwd;
+  const workOrderTags = readWorkOrderTags(
+    repoPath,
+    scopeParams.scope === "work_order" ? scopeParams.workOrderId : null
+  );
+  const mergedConstitution = getConstitutionForProject(repoPath);
+  const suggestionConstitution = selectRelevantConstitutionSections({
+    constitution: mergedConstitution,
+    context: "chat_suggestion",
+    workOrderTags,
+  });
+  logConstitutionSelection(logPath, "chat_suggestion", suggestionConstitution);
+
   const prompt = buildSuggestionPrompt({
     scope: scopeParams.scope,
     projectId: "projectId" in scopeParams ? scopeParams.projectId : undefined,
@@ -1746,6 +1826,7 @@ export async function suggestChatSettingsForThread(params: {
     context,
     access,
     trustedHosts: settings.trusted_hosts ?? [],
+    constitution: suggestionConstitution.content,
   });
 
   const suggestionAccess: ChatAccess = {
@@ -2296,6 +2377,18 @@ export async function runChatRun(runId: string): Promise<void> {
     repoPath = project.path;
   }
 
+  const workOrderTags = readWorkOrderTags(
+    repoPath,
+    refreshedThread.scope === "work_order" ? refreshedThread.work_order_id : null
+  );
+  const mergedConstitution = getConstitutionForProject(repoPath);
+  const chatConstitution = selectRelevantConstitutionSections({
+    constitution: mergedConstitution,
+    context: "chat",
+    workOrderTags,
+  });
+  logConstitutionSelection(run.log_path, "chat", chatConstitution);
+
   let runCwd = run.cwd;
   let worktreeInfo:
     | { worktreePath: string; branchName: string; baseBranch: string }
@@ -2443,6 +2536,7 @@ export async function runChatRun(runId: string): Promise<void> {
     outputTail,
     blendedContext,
     workOrderRunContext,
+    constitution: chatConstitution.content,
   });
 
   const updatePendingChanges = (): boolean => {

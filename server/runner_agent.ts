@@ -19,6 +19,12 @@ import {
 } from "./work_orders.js";
 import { resolveRunnerSettingsForRepo } from "./settings.js";
 import {
+  formatConstitutionBlock,
+  getConstitutionForProject,
+  selectRelevantConstitutionSections,
+  type ConstitutionSelection,
+} from "./constitution.js";
+import {
   remoteDownload,
   remoteExec,
   remoteUpload,
@@ -837,6 +843,25 @@ function reviewerSchema(): object {
   };
 }
 
+function logConstitutionSelection(
+  log: (line: string) => void,
+  context: string,
+  selection: ConstitutionSelection
+) {
+  if (!selection.content.trim()) {
+    log(`[constitution] ${context}: none found, proceeding without`);
+    return;
+  }
+  const sections = selection.sectionTitles.length
+    ? selection.sectionTitles.join(", ")
+    : "(none)";
+  const strategy = selection.usedSelection ? "selected" : "full";
+  const truncated = selection.truncated ? " truncated" : "";
+  log(
+    `[constitution] ${context}: injecting ${selection.content.length} chars (${strategy}${truncated}); sections: ${sections}`
+  );
+}
+
 function loadWorkOrder(repoPath: string, workOrderId: string): WorkOrder {
   const all = listWorkOrders(repoPath);
   const found = all.find((w) => w.id === workOrderId);
@@ -851,9 +876,11 @@ function buildBuilderPrompt(params: {
   maxIterations: number;
   reviewerFeedback?: string;
   testFailureOutput?: string | null;
+  constitution?: string;
 }) {
   const feedback = params.reviewerFeedback?.trim();
   const testFailureOutput = params.testFailureOutput?.trim();
+  const constitutionBlock = formatConstitutionBlock(params.constitution ?? "");
   const iterationLine = `This is iteration ${params.iteration} of ${params.maxIterations}.\n\n`;
   const failureBlock = testFailureOutput
     ? `## Previous Attempt Failed\n\n` +
@@ -864,6 +891,7 @@ function buildBuilderPrompt(params: {
       "Please analyze the failure and fix the issues.\n\n"
     : "";
   return `You are the Builder agent.\n\n` +
+    constitutionBlock +
     `Task: Implement the Work Order in this repository.\n\n` +
     `Rules:\n` +
     `- Follow the Work Order contract (goal + acceptance criteria + stop conditions).\n` +
@@ -882,9 +910,12 @@ function buildReviewerPrompt(params: {
   workOrderId: string;
   workOrderMarkdown: string;
   diffPatch: string;
+  constitution?: string;
 }) {
+  const constitutionBlock = formatConstitutionBlock(params.constitution ?? "");
   return (
     `You are a fresh Reviewer agent.\n\n` +
+    constitutionBlock +
     `Task:\n` +
     `- Review the Work Order + diff.\n` +
     `- If needed, run READ-ONLY shell commands to inspect the provided repo snapshot at ./repo/.\n\n` +
@@ -1466,6 +1497,20 @@ export async function runRun(runId: string) {
     const workOrderFilePath = path.join(runDir, "work_order.md");
     fs.writeFileSync(workOrderFilePath, workOrderMarkdown, "utf8");
 
+    const mergedConstitution = getConstitutionForProject(repoPath);
+    const builderConstitution = selectRelevantConstitutionSections({
+      constitution: mergedConstitution,
+      context: "builder",
+      workOrderTags: workOrder.tags,
+    });
+    const reviewerConstitution = selectRelevantConstitutionSections({
+      constitution: mergedConstitution,
+      context: "reviewer",
+      workOrderTags: workOrder.tags,
+    });
+    logConstitutionSelection(log, "builder", builderConstitution);
+    logConstitutionSelection(log, "reviewer", reviewerConstitution);
+
     const baseBranch = resolveBaseBranch(repoPath, log);
     const branchName =
       run.branch_name?.trim() || buildRunBranchName(workOrder.id, runId);
@@ -1605,6 +1650,7 @@ export async function runRun(runId: string) {
         maxIterations,
         reviewerFeedback,
         testFailureOutput,
+        constitution: builderConstitution.content,
       });
       fs.writeFileSync(path.join(builderDir, "prompt.txt"), builderPrompt, "utf8");
 
@@ -1765,6 +1811,7 @@ export async function runRun(runId: string) {
         workOrderId: workOrder.id,
         workOrderMarkdown,
         diffPatch: diffPatch || "(no changes detected)",
+        constitution: reviewerConstitution.content,
       });
       fs.writeFileSync(
         path.join(reviewerDir, "prompt.txt"),
@@ -2099,6 +2146,7 @@ export async function runRun(runId: string) {
         workOrderId: workOrder.id,
         workOrderMarkdown,
         diffPatch: resolvedDiff || "(no changes detected)",
+        constitution: reviewerConstitution.content,
       });
       fs.writeFileSync(
         path.join(mergeReviewerDir, "prompt.txt"),

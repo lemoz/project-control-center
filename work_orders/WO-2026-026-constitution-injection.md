@@ -33,14 +33,13 @@ tags:
   - chat
   - autonomy
 estimate_hours: 4
-status: ready
+status: you_review
 created_at: 2026-01-06
-updated_at: 2026-01-06
+updated_at: 2026-01-09
 depends_on:
   - WO-2026-024
 era: v2
 ---
-
 # Constitution Injection into Agent Prompts
 
 ## Overview
