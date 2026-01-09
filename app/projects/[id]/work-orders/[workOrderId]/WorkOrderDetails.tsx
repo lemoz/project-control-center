@@ -37,6 +37,7 @@ type RunStatus =
   | "ai_review"
   | "testing"
   | "you_review"
+  | "merged"
   | "merge_conflict"
   | "failed"
   | "canceled";

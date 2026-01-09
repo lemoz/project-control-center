@@ -61,6 +61,7 @@ export type RunRow = {
     | "ai_review"
     | "testing"
     | "you_review"
+    | "merged"
     | "merge_conflict"
     | "failed"
     | "canceled";
@@ -831,6 +832,16 @@ export function listRunsByProject(projectId: string, limit = 50): RunRow[] {
       "SELECT * FROM runs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?"
     )
     .all(projectId, limit) as RunRow[];
+}
+
+export function markWorkOrderRunsMerged(projectId: string, workOrderId: string): number {
+  const database = getDb();
+  const result = database
+    .prepare(
+      "UPDATE runs SET status = 'merged' WHERE project_id = ? AND work_order_id = ? AND status = 'you_review'"
+    )
+    .run(projectId, workOrderId);
+  return result.changes;
 }
 
 export function markInProgressRunsFailed(reason: string): number {

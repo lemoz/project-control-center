@@ -42,6 +42,7 @@ type RunStatus =
   | "ai_review"
   | "testing"
   | "you_review"
+  | "merged"
   | "merge_conflict"
   | "failed"
   | "canceled";
@@ -114,7 +115,7 @@ export function KanbanBoard({ repoId }: { repoId: string }) {
           effectiveStatus = "building";
         } else if (latestRun.status === "ai_review") {
           effectiveStatus = "ai_review";
-        } else if (latestRun.status === "you_review") {
+        } else if (latestRun.status === "you_review" && wo.status !== "done") {
           effectiveStatus = "you_review";
         }
       }
