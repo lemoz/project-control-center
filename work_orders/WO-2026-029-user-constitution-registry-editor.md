@@ -27,9 +27,11 @@ tags:
 estimate_hours: 4
 status: backlog
 created_at: 2026-01-07
-updated_at: 2026-01-07
+updated_at: 2026-01-09
 depends_on:
   - WO-2025-003
+  - WO-2026-024
+  - WO-2026-026
 era: v1
 ---
 ## Notes

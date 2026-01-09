@@ -7,4 +7,15 @@ priority: 1
 tags:
   - meta
   - bootstrap
+success_criteria: |
+  Able to fully manage 10-100 projects effectively.
+  Projects can self-determine and self-attain their own success.
+  System learns from failures and doesn't repeat mistakes.
+success_metrics:
+  - name: Active projects managed
+    target: 10
+    current: 1
+  - name: Autonomous run success rate
+    target: 80%
+    current: null
 
