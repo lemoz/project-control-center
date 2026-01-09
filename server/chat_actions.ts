@@ -6,6 +6,7 @@ import {
   markWorkOrderRunsMerged,
   setProjectHidden,
   setProjectStar,
+  updateProjectSuccess,
 } from "./db.js";
 import {
   createChatActionLedgerEntry,
@@ -17,6 +18,7 @@ import {
 } from "./chat_db.js";
 import { ChatActionSchema, type ChatAction } from "./chat_contract.js";
 import { syncAndListRepoSummaries } from "./projects_catalog.js";
+import { updateControlSuccess } from "./sidecar.js";
 import { enqueueCodexRun } from "./runner_agent.js";
 import { mergeChatWorktree, resolveChatWorktreeConfig } from "./chat_worktree.js";
 import {
@@ -106,6 +108,24 @@ const WorkOrderStartRunPayloadSchema = z
   .strict();
 
 const WorktreeMergePayloadSchema = z.object({}).strict();
+
+const SuccessMetricSchema = z
+  .object({
+    name: z.string().min(1),
+    target: z.union([z.number(), z.string()]),
+    current: z.union([z.number(), z.string()]).nullable().optional(),
+  })
+  .strict();
+
+type SuccessMetric = z.infer<typeof SuccessMetricSchema>;
+
+const ProjectSetSuccessPayloadSchema = z
+  .object({
+    projectId: z.string().min(1),
+    success_criteria: z.string().min(1).optional(),
+    success_metrics: z.array(SuccessMetricSchema).optional(),
+  })
+  .strict();
 
 type UndoPayload =
   | { type: "project_set_star"; payload: z.infer<typeof ProjectSetStarPayloadSchema> }
@@ -204,6 +224,28 @@ export function applyChatAction(input: unknown) {
           payload: { projectId: payload.projectId, hidden: prev },
         };
         return { undoPayload, result: { ok: true } };
+      }
+      case "project_set_success": {
+        const payload = ProjectSetSuccessPayloadSchema.parse(action.payload);
+        if (!("success_criteria" in payload) && !("success_metrics" in payload)) {
+          throw new Error("success criteria or metrics required");
+        }
+        const project = findProjectById(payload.projectId);
+        if (!project) throw new Error("project not found");
+        const criteria =
+          typeof payload.success_criteria === "string" ? payload.success_criteria.trim() : null;
+        const sidecarPatch: { success_criteria?: string | null; success_metrics?: SuccessMetric[] | null } = {};
+        if ("success_criteria" in payload) sidecarPatch.success_criteria = criteria;
+        if ("success_metrics" in payload) sidecarPatch.success_metrics = payload.success_metrics ?? null;
+        updateControlSuccess(project.path, sidecarPatch);
+
+        const dbPatch: { success_criteria?: string | null; success_metrics?: string } = {};
+        if ("success_criteria" in payload) dbPatch.success_criteria = criteria || null;
+        if ("success_metrics" in payload) {
+          dbPatch.success_metrics = JSON.stringify(payload.success_metrics ?? []);
+        }
+        updateProjectSuccess(project.id, dbPatch);
+        return { undoPayload: null, result: { ok: true } };
       }
       case "work_order_create": {
         const payload = WorkOrderCreatePayloadSchema.parse(action.payload);

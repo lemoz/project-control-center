@@ -9,6 +9,8 @@ export type ProjectRow = {
   path: string;
   name: string;
   description: string | null;
+  success_criteria: string | null;
+  success_metrics: string | null;
   type: "prototype" | "long_term";
   stage: string;
   status: "active" | "blocked" | "parked";
@@ -115,6 +117,8 @@ function initSchema(database: Database.Database) {
       path TEXT NOT NULL,
       name TEXT NOT NULL,
       description TEXT,
+      success_criteria TEXT,
+      success_metrics TEXT NOT NULL DEFAULT '[]',
       type TEXT NOT NULL,
       stage TEXT NOT NULL,
       status TEXT NOT NULL,
@@ -320,6 +324,8 @@ function initSchema(database: Database.Database) {
   const projectColumns = database.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>;
   const hasStarred = projectColumns.some((c) => c.name === "starred");
   const hasDescription = projectColumns.some((c) => c.name === "description");
+  const hasSuccessCriteria = projectColumns.some((c) => c.name === "success_criteria");
+  const hasSuccessMetrics = projectColumns.some((c) => c.name === "success_metrics");
   const hasHidden = projectColumns.some((c) => c.name === "hidden");
   const hasIsolationMode = projectColumns.some((c) => c.name === "isolation_mode");
   const hasVmSize = projectColumns.some((c) => c.name === "vm_size");
@@ -328,6 +334,12 @@ function initSchema(database: Database.Database) {
   }
   if (!hasDescription) {
     database.exec("ALTER TABLE projects ADD COLUMN description TEXT;");
+  }
+  if (!hasSuccessCriteria) {
+    database.exec("ALTER TABLE projects ADD COLUMN success_criteria TEXT;");
+  }
+  if (!hasSuccessMetrics) {
+    database.exec("ALTER TABLE projects ADD COLUMN success_metrics TEXT NOT NULL DEFAULT '[]';");
   }
   if (!hasHidden) {
     database.exec("ALTER TABLE projects ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;");
@@ -613,12 +625,14 @@ export function upsertProject(p: Omit<ProjectRow, "created_at" | "updated_at"> &
   const updatedAt = p.updated_at || now;
   database
     .prepare(
-      `INSERT INTO projects (id, path, name, description, type, stage, status, priority, starred, hidden, tags, isolation_mode, vm_size, last_run_at, created_at, updated_at)
-       VALUES (@id, @path, @name, @description, @type, @stage, @status, @priority, @starred, @hidden, @tags, @isolation_mode, @vm_size, @last_run_at, @created_at, @updated_at)
+      `INSERT INTO projects (id, path, name, description, success_criteria, success_metrics, type, stage, status, priority, starred, hidden, tags, isolation_mode, vm_size, last_run_at, created_at, updated_at)
+       VALUES (@id, @path, @name, @description, @success_criteria, @success_metrics, @type, @stage, @status, @priority, @starred, @hidden, @tags, @isolation_mode, @vm_size, @last_run_at, @created_at, @updated_at)
        ON CONFLICT(id) DO UPDATE SET
          path=excluded.path,
          name=excluded.name,
          description=COALESCE(excluded.description, projects.description),
+         success_criteria=excluded.success_criteria,
+         success_metrics=excluded.success_metrics,
          type=excluded.type,
          stage=excluded.stage,
          status=excluded.status,
@@ -664,6 +678,26 @@ export function updateProjectIsolationSettings(
   const fields: Array<{ key: keyof typeof patch; column: string }> = [
     { key: "isolation_mode", column: "isolation_mode" },
     { key: "vm_size", column: "vm_size" },
+  ];
+  const sets = fields
+    .filter((f) => patch[f.key] !== undefined)
+    .map((f) => `${f.column} = @${f.key}`);
+  if (!sets.length) return findProjectById(id);
+  const now = new Date().toISOString();
+  database
+    .prepare(`UPDATE projects SET ${sets.join(", ")}, updated_at = @updated_at WHERE id = @id`)
+    .run({ id, updated_at: now, ...patch });
+  return findProjectById(id);
+}
+
+export function updateProjectSuccess(
+  id: string,
+  patch: Partial<Pick<ProjectRow, "success_criteria" | "success_metrics">>
+): ProjectRow | null {
+  const database = getDb();
+  const fields: Array<{ key: keyof typeof patch; column: string }> = [
+    { key: "success_criteria", column: "success_criteria" },
+    { key: "success_metrics", column: "success_metrics" },
   ];
   const sets = fields
     .filter((f) => patch[f.key] !== undefined)

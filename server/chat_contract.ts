@@ -87,6 +87,7 @@ export type ChatSuggestRequest = z.infer<typeof ChatSuggestRequestSchema>;
 export const CHAT_ACTION_TYPES = [
   "project_set_star",
   "project_set_hidden",
+  "project_set_success",
   "work_order_create",
   "work_order_update",
   "work_order_set_status",
@@ -174,6 +175,14 @@ export const WorkOrderStartRunPayloadSchema = z
   })
   .strict();
 
+export const SuccessMetricSchema = z
+  .object({
+    name: z.string().min(1),
+    target: z.union([z.number(), z.string()]),
+    current: z.union([z.number(), z.string()]).nullable().optional(),
+  })
+  .strict();
+
 export const ChatActionPayloadSchema = z
   .object({
     projectId: z.string().min(1).optional(),
@@ -183,6 +192,8 @@ export const ChatActionPayloadSchema = z
     tags: z.array(z.string()).optional(),
     starred: z.boolean().optional(),
     hidden: z.boolean().optional(),
+    success_criteria: z.string().min(1).optional(),
+    success_metrics: z.array(SuccessMetricSchema).optional(),
     status: WorkOrderStatusSchema.optional(),
     patch: WorkOrderPatchSchema.optional(),
     depends_on: z.array(z.string()).optional(),

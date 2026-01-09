@@ -401,13 +401,14 @@ function chatResponseJsonSchema(): object {
           properties: {
             type: {
               type: "string",
-              enum: [
-                "project_set_star",
-                "project_set_hidden",
-                "work_order_create",
-                "work_order_update",
-                "work_order_set_status",
-                "repos_rescan",
+            enum: [
+              "project_set_star",
+              "project_set_hidden",
+              "project_set_success",
+              "work_order_create",
+              "work_order_update",
+              "work_order_set_status",
+              "repos_rescan",
                 "work_order_start_run",
                 "worktree_merge",
               ],
@@ -695,6 +696,9 @@ function buildChatPrompt(params: {
 For every action, set \`payload_json\` to a JSON string encoding the payload object:
 - project_set_star payload_json: {"projectId":"...","starred":true}
 - project_set_hidden payload_json: {"projectId":"...","hidden":true}
+- project_set_success payload_json: {"projectId":"...","success_criteria":"...","success_metrics":[{"name":"...","target":10,"current":2}]}
+  success_criteria: markdown text describing the project's north star (optional but recommended)
+  success_metrics: list of measurable KPIs with name + target (optional), include current when known
 - work_order_create payload_json: {"projectId":"...","title":"...","priority":3,"tags":["..."],"depends_on":["WO-XXXX"],"era":"v1"}
   depends_on: array of work order IDs that must be completed first (optional)
   era: phase/group label like "foundation", "v1", "chat-v2", "autonomous" (optional)
@@ -763,6 +767,7 @@ Guidelines for dependencies:
     `- If filesystem write access is granted, work only inside the isolated chat worktree; changes stay pending until the user merges them.\n` +
     `- Actions do nothing until the human clicks Apply.\n` +
     `- Prefer small, explicit, reviewable actions.\n` +
+    `- When defining project success, ask clarifying questions and propose project_set_success to write criteria/metrics to .control.yml.\n` +
     `- Avoid network calls unless network access is enabled.\n` +
     `\n` +
     `Work Order Run Outputs:\n` +

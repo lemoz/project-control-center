@@ -9,7 +9,7 @@ import {
   type ProjectRow,
 } from "./db.js";
 import { discoverGitRepos, loadDiscoveryConfig } from "./discovery.js";
-import { readControlMetadata } from "./sidecar.js";
+import { readControlMetadata, type ControlSuccessMetric } from "./sidecar.js";
 import { stableRepoId } from "./utils.js";
 import { topActiveWorkOrders, type WorkOrderStatus } from "./work_orders.js";
 
@@ -49,6 +49,46 @@ function safeParseStringArrayJson(value: unknown): string[] {
     const parsed = JSON.parse(value);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((item): item is string => typeof item === "string");
+  } catch {
+    return [];
+  }
+}
+
+function normalizeSuccessCriteria(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : null;
+}
+
+function isSuccessMetric(value: unknown): value is ControlSuccessMetric {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record.name !== "string" || !record.name.trim()) return false;
+  if (!(typeof record.target === "number" || typeof record.target === "string")) return false;
+  if ("current" in record) {
+    if (
+      !(
+        record.current === null ||
+        record.current === undefined ||
+        typeof record.current === "number" ||
+        typeof record.current === "string"
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function safeParseSuccessMetrics(value: unknown): ControlSuccessMetric[] {
+  if (Array.isArray(value)) {
+    return value.filter(isSuccessMetric);
+  }
+  if (typeof value !== "string" || value.length === 0) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isSuccessMetric);
   } catch {
     return [];
   }
@@ -165,6 +205,15 @@ export function syncAndListRepoSummaries(params?: { forceRescan?: boolean }): Re
     const status = meta?.status || existingFallback?.status || ("active" as const);
     const priority = meta?.priority ?? existingFallback?.priority ?? 3;
     const tags = JSON.stringify(meta?.tags ?? safeParseStringArrayJson(existingFallback?.tags));
+    const success_criteria =
+      normalizeSuccessCriteria(meta?.success_criteria) ??
+      normalizeSuccessCriteria(existingFallback?.success_criteria) ??
+      null;
+    const success_metrics = JSON.stringify(
+      meta?.success_metrics !== undefined
+        ? safeParseSuccessMetrics(meta.success_metrics)
+        : safeParseSuccessMetrics(existingFallback?.success_metrics)
+    );
     const isolation_mode = existingFallback?.isolation_mode || "local";
     const vm_size = existingFallback?.vm_size || "medium";
     const persistedStarred = Boolean(existingById?.starred) || anyStarred;
@@ -192,6 +241,8 @@ export function syncAndListRepoSummaries(params?: { forceRescan?: boolean }): Re
       starred,
       hidden,
       tags,
+      success_criteria,
+      success_metrics,
       isolation_mode,
       vm_size,
       last_run_at: lastRunAt,

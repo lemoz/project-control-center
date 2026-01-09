@@ -225,6 +225,21 @@ a {
   animation: loadingSlide 1.2s ease-in-out infinite;
 }
 
+.progressTrack {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #0b0d12;
+  border: 1px solid #2b3347;
+}
+
+.progressFill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2b5cff, #59c6ff);
+  transition: width 0.3s ease;
+}
+
 @keyframes loadingSlide {
   0% {
     transform: translateX(-120%);

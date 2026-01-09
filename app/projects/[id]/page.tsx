@@ -6,6 +6,7 @@ import { KanbanBoard } from "./KanbanBoard";
 import { TechTreeView } from "./TechTreeView";
 import { ConstitutionPanel } from "./ConstitutionPanel";
 import { VMPanel } from "./VMPanel";
+import { SuccessPanel } from "./SuccessPanel";
 
 type ViewMode = "kanban" | "tech-tree";
 
@@ -44,6 +45,7 @@ export default function ProjectPage({ params }: { params: { id: string } }) {
         </div>
       </section>
 
+      <SuccessPanel repoId={id} />
       <ConstitutionPanel repoId={id} />
       <VMPanel repoId={id} />
 
