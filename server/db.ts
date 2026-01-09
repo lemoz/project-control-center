@@ -33,7 +33,9 @@ export type ProjectVmStatus =
 
 export type ProjectVmRow = {
   project_id: string;
+  gcp_instance_id: string | null;
   gcp_instance_name: string | null;
+  gcp_project: string | null;
   gcp_zone: string | null;
   external_ip: string | null;
   internal_ip: string | null;
@@ -45,6 +47,8 @@ export type ProjectVmRow = {
   last_error: string | null;
   total_hours_used: number;
 };
+
+export type ProjectVmPatch = Partial<Omit<ProjectVmRow, "project_id">>;
 
 export type RunRow = {
   id: string;
@@ -126,7 +130,9 @@ function initSchema(database: Database.Database) {
 
     CREATE TABLE IF NOT EXISTS project_vms (
       project_id TEXT PRIMARY KEY,
+      gcp_instance_id TEXT,
       gcp_instance_name TEXT,
+      gcp_project TEXT,
       gcp_zone TEXT,
       external_ip TEXT,
       internal_ip TEXT,
@@ -333,9 +339,17 @@ function initSchema(database: Database.Database) {
   }
 
   const projectVmColumns = database.prepare("PRAGMA table_info(project_vms)").all() as Array<{ name: string }>;
+  const hasVmInstanceId = projectVmColumns.some((c) => c.name === "gcp_instance_id");
+  const hasVmProject = projectVmColumns.some((c) => c.name === "gcp_project");
   const hasVmLastActivityAt = projectVmColumns.some((c) => c.name === "last_activity_at");
   const hasVmLastError = projectVmColumns.some((c) => c.name === "last_error");
   const hasVmTotalHours = projectVmColumns.some((c) => c.name === "total_hours_used");
+  if (!hasVmInstanceId) {
+    database.exec("ALTER TABLE project_vms ADD COLUMN gcp_instance_id TEXT;");
+  }
+  if (!hasVmProject) {
+    database.exec("ALTER TABLE project_vms ADD COLUMN gcp_project TEXT;");
+  }
   if (!hasVmLastActivityAt) {
     database.exec("ALTER TABLE project_vms ADD COLUMN last_activity_at TEXT;");
   }
@@ -667,6 +681,82 @@ export function getProjectVm(projectId: string): ProjectVmRow | null {
     .prepare("SELECT * FROM project_vms WHERE project_id = ? LIMIT 1")
     .get(projectId) as ProjectVmRow | undefined;
   return row || null;
+}
+
+export function upsertProjectVm(vm: ProjectVmRow): void {
+  const database = getDb();
+  database
+    .prepare(
+      `INSERT INTO project_vms
+        (project_id, gcp_instance_id, gcp_instance_name, gcp_project, gcp_zone, external_ip, internal_ip, status, size, created_at, last_started_at, last_activity_at, last_error, total_hours_used)
+       VALUES
+        (@project_id, @gcp_instance_id, @gcp_instance_name, @gcp_project, @gcp_zone, @external_ip, @internal_ip, @status, @size, @created_at, @last_started_at, @last_activity_at, @last_error, @total_hours_used)
+       ON CONFLICT(project_id) DO UPDATE SET
+        gcp_instance_id=excluded.gcp_instance_id,
+        gcp_instance_name=excluded.gcp_instance_name,
+        gcp_project=excluded.gcp_project,
+        gcp_zone=excluded.gcp_zone,
+        external_ip=excluded.external_ip,
+        internal_ip=excluded.internal_ip,
+        status=excluded.status,
+        size=excluded.size,
+        created_at=excluded.created_at,
+        last_started_at=excluded.last_started_at,
+        last_activity_at=excluded.last_activity_at,
+        last_error=excluded.last_error,
+        total_hours_used=excluded.total_hours_used`
+    )
+    .run(vm);
+}
+
+export function updateProjectVm(projectId: string, patch: ProjectVmPatch): ProjectVmRow | null {
+  const database = getDb();
+  const fields: Array<{ key: keyof ProjectVmPatch; column: string }> = [
+    { key: "gcp_instance_id", column: "gcp_instance_id" },
+    { key: "gcp_instance_name", column: "gcp_instance_name" },
+    { key: "gcp_project", column: "gcp_project" },
+    { key: "gcp_zone", column: "gcp_zone" },
+    { key: "external_ip", column: "external_ip" },
+    { key: "internal_ip", column: "internal_ip" },
+    { key: "status", column: "status" },
+    { key: "size", column: "size" },
+    { key: "created_at", column: "created_at" },
+    { key: "last_started_at", column: "last_started_at" },
+    { key: "last_activity_at", column: "last_activity_at" },
+    { key: "last_error", column: "last_error" },
+    { key: "total_hours_used", column: "total_hours_used" },
+  ];
+  const sets = fields
+    .filter((f) => patch[f.key] !== undefined)
+    .map((f) => `${f.column} = @${f.key}`);
+  if (!sets.length) return getProjectVm(projectId);
+
+  database
+    .prepare(`UPDATE project_vms SET ${sets.join(", ")} WHERE project_id = @project_id`)
+    .run({ project_id: projectId, ...patch });
+
+  const updated = getProjectVm(projectId);
+  if (updated) return updated;
+
+  const fallback: ProjectVmRow = {
+    project_id: projectId,
+    gcp_instance_id: null,
+    gcp_instance_name: null,
+    gcp_project: null,
+    gcp_zone: null,
+    external_ip: null,
+    internal_ip: null,
+    status: "not_provisioned",
+    size: null,
+    created_at: null,
+    last_started_at: null,
+    last_activity_at: null,
+    last_error: null,
+    total_hours_used: 0,
+  };
+  upsertProjectVm({ ...fallback, ...patch, project_id: projectId });
+
+  return getProjectVm(projectId);
 }
 
 export function createRun(run: RunRow): void {
