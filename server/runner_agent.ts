@@ -869,6 +869,39 @@ function loadWorkOrder(repoPath: string, workOrderId: string): WorkOrder {
   return found;
 }
 
+function formatIterationHistory(
+  history: RunIterationHistoryEntry[],
+  currentIteration: number
+): string {
+  // Only include completed iterations (not the current one)
+  const completed = history.filter((h) => h.iteration < currentIteration);
+  if (completed.length === 0) return "";
+
+  const lines: string[] = ["## Previous Iterations\n"];
+  for (const entry of completed) {
+    lines.push(`### Iteration ${entry.iteration}`);
+    if (entry.builder_summary) {
+      lines.push(`**Builder:** ${entry.builder_summary}`);
+    }
+    if (entry.tests.length > 0) {
+      const testStatus = entry.tests.every((t) => t.passed)
+        ? "✓ passed"
+        : "✗ failed";
+      lines.push(`**Tests:** ${testStatus}`);
+    }
+    if (entry.reviewer_verdict) {
+      lines.push(`**Reviewer:** ${entry.reviewer_verdict}`);
+      if (entry.reviewer_notes && entry.reviewer_notes.length > 0) {
+        for (const note of entry.reviewer_notes) {
+          lines.push(`- ${note}`);
+        }
+      }
+    }
+    lines.push("");
+  }
+  return lines.join("\n") + "\n";
+}
+
 function buildBuilderPrompt(params: {
   workOrderMarkdown: string;
   workOrder: WorkOrder;
@@ -877,11 +910,16 @@ function buildBuilderPrompt(params: {
   reviewerFeedback?: string;
   testFailureOutput?: string | null;
   constitution?: string;
+  iterationHistory?: RunIterationHistoryEntry[];
 }) {
   const feedback = params.reviewerFeedback?.trim();
   const testFailureOutput = params.testFailureOutput?.trim();
   const constitutionBlock = formatConstitutionBlock(params.constitution ?? "");
   const iterationLine = `This is iteration ${params.iteration} of ${params.maxIterations}.\n\n`;
+  const historyBlock = formatIterationHistory(
+    params.iterationHistory ?? [],
+    params.iteration
+  );
   const failureBlock = testFailureOutput
     ? `## Previous Attempt Failed\n\n` +
       `Your previous implementation failed tests. Here's the output:\n\n` +
@@ -898,8 +936,10 @@ function buildBuilderPrompt(params: {
     `- Implement only what is needed for this Work Order.\n` +
     `- Do NOT edit the Work Order file itself.\n` +
     `- Prefer minimal, high-quality changes; update docs/tests if needed.\n` +
+    `- Learn from previous iteration feedback - do not repeat the same mistakes.\n` +
     `- At the end, output a JSON object matching the required schema.\n\n` +
     iterationLine +
+    historyBlock +
     failureBlock +
     (feedback ? `Reviewer feedback to address:\n${feedback}\n\n` : "") +
     `Work Order (${params.workOrder.id}):\n\n` +
@@ -1651,6 +1691,7 @@ export async function runRun(runId: string) {
         reviewerFeedback,
         testFailureOutput,
         constitution: builderConstitution.content,
+        iterationHistory,
       });
       fs.writeFileSync(path.join(builderDir, "prompt.txt"), builderPrompt, "utf8");
 
