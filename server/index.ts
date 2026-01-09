@@ -54,7 +54,11 @@ import {
   finalizeManualRunResolution,
   getRun,
   getRunsForProject,
+  remoteDownloadForProject,
+  remoteExecForProject,
+  remoteUploadForProject,
 } from "./runner_agent.js";
+import { RemoteExecError } from "./remote_exec.js";
 import {
   enqueueChatTurn,
   enqueueChatTurnForThread,
@@ -335,6 +339,37 @@ function sendVmError(res: Response, err: unknown) {
   return res.status(500).json({ error: message });
 }
 
+function sendRemoteExecError(res: Response, err: unknown) {
+  if (!(err instanceof RemoteExecError)) {
+    const message = err instanceof Error ? err.message : "remote exec failed";
+    return res.status(500).json({ error: message });
+  }
+
+  const status =
+    err.code === "invalid_path" ||
+    err.code === "invalid_env" ||
+    err.code === "invalid_command" ||
+    err.code === "preflight"
+      ? 400
+      : err.code === "not_configured" || err.code === "not_running"
+        ? 409
+        : err.code === "timeout"
+          ? 504
+          : err.code === "command_failed"
+            ? 422
+            : err.code === "tool_missing"
+              ? 424
+              : err.code === "ssh_failed" || err.code === "sync_failed"
+                ? 502
+                : 500;
+
+  return res.status(status).json({
+    error: err.message,
+    code: err.code,
+    details: err.details ?? null,
+  });
+}
+
 app.get("/repos/:id/vm", (req, res) => {
   const { id } = req.params;
   const project = findProjectById(id);
@@ -448,6 +483,149 @@ app.delete("/repos/:id/vm", async (req, res) => {
     return res.json(buildVmResponse(project, vm));
   } catch (err) {
     return sendVmError(res, err);
+  }
+});
+
+app.post("/repos/:id/remote/exec", async (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const payload = req.body ?? {};
+  const command = payload.command;
+  if (typeof command !== "string" || !command.trim()) {
+    return res.status(400).json({ error: "`command` must be a non-empty string" });
+  }
+
+  const cwd = typeof payload.cwd === "string" ? payload.cwd : undefined;
+  const timeout = typeof payload.timeout === "number" ? payload.timeout : undefined;
+  if (payload.timeout !== undefined && typeof payload.timeout !== "number") {
+    return res.status(400).json({ error: "`timeout` must be a number" });
+  }
+
+  const allowFailureValue = payload.allow_failure ?? payload.allowFailure;
+  if (allowFailureValue !== undefined && typeof allowFailureValue !== "boolean") {
+    return res.status(400).json({ error: "`allow_failure` must be boolean" });
+  }
+  const allowAbsoluteValue = payload.allow_absolute ?? payload.allowAbsolute;
+  if (allowAbsoluteValue !== undefined && typeof allowAbsoluteValue !== "boolean") {
+    return res.status(400).json({ error: "`allow_absolute` must be boolean" });
+  }
+
+  let env: Record<string, string> | undefined;
+  if (payload.env !== undefined) {
+    if (!payload.env || typeof payload.env !== "object" || Array.isArray(payload.env)) {
+      return res.status(400).json({ error: "`env` must be an object" });
+    }
+    env = {};
+    for (const [key, value] of Object.entries(payload.env as Record<string, unknown>)) {
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        env[key] = String(value);
+      } else {
+        return res.status(400).json({
+          error: "`env` values must be strings, numbers, or booleans",
+        });
+      }
+    }
+  }
+
+  try {
+    const result = await remoteExecForProject(project.id, command, {
+      cwd,
+      timeout,
+      env,
+      allowFailure: allowFailureValue,
+      allowAbsolute: allowAbsoluteValue,
+    });
+    return res.json(result);
+  } catch (err) {
+    return sendRemoteExecError(res, err);
+  }
+});
+
+app.post("/repos/:id/remote/upload", async (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const payload = req.body ?? {};
+  const localPathRaw = typeof payload.local_path === "string"
+    ? payload.local_path
+    : payload.localPath;
+  const remotePathRaw = typeof payload.remote_path === "string"
+    ? payload.remote_path
+    : payload.remotePath;
+  if (typeof localPathRaw !== "string" || typeof remotePathRaw !== "string") {
+    return res.status(400).json({ error: "`local_path` and `remote_path` are required" });
+  }
+  if (!localPathRaw.trim() || !remotePathRaw.trim()) {
+    return res.status(400).json({
+      error: "`local_path` and `remote_path` must be non-empty strings",
+    });
+  }
+  const localPath = localPathRaw;
+  const remotePath = remotePathRaw;
+
+  const allowDeleteValue = payload.allow_delete ?? payload.allowDelete;
+  if (allowDeleteValue !== undefined && typeof allowDeleteValue !== "boolean") {
+    return res.status(400).json({ error: "`allow_delete` must be boolean" });
+  }
+  const allowAbsoluteValue = payload.allow_absolute ?? payload.allowAbsolute;
+  if (allowAbsoluteValue !== undefined && typeof allowAbsoluteValue !== "boolean") {
+    return res.status(400).json({ error: "`allow_absolute` must be boolean" });
+  }
+
+  try {
+    await remoteUploadForProject(project.id, localPath, remotePath, {
+      allowDelete: allowDeleteValue,
+      allowAbsolute: allowAbsoluteValue,
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    return sendRemoteExecError(res, err);
+  }
+});
+
+app.post("/repos/:id/remote/download", async (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const payload = req.body ?? {};
+  const localPathRaw = typeof payload.local_path === "string"
+    ? payload.local_path
+    : payload.localPath;
+  const remotePathRaw = typeof payload.remote_path === "string"
+    ? payload.remote_path
+    : payload.remotePath;
+  if (typeof localPathRaw !== "string" || typeof remotePathRaw !== "string") {
+    return res.status(400).json({ error: "`local_path` and `remote_path` are required" });
+  }
+  if (!localPathRaw.trim() || !remotePathRaw.trim()) {
+    return res.status(400).json({
+      error: "`local_path` and `remote_path` must be non-empty strings",
+    });
+  }
+  const localPath = localPathRaw;
+  const remotePath = remotePathRaw;
+
+  const allowDeleteValue = payload.allow_delete ?? payload.allowDelete;
+  if (allowDeleteValue !== undefined && typeof allowDeleteValue !== "boolean") {
+    return res.status(400).json({ error: "`allow_delete` must be boolean" });
+  }
+  const allowAbsoluteValue = payload.allow_absolute ?? payload.allowAbsolute;
+  if (allowAbsoluteValue !== undefined && typeof allowAbsoluteValue !== "boolean") {
+    return res.status(400).json({ error: "`allow_absolute` must be boolean" });
+  }
+
+  try {
+    await remoteDownloadForProject(project.id, remotePath, localPath, {
+      allowDelete: allowDeleteValue,
+      allowAbsolute: allowAbsoluteValue,
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    return sendRemoteExecError(res, err);
   }
 });
 

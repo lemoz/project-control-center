@@ -66,6 +66,7 @@ Optional env vars:
 - `CONTROL_CENTER_MAX_BUILDER_ITERATIONS=10` (caps builder/test retries before failing a run)
 - `CONTROL_CENTER_CHAT_SUGGESTION_CONTEXT_MESSAGES=10` (how many recent thread messages + run metadata to include when generating Access+Context suggestions)
 - `CONTROL_CENTER_CHAT_TRUSTED_HOSTS=github.com,raw.githubusercontent.com` (comma- or newline-separated host list for the chat "trusted" network pack; overrides Chat Settings)
+- `CONTROL_CENTER_SSH_SKIP_HOST_KEY_CHECKING=1` (disables SSH host key verification; not recommended)
 
 Database notes:
 - Schema (including `projects` and `work_orders`) is auto-created on server start (see `server/db.ts`), with lightweight startup migrations for existing DBs.

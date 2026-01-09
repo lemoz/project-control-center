@@ -17,6 +17,14 @@ import {
   type WorkOrder,
 } from "./work_orders.js";
 import { resolveRunnerSettingsForRepo } from "./settings.js";
+import {
+  remoteDownload,
+  remoteExec,
+  remoteUpload,
+  type ExecResult,
+  type RemoteExecOptions,
+  type RemoteSyncOptions,
+} from "./remote_exec.js";
 
 const DEFAULT_MAX_BUILDER_ITERATIONS = 10;
 const MAX_TEST_OUTPUT_LINES = 200;
@@ -2159,6 +2167,32 @@ export function finalizeManualRunResolution(
     log(`Manual resolution failed: ${msg}`);
     return { ok: false, error: msg };
   }
+}
+
+export async function remoteExecForProject(
+  projectId: string,
+  command: string,
+  options?: RemoteExecOptions
+): Promise<ExecResult> {
+  return remoteExec(projectId, command, options);
+}
+
+export async function remoteUploadForProject(
+  projectId: string,
+  localPath: string,
+  remotePath: string,
+  options?: RemoteSyncOptions
+): Promise<void> {
+  return remoteUpload(projectId, localPath, remotePath, options);
+}
+
+export async function remoteDownloadForProject(
+  projectId: string,
+  remotePath: string,
+  localPath: string,
+  options?: RemoteSyncOptions
+): Promise<void> {
+  return remoteDownload(projectId, remotePath, localPath, options);
 }
 
 export const __test__ = {
