@@ -53,12 +53,23 @@ const LOCAL_IGNORE_ENTRIES = [`/${LOCAL_FILE}`, `/${LOCAL_VERSIONS_DIR}/`];
 
 const MAX_VERSIONS = 5;
 const VERSION_RE = /^constitution\.(.+)\.md$/;
+const MAX_CONSTITUTION_CHARS = 8000;
 
 type ParsedSection = { title: string; content: string };
 type ParsedConstitution = {
   titleLine: string;
   preamble: string;
   sections: ParsedSection[];
+};
+
+export type ConstitutionContext = "builder" | "reviewer" | "chat" | "chat_suggestion";
+
+export type ConstitutionSelection = {
+  content: string;
+  sectionTitles: string[];
+  truncated: boolean;
+  usedSelection: boolean;
+  sourceLength: number;
 };
 
 function ensureDir(dir: string): void {
@@ -355,4 +366,100 @@ export function mergeConstitutions(
   }
 
   return serializeConstitution(globalParsed, mergedSections);
+}
+
+export function getConstitutionForProject(repoPath: string | null): string {
+  const globalContent = readGlobalConstitution();
+  const localContent = repoPath ? readProjectConstitution(repoPath) : null;
+  return mergeConstitutions(globalContent, localContent);
+}
+
+function normalizeSectionKey(title: string): string {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function truncateConstitution(content: string, maxChars: number): string {
+  if (content.length <= maxChars) return content;
+  const suffix = "\n\n...(truncated)\n";
+  const sliceLength = Math.max(0, maxChars - suffix.length);
+  const sliced = content.slice(0, sliceLength).trimEnd();
+  return `${sliced}${suffix}`;
+}
+
+const CONTEXT_SECTION_KEYS: Record<ConstitutionContext, string[]> = {
+  builder: ["style taste", "anti patterns", "domain knowledge"],
+  reviewer: ["style taste", "anti patterns", "success patterns"],
+  chat: ["communication", "decision heuristics"],
+  chat_suggestion: ["communication", "decision heuristics"],
+};
+
+function collectTargetKeys(
+  context: ConstitutionContext,
+  workOrderTags?: string[]
+): string[] {
+  const base = CONTEXT_SECTION_KEYS[context] ?? [];
+  const tags = (workOrderTags ?? [])
+    .map((tag) => normalizeSectionKey(tag))
+    .filter(Boolean);
+  return Array.from(new Set([...base, ...tags]));
+}
+
+function sectionMatches(title: string, key: string): boolean {
+  const normalized = normalizeSectionKey(title);
+  if (!normalized || !key) return false;
+  if (normalized === key) return true;
+  return normalized.includes(key);
+}
+
+export function selectRelevantConstitutionSections(params: {
+  constitution: string;
+  context: ConstitutionContext;
+  workOrderTags?: string[];
+  maxChars?: number;
+}): ConstitutionSelection {
+  const raw = params.constitution.trim();
+  if (!raw) {
+    return {
+      content: "",
+      sectionTitles: [],
+      truncated: false,
+      usedSelection: false,
+      sourceLength: 0,
+    };
+  }
+
+  const parsed = parseConstitution(raw);
+  const fullSections = parsed.sections;
+  const fullContent = serializeConstitution(parsed, fullSections);
+  const limit = Math.max(200, Math.trunc(params.maxChars ?? MAX_CONSTITUTION_CHARS));
+
+  const targetKeys = collectTargetKeys(params.context, params.workOrderTags);
+  const selectedSections = targetKeys.length
+    ? fullSections.filter((section) =>
+        targetKeys.some((key) => sectionMatches(section.title, key))
+      )
+    : [];
+
+  const useSelection = fullContent.length > limit && selectedSections.length > 0;
+  const chosenSections = useSelection ? selectedSections : fullSections;
+  let content = serializeConstitution(parsed, chosenSections);
+  let truncated = false;
+  if (content.length > limit) {
+    content = truncateConstitution(content, limit);
+    truncated = true;
+  }
+
+  return {
+    content,
+    sectionTitles: chosenSections.map((section) => section.title),
+    truncated,
+    usedSelection: useSelection,
+    sourceLength: fullContent.length,
+  };
+}
+
+export function formatConstitutionBlock(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) return "";
+  return `<constitution>\n${trimmed}\n</constitution>\n\n`;
 }
