@@ -7,6 +7,7 @@ type ChatAction = {
   type:
     | "project_set_star"
     | "project_set_hidden"
+    | "project_set_success"
     | "work_order_create"
     | "work_order_update"
     | "work_order_set_status"

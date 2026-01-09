@@ -60,6 +60,7 @@ import {
   remoteUploadForProject,
 } from "./runner_agent.js";
 import { RemoteExecError } from "./remote_exec.js";
+import { readControlMetadata } from "./sidecar.js";
 import {
   enqueueChatTurn,
   enqueueChatTurnForThread,
@@ -273,6 +274,61 @@ app.get("/constitution/versions", (req, res) => {
 
 app.get("/repos", (_req, res) => {
   return res.json(syncAndListRepoSummaries());
+});
+
+type SuccessMetric = {
+  name: string;
+  target: number | string;
+  current?: number | string | null;
+};
+
+function isSuccessMetric(value: unknown): value is SuccessMetric {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record.name !== "string" || !record.name.trim()) return false;
+  if (!(typeof record.target === "number" || typeof record.target === "string")) return false;
+  if ("current" in record) {
+    if (
+      !(
+        record.current === null ||
+        record.current === undefined ||
+        typeof record.current === "number" ||
+        typeof record.current === "string"
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function safeParseSuccessMetrics(value: string | null | undefined): SuccessMetric[] {
+  if (typeof value !== "string" || value.length === 0) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isSuccessMetric);
+  } catch {
+    return [];
+  }
+}
+
+app.get("/repos/:id", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const meta = readControlMetadata(project.path);
+  const successCriteria = meta?.success_criteria ?? project.success_criteria;
+  const successMetrics =
+    meta?.success_metrics ?? safeParseSuccessMetrics(project.success_metrics);
+  return res.json({
+    project: {
+      id: project.id,
+      name: project.name,
+      success_criteria: successCriteria,
+      success_metrics: successMetrics,
+    },
+  });
 });
 
 app.patch("/repos/:id/star", (req, res) => {

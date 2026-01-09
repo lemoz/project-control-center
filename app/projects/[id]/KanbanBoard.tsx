@@ -69,6 +69,8 @@ type RunsResponse = {
   runs: Run[];
 };
 
+const SUCCESS_CRITERIA_SUGGESTION = "Define success criteria";
+
 const COLUMNS: Array<{ status: WorkOrderStatus; label: string }> = [
   { status: "backlog", label: "Backlog" },
   { status: "ready", label: "Ready" },
@@ -212,8 +214,8 @@ export function KanbanBoard({ repoId }: { repoId: string }) {
     [repoId]
   );
 
-  const create = useCallback(async () => {
-    const title = newTitle.trim();
+  const create = useCallback(async (titleOverride?: string) => {
+    const title = (titleOverride ?? newTitle).trim();
     if (!title) return;
     setCreating(true);
     setError(null);
@@ -295,6 +297,22 @@ export function KanbanBoard({ repoId }: { repoId: string }) {
             {creating ? "Creating…" : "Create"}
           </button>
         </div>
+
+        {!loading && !error && workOrders.length === 0 && (
+          <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <div className="muted" style={{ fontSize: 12 }}>
+              Suggested first Work Order:
+              <span style={{ fontWeight: 600, marginLeft: 6 }}>{SUCCESS_CRITERIA_SUGGESTION}</span>
+            </div>
+            <button
+              className="btnSecondary"
+              onClick={() => void create(SUCCESS_CRITERIA_SUGGESTION)}
+              disabled={creating}
+            >
+              Create suggestion
+            </button>
+          </div>
+        )}
 
         {!!error && (
           <div className="error" style={{ marginTop: 10 }}>

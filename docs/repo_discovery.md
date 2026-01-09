@@ -48,6 +48,12 @@ starred: true|false      # optional; pins to top
 tags:
   - video
   - agents
+success_criteria: |
+  Short description of what "done" means for this project.
+success_metrics:
+  - name: "Active users"
+    target: 100
+    current: 12
 ```
 
 If you set `id`, it remains stable across repo moves/renames; on the next scan the server updates the stored `path` for that project id.
@@ -66,3 +72,4 @@ On first discovery (no existing SQLite row) the defaults are:
 On subsequent scans, if the sidecar omits a key (or is absent), the server keeps the existing SQLite value for that field to avoid wiping user data.
 
 To promote a repo to long‑term or adjust priority, add a `.control.yml` file.
+For guidance on writing success criteria, see `docs/success_criteria.md`.
