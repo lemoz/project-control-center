@@ -20,7 +20,7 @@ non_goals:
 stop_conditions:
   - If era validation breaks existing WO parsing, stop and make it non-blocking.
   - If tech tree layout becomes cluttered with 3 lanes, stop and propose alternatives.
-priority: 3
+priority: 1
 tags:
   - work-orders
   - tech-tree
