@@ -15,7 +15,8 @@ estimate_hours: 0.5
 status: backlog
 created_at: 2026-01-08
 updated_at: 2026-01-08
-depends_on: []
+depends_on:
+  - WO-2025-003
 era: v1
 ---
 

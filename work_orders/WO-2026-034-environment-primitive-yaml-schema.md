@@ -32,7 +32,7 @@ created_at: 2026-01-08
 updated_at: 2026-01-08
 depends_on:
   - WO-2025-002
-era: autonomous
+era: v2
 ---
 ## Notes
 - 

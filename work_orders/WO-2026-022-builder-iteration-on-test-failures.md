@@ -34,7 +34,7 @@ created_at: 2026-01-06
 updated_at: 2026-01-07
 depends_on:
   - WO-2025-004
-era: autonomous
+era: v2
 ---
 # Builder Iteration on Test Failures
 

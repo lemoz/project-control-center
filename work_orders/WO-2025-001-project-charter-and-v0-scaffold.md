@@ -31,7 +31,7 @@ status: done
 created_at: 2025-12-12
 updated_at: 2025-12-15
 depends_on: []
-era: foundation
+era: v0
 ---
 ## Background
 We’re building a local-first, mobile-friendly control center to manage all your projects and long-running agent work.

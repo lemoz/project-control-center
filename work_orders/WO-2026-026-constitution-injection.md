@@ -38,7 +38,7 @@ created_at: 2026-01-06
 updated_at: 2026-01-06
 depends_on:
   - WO-2026-024
-era: autonomous
+era: v2
 ---
 
 # Constitution Injection into Agent Prompts
