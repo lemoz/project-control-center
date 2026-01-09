@@ -5,6 +5,7 @@ import path from "path";
 import {
   createRun,
   findProjectById,
+  getProjectVm,
   getRunById,
   listRunsByProject,
   type RunRow,
@@ -28,6 +29,17 @@ import {
 
 const DEFAULT_MAX_BUILDER_ITERATIONS = 10;
 const MAX_TEST_OUTPUT_LINES = 200;
+const VM_ISOLATION_MODES = new Set(["vm", "vm+container"]);
+const REMOTE_RUN_WORKSPACES_ROOT = ".system/run-workspaces";
+const REMOTE_RUN_ARTIFACTS_ROOT = ".system/run-artifacts";
+const TEST_ARTIFACT_DIRS = ["test-results", "playwright-report"];
+const DEFAULT_REMOTE_TEST_TIMEOUT_SEC = 900;
+const REMOTE_TEST_TIMEOUT_MS = Math.round(
+  parseNumberEnv(
+    process.env.CONTROL_CENTER_REMOTE_TEST_TIMEOUT_SEC,
+    DEFAULT_REMOTE_TEST_TIMEOUT_SEC
+  ) * 1000
+);
 
 const IGNORE_DIRS = new Set([
   ".git",
@@ -53,8 +65,7 @@ const IGNORE_DIRS = new Set([
   "archive",
   ".idea",
   ".vscode",
-  "test-results",
-  "playwright-report",
+  ...TEST_ARTIFACT_DIRS,
 ]);
 
 const IGNORE_FILE_NAMES = new Set([
@@ -80,6 +91,12 @@ const DENY_EXTS = new Set([".pem", ".key", ".p12", ".pfx"]);
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function parseNumberEnv(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function ensureDir(dir: string) {
@@ -113,6 +130,15 @@ function removePathIfExists(targetPath: string) {
 function safeSymlink(target: string, linkPath: string) {
   removePathIfExists(linkPath);
   fs.symlinkSync(target, linkPath, "dir");
+}
+
+function normalizeRelPath(relPath: string): string {
+  return relPath.replace(/\\/g, "/");
+}
+
+function isIgnoredRelDir(relPath: string): boolean {
+  const normalized = normalizeRelPath(relPath);
+  return normalized === "e2e/.tmp" || normalized.startsWith("e2e/.tmp/");
 }
 
 function isDeniedRelPath(relPath: string): boolean {
@@ -287,6 +313,10 @@ function createOutputCapture(maxLines: number) {
   return { pushChunk, finalize };
 }
 
+function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 function formatTestOutput(output: string, truncated: boolean, maxLines: number): string {
   const trimmed = output.trim();
   if (!trimmed) return "(no test output captured)";
@@ -326,6 +356,7 @@ function copySnapshot(srcRoot: string, dstRoot: string) {
       const srcPath = path.join(srcDir, name);
       const relPath = relDir ? path.join(relDir, name) : name;
       const dstPath = path.join(dstRoot, relPath);
+      if (entry.isDirectory() && isIgnoredRelDir(relPath)) continue;
 
       let stat: fs.Stats;
       try {
@@ -371,6 +402,7 @@ function listFiles(root: string): string[] {
       if (name === ".DS_Store") continue;
       const abs = path.join(dir, name);
       const rel = relDir ? path.join(relDir, name) : name;
+      if (entry.isDirectory() && isIgnoredRelDir(rel)) continue;
       let stat: fs.Stats;
       try {
         stat = fs.lstatSync(abs);
@@ -1086,17 +1118,17 @@ function findConflictingRun(params: {
   return pool[0] || null;
 }
 
-async function runRepoTests(repoPath: string, runDir: string, iteration: number) {
+function getTestScriptInfo(repoPath: string): { hasTests: boolean; message: string } {
   const pkgPath = path.join(repoPath, "package.json");
   if (!fs.existsSync(pkgPath)) {
-    return [{ command: "(no tests)", passed: true, output: "No package.json found." }];
+    return { hasTests: false, message: "No package.json found." };
   }
 
   let pkg: unknown;
   try {
     pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
   } catch {
-    return [{ command: "(no tests)", passed: true, output: "package.json unreadable; skipping." }];
+    return { hasTests: false, message: "package.json unreadable; skipping." };
   }
 
   const scripts =
@@ -1105,7 +1137,16 @@ async function runRepoTests(repoPath: string, runDir: string, iteration: number)
       : undefined;
   const hasTest = !!scripts?.test;
   if (!hasTest) {
-    return [{ command: "(no tests)", passed: true, output: "No test script; skipping." }];
+    return { hasTests: false, message: "No test script; skipping." };
+  }
+
+  return { hasTests: true, message: "test script present" };
+}
+
+async function runRepoTests(repoPath: string, runDir: string, iteration: number) {
+  const testInfo = getTestScriptInfo(repoPath);
+  if (!testInfo.hasTests) {
+    return [{ command: "(no tests)", passed: true, output: testInfo.message }];
   }
 
   const logPath = path.join(runDir, "tests", "npm-test.log");
@@ -1157,11 +1198,218 @@ async function runRepoTests(repoPath: string, runDir: string, iteration: number)
   ];
 }
 
+type RemoteRunConfig = {
+  projectId: string;
+  workspacePath: string;
+  artifactsPath: string;
+};
+
+function buildRemoteRunPaths(runId: string): { workspacePath: string; artifactsPath: string } {
+  return {
+    workspacePath: path.posix.join(REMOTE_RUN_WORKSPACES_ROOT, runId),
+    artifactsPath: path.posix.join(REMOTE_RUN_ARTIFACTS_ROOT, runId),
+  };
+}
+
+async function prepareRemoteRun(config: RemoteRunConfig, log: (line: string) => void) {
+  log(`Preparing remote run workspace at ${config.workspacePath}`);
+  await remoteExec(config.projectId, `rm -rf ${shellEscape(config.workspacePath)} ${shellEscape(config.artifactsPath)}`, {
+    cwd: ".",
+    allowFailure: true,
+  });
+  await remoteExec(
+    config.projectId,
+    `mkdir -p ${shellEscape(config.workspacePath)} ${shellEscape(config.artifactsPath)} ${shellEscape(
+      path.posix.join(config.artifactsPath, "tests")
+    )}`,
+    { cwd: "." }
+  );
+}
+
+async function cleanupRemoteRun(config: RemoteRunConfig, log: (line: string) => void) {
+  log(`Cleaning up remote run workspace at ${config.workspacePath}`);
+  await remoteExec(config.projectId, `rm -rf ${shellEscape(config.workspacePath)} ${shellEscape(config.artifactsPath)}`, {
+    cwd: ".",
+    allowFailure: true,
+  });
+}
+
+async function syncRemoteWorkspace(
+  config: RemoteRunConfig,
+  localPath: string,
+  log: (line: string) => void
+) {
+  log(`Syncing worktree to VM workspace ${config.workspacePath}`);
+  await remoteUpload(config.projectId, localPath, config.workspacePath, {
+    allowDelete: true,
+  });
+}
+
+async function runRemoteTests(params: {
+  repoPath: string;
+  runDir: string;
+  iteration: number;
+  remote: RemoteRunConfig;
+}) {
+  const testInfo = getTestScriptInfo(params.repoPath);
+  if (!testInfo.hasTests) {
+    return [{ command: "(no tests)", passed: true, output: testInfo.message }];
+  }
+
+  const logPath = path.join(params.runDir, "tests", "npm-test.log");
+  ensureDir(path.dirname(logPath));
+  const logStream = fs.createWriteStream(logPath, { flags: "a" });
+  const env = { CI: "1", NEXT_DIST_DIR: ".system/next-run-tests" };
+
+  const runRemoteCommand = async (label: string, command: string) => {
+    logStream.write(`[${nowIso()}] ${label} start (iter ${params.iteration})\n`);
+    const result = await remoteExec(params.remote.projectId, command, {
+      cwd: params.remote.workspacePath,
+      env,
+      allowFailure: true,
+      timeout: REMOTE_TEST_TIMEOUT_MS,
+    });
+
+    if (result.stdout) logStream.write(result.stdout);
+    if (result.stderr) logStream.write(result.stderr);
+    logStream.write(`[${nowIso()}] ${label} end exit=${result.exitCode}\n`);
+
+    const outputCapture = createOutputCapture(MAX_TEST_OUTPUT_LINES);
+    outputCapture.pushChunk(Buffer.from(result.stdout));
+    outputCapture.pushChunk(Buffer.from(result.stderr));
+    const captured = outputCapture.finalize();
+
+    return {
+      exitCode: result.exitCode,
+      output: formatTestOutput(captured.text, captured.truncated, MAX_TEST_OUTPUT_LINES),
+    };
+  };
+
+  try {
+    const ciResult = await runRemoteCommand("npm ci", "npm ci");
+    if (ciResult.exitCode !== 0) {
+      return [{ command: "npm ci", passed: false, output: ciResult.output }];
+    }
+
+    const testResult = await runRemoteCommand("npm test", "npm test");
+    return [
+      { command: "npm ci", passed: true, output: ciResult.output },
+      { command: "npm test", passed: testResult.exitCode === 0, output: testResult.output },
+    ];
+  } finally {
+    logStream.end();
+  }
+}
+
+async function remoteDirExists(
+  config: RemoteRunConfig,
+  cwd: string,
+  dirName: string
+): Promise<boolean> {
+  const result = await remoteExec(config.projectId, `test -d ${shellEscape(dirName)}`, {
+    cwd,
+    allowFailure: true,
+  });
+  return result.exitCode === 0;
+}
+
+function buildRemoteTestArtifactsRoot(remote: RemoteRunConfig, iteration: number): string {
+  return path.posix.join(remote.artifactsPath, "tests", `iter-${iteration}`);
+}
+
+function buildLocalTestArtifactsRoot(runDir: string, iteration: number): string {
+  return path.join(runDir, "tests", "artifacts", `iter-${iteration}`);
+}
+
+function copyLocalTestArtifacts(params: {
+  worktreePath: string;
+  runDir: string;
+  iteration: number;
+  log: (line: string) => void;
+}) {
+  const artifactsRoot = buildLocalTestArtifactsRoot(params.runDir, params.iteration);
+  let wroteAny = false;
+
+  for (const dir of TEST_ARTIFACT_DIRS) {
+    const srcPath = path.join(params.worktreePath, dir);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(srcPath);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+
+    if (!wroteAny) {
+      ensureDir(artifactsRoot);
+      wroteAny = true;
+    }
+
+    const destPath = path.join(artifactsRoot, dir);
+    removePathIfExists(destPath);
+    try {
+      fs.cpSync(srcPath, destPath, { recursive: true, dereference: true });
+      params.log(`Copied test artifacts from ${dir} to ${destPath}`);
+    } catch (err) {
+      params.log(`Failed to copy test artifacts from ${dir}: ${String(err)}`);
+    }
+  }
+}
+
+async function stageRemoteTestArtifacts(params: {
+  remote: RemoteRunConfig;
+  iteration: number;
+  log: (line: string) => void;
+}) {
+  const remoteArtifactsRoot = buildRemoteTestArtifactsRoot(params.remote, params.iteration);
+  await remoteExec(
+    params.remote.projectId,
+    `rm -rf ${shellEscape(remoteArtifactsRoot)} && mkdir -p ${shellEscape(remoteArtifactsRoot)}`,
+    { cwd: "." }
+  );
+
+  for (const dir of TEST_ARTIFACT_DIRS) {
+    const exists = await remoteDirExists(params.remote, params.remote.workspacePath, dir);
+    if (!exists) continue;
+    params.log(`Staging remote test artifacts from ${dir} into ${remoteArtifactsRoot}`);
+    await remoteExec(
+      params.remote.projectId,
+      `cp -R ${shellEscape(path.posix.join(params.remote.workspacePath, dir))} ${shellEscape(
+        remoteArtifactsRoot
+      )}`,
+      { cwd: "." }
+    );
+  }
+}
+
+async function syncRemoteTestArtifacts(params: {
+  remote: RemoteRunConfig;
+  runDir: string;
+  iteration: number;
+  log: (line: string) => void;
+}) {
+  const remoteArtifactsRoot = buildRemoteTestArtifactsRoot(params.remote, params.iteration);
+  const localArtifactsRoot = buildLocalTestArtifactsRoot(params.runDir, params.iteration);
+  ensureDir(localArtifactsRoot);
+
+  for (const dir of TEST_ARTIFACT_DIRS) {
+    const exists = await remoteDirExists(params.remote, remoteArtifactsRoot, dir);
+    if (!exists) continue;
+    const remotePath = path.posix.join(remoteArtifactsRoot, dir);
+    const localPath = path.join(localArtifactsRoot, dir);
+    removePathIfExists(localPath);
+    params.log(`Downloading remote test artifacts from ${remotePath}`);
+    await remoteDownload(params.remote.projectId, remotePath, localPath);
+  }
+}
+
 export async function runRun(runId: string) {
   const run = getRunById(runId);
   if (!run) return;
 
   let runLog: fs.WriteStream | null = null;
+  let remoteConfig: RemoteRunConfig | null = null;
+  let remoteFallbackReason: string | null = null;
   const log = (line: string) => {
     if (!runLog) return;
     runLog.write(`[${nowIso()}] ${line}\n`);
@@ -1244,6 +1492,55 @@ export async function runRun(runId: string) {
       return;
     }
     ensureNodeModulesSymlink(repoPath, worktreePath);
+
+    const isolationMode = project.isolation_mode || "local";
+    const vm = getProjectVm(project.id);
+    const wantsVmIsolation = VM_ISOLATION_MODES.has(isolationMode);
+    if (wantsVmIsolation) {
+      if (!vm) {
+        remoteFallbackReason = "VM not configured";
+      } else if (vm.status !== "running") {
+        remoteFallbackReason = `VM not running (status=${vm.status})`;
+      } else if (!vm.external_ip) {
+        remoteFallbackReason = "VM missing external IP";
+      } else {
+        const remotePaths = buildRemoteRunPaths(runId);
+        remoteConfig = {
+          projectId: project.id,
+          workspacePath: remotePaths.workspacePath,
+          artifactsPath: remotePaths.artifactsPath,
+        };
+      }
+    }
+
+    if (remoteFallbackReason) {
+      log(`VM isolation requested; falling back to local: ${remoteFallbackReason}`);
+    }
+
+    writeJson(path.join(runDir, "execution.json"), {
+      requested_isolation_mode: isolationMode,
+      vm_status: vm?.status ?? null,
+      execution_mode: remoteConfig ? "remote" : "local",
+      fallback_reason: remoteFallbackReason,
+      remote_workspace_path: remoteConfig?.workspacePath ?? null,
+      remote_artifacts_path: remoteConfig?.artifactsPath ?? null,
+      recorded_at: nowIso(),
+    });
+
+    if (remoteConfig) {
+      try {
+        await prepareRemoteRun(remoteConfig, log);
+      } catch (err) {
+        const message = `remote workspace setup failed: ${String(err)}`;
+        log(message);
+        updateRun(runId, {
+          status: "failed",
+          error: message,
+          finished_at: nowIso(),
+        });
+        return;
+      }
+    }
 
     // Move Work Order into building inside the run branch.
     try {
@@ -1379,12 +1676,46 @@ export async function runRun(runId: string) {
       updateRun(runId, { status: "testing" });
       log(`Running tests (iter ${iteration})`);
       let tests: Array<{ command: string; passed: boolean; output?: string }> = [];
+      if (remoteConfig) {
+        try {
+          await syncRemoteWorkspace(remoteConfig, worktreePath, log);
+        } catch (err) {
+          const message = `remote workspace sync failed: ${String(err)}`;
+          log(message);
+          updateRun(runId, {
+            status: "failed",
+            error: message,
+            finished_at: nowIso(),
+          });
+          return;
+        }
+      }
       try {
-        tests = await runRepoTests(worktreePath, runDir, iteration);
+        tests = remoteConfig
+          ? await runRemoteTests({ repoPath: worktreePath, runDir, iteration, remote: remoteConfig })
+          : await runRepoTests(worktreePath, runDir, iteration);
         writeJson(path.join(runDir, "tests", "results.json"), tests);
       } catch (err) {
         tests = [{ command: "tests", passed: false, output: String(err) }];
         writeJson(path.join(runDir, "tests", "results.json"), tests);
+      }
+
+      if (remoteConfig) {
+        try {
+          await stageRemoteTestArtifacts({ remote: remoteConfig, iteration, log });
+          await syncRemoteTestArtifacts({ remote: remoteConfig, runDir, iteration, log });
+        } catch (err) {
+          const message = `remote artifact sync failed: ${String(err)}`;
+          log(message);
+          updateRun(runId, {
+            status: "failed",
+            error: message,
+            finished_at: nowIso(),
+          });
+          return;
+        }
+      } else {
+        copyLocalTestArtifacts({ worktreePath, runDir, iteration, log });
       }
 
       historyEntry.tests = tests.map((test) => ({
@@ -1999,6 +2330,13 @@ export async function runRun(runId: string) {
       finished_at: nowIso(),
     });
   } finally {
+    if (remoteConfig) {
+      try {
+        await cleanupRemoteRun(remoteConfig, log);
+      } catch (err) {
+        log(`Remote cleanup failed: ${String(err)}`);
+      }
+    }
     try {
       runLog?.end();
     } catch {

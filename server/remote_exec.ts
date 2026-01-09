@@ -73,7 +73,13 @@ const SSH_USER_ENV = "CONTROL_CENTER_GCP_SSH_USER";
 const SSH_KEY_ENV = "CONTROL_CENTER_GCP_SSH_KEY_PATH";
 const SSH_SKIP_HOST_KEY_ENV = "CONTROL_CENTER_SSH_SKIP_HOST_KEY_CHECKING";
 const DEFAULT_VM_REPO_ROOT = "/home/project/repo";
-const DEFAULT_EXCLUDES = [".env*", ".control-secrets*", ".git", "node_modules"];
+const DEFAULT_EXCLUDES = [
+  ".env*",
+  ".control-secrets*",
+  ".git",
+  "node_modules",
+  "e2e/.tmp",
+];
 
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
