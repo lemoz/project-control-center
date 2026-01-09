@@ -6,6 +6,7 @@ import {
   findProjectById,
   getProjectVm,
   markInProgressRunsFailed,
+  markWorkOrderRunsMerged,
   setProjectStar,
   updateProjectIsolationSettings,
   syncWorkOrderDeps,
@@ -509,7 +510,11 @@ app.patch("/repos/:id/work-orders/:workOrderId", (req, res) => {
   if (!project) return res.status(404).json({ error: "project not found" });
 
   try {
+    const before = getWorkOrder(project.path, workOrderId);
     const updated = patchWorkOrder(project.path, workOrderId, req.body ?? {});
+    if (before.status !== "done" && updated.status === "done") {
+      markWorkOrderRunsMerged(project.id, workOrderId);
+    }
 
     // If work order was marked as done, trigger auto-ready cascade
     if (updated.status === "done") {
@@ -629,6 +634,25 @@ app.get("/repos/:id/runs", (req, res) => {
   const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : 50;
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(200, Math.trunc(limitRaw)) : 50;
   return res.json({ runs: getRunsForProject(project.id, limit) });
+});
+
+app.post("/repos/:id/runs/cleanup-merged", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const workOrders = listWorkOrders(project.path);
+  const doneWorkOrders = workOrders.filter((wo) => wo.status === "done");
+  let updatedRuns = 0;
+  for (const workOrder of doneWorkOrders) {
+    updatedRuns += markWorkOrderRunsMerged(project.id, workOrder.id);
+  }
+
+  return res.json({
+    ok: true,
+    work_orders: doneWorkOrders.length,
+    updated_runs: updatedRuns,
+  });
 });
 
 app.post("/repos/:id/work-orders/:workOrderId/runs", (req, res) => {

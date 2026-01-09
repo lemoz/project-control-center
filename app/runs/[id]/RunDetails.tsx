@@ -9,6 +9,7 @@ type RunStatus =
   | "ai_review"
   | "testing"
   | "you_review"
+  | "merged"
   | "merge_conflict"
   | "failed"
   | "canceled";
@@ -151,7 +152,7 @@ export function RunDetails({ runId }: { runId: string }) {
         )}
       </section>
 
-      {!!run?.summary && run.status === "you_review" && (
+      {!!run?.summary && (run.status === "you_review" || run.status === "merged") && (
         <section className="card">
           <div style={{ fontWeight: 800 }}>Approved Summary</div>
           <div style={{ marginTop: 8, whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{run.summary}</div>

@@ -1,6 +1,12 @@
 import fs from "fs";
 import { z } from "zod";
-import { findProjectById, getDb, setProjectHidden, setProjectStar } from "./db.js";
+import {
+  findProjectById,
+  getDb,
+  markWorkOrderRunsMerged,
+  setProjectHidden,
+  setProjectStar,
+} from "./db.js";
 import {
   createChatActionLedgerEntry,
   getChatActionLedgerEntry,
@@ -16,6 +22,7 @@ import { mergeChatWorktree, resolveChatWorktreeConfig } from "./chat_worktree.js
 import {
   createWorkOrder,
   deleteWorkOrder,
+  getWorkOrder,
   overwriteWorkOrderMarkdown,
   patchWorkOrder,
   readWorkOrderMarkdown,
@@ -219,8 +226,12 @@ export function applyChatAction(input: unknown) {
         const payload = WorkOrderUpdatePayloadSchema.parse(action.payload);
         const project = findProjectById(payload.projectId);
         if (!project) throw new Error("project not found");
+        const beforeStatus = getWorkOrder(project.path, payload.workOrderId).status;
         const before = readWorkOrderMarkdown(project.path, payload.workOrderId);
         const updated = patchWorkOrder(project.path, payload.workOrderId, payload.patch);
+        if (beforeStatus !== "done" && updated.status === "done") {
+          markWorkOrderRunsMerged(payload.projectId, payload.workOrderId);
+        }
         const undoPayload: UndoPayload = {
           type: "work_order_restore_markdown",
           payload: {
@@ -235,10 +246,14 @@ export function applyChatAction(input: unknown) {
         const payload = WorkOrderSetStatusPayloadSchema.parse(action.payload);
         const project = findProjectById(payload.projectId);
         if (!project) throw new Error("project not found");
+        const beforeStatus = getWorkOrder(project.path, payload.workOrderId).status;
         const before = readWorkOrderMarkdown(project.path, payload.workOrderId);
         const updated = patchWorkOrder(project.path, payload.workOrderId, {
           status: payload.status,
         });
+        if (beforeStatus !== "done" && updated.status === "done") {
+          markWorkOrderRunsMerged(payload.projectId, payload.workOrderId);
+        }
         const undoPayload: UndoPayload = {
           type: "work_order_restore_markdown",
           payload: {
