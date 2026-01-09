@@ -33,8 +33,12 @@ export type ProjectVmStatus =
   | "deleted"
   | "error";
 
+export type ProjectVmProvider = "gcp";
+
 export type ProjectVmRow = {
   project_id: string;
+  provider: ProjectVmProvider | null;
+  repo_path: string | null;
   gcp_instance_id: string | null;
   gcp_instance_name: string | null;
   gcp_project: string | null;
@@ -135,6 +139,8 @@ function initSchema(database: Database.Database) {
 
     CREATE TABLE IF NOT EXISTS project_vms (
       project_id TEXT PRIMARY KEY,
+      provider TEXT,
+      repo_path TEXT,
       gcp_instance_id TEXT,
       gcp_instance_name TEXT,
       gcp_project TEXT,
@@ -357,12 +363,26 @@ function initSchema(database: Database.Database) {
   const hasVmLastActivityAt = projectVmColumns.some((c) => c.name === "last_activity_at");
   const hasVmLastError = projectVmColumns.some((c) => c.name === "last_error");
   const hasVmTotalHours = projectVmColumns.some((c) => c.name === "total_hours_used");
+  const hasVmProvider = projectVmColumns.some((c) => c.name === "provider");
+  const hasVmRepoPath = projectVmColumns.some((c) => c.name === "repo_path");
   if (!hasVmInstanceId) {
     database.exec("ALTER TABLE project_vms ADD COLUMN gcp_instance_id TEXT;");
   }
   if (!hasVmProject) {
     database.exec("ALTER TABLE project_vms ADD COLUMN gcp_project TEXT;");
   }
+  if (!hasVmProvider) {
+    database.exec("ALTER TABLE project_vms ADD COLUMN provider TEXT;");
+  }
+  if (!hasVmRepoPath) {
+    database.exec("ALTER TABLE project_vms ADD COLUMN repo_path TEXT;");
+  }
+  const envRepoPath = process.env.CONTROL_CENTER_VM_REPO_ROOT;
+  const defaultRepoPath = (envRepoPath && envRepoPath.trim()) || "/home/project/repo";
+  database.exec("UPDATE project_vms SET provider = COALESCE(provider, 'gcp');");
+  database
+    .prepare("UPDATE project_vms SET repo_path = COALESCE(repo_path, ?)")
+    .run(defaultRepoPath);
   if (!hasVmLastActivityAt) {
     database.exec("ALTER TABLE project_vms ADD COLUMN last_activity_at TEXT;");
   }
@@ -723,10 +743,12 @@ export function upsertProjectVm(vm: ProjectVmRow): void {
   database
     .prepare(
       `INSERT INTO project_vms
-        (project_id, gcp_instance_id, gcp_instance_name, gcp_project, gcp_zone, external_ip, internal_ip, status, size, created_at, last_started_at, last_activity_at, last_error, total_hours_used)
+        (project_id, provider, repo_path, gcp_instance_id, gcp_instance_name, gcp_project, gcp_zone, external_ip, internal_ip, status, size, created_at, last_started_at, last_activity_at, last_error, total_hours_used)
        VALUES
-        (@project_id, @gcp_instance_id, @gcp_instance_name, @gcp_project, @gcp_zone, @external_ip, @internal_ip, @status, @size, @created_at, @last_started_at, @last_activity_at, @last_error, @total_hours_used)
+        (@project_id, @provider, @repo_path, @gcp_instance_id, @gcp_instance_name, @gcp_project, @gcp_zone, @external_ip, @internal_ip, @status, @size, @created_at, @last_started_at, @last_activity_at, @last_error, @total_hours_used)
        ON CONFLICT(project_id) DO UPDATE SET
+        provider=excluded.provider,
+        repo_path=excluded.repo_path,
         gcp_instance_id=excluded.gcp_instance_id,
         gcp_instance_name=excluded.gcp_instance_name,
         gcp_project=excluded.gcp_project,
@@ -747,6 +769,8 @@ export function upsertProjectVm(vm: ProjectVmRow): void {
 export function updateProjectVm(projectId: string, patch: ProjectVmPatch): ProjectVmRow | null {
   const database = getDb();
   const fields: Array<{ key: keyof ProjectVmPatch; column: string }> = [
+    { key: "provider", column: "provider" },
+    { key: "repo_path", column: "repo_path" },
     { key: "gcp_instance_id", column: "gcp_instance_id" },
     { key: "gcp_instance_name", column: "gcp_instance_name" },
     { key: "gcp_project", column: "gcp_project" },
@@ -775,6 +799,8 @@ export function updateProjectVm(projectId: string, patch: ProjectVmPatch): Proje
 
   const fallback: ProjectVmRow = {
     project_id: projectId,
+    provider: null,
+    repo_path: null,
     gcp_instance_id: null,
     gcp_instance_name: null,
     gcp_project: null,

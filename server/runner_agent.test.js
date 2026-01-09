@@ -10,6 +10,7 @@ const {
   ensureWorktreeLink,
   removeWorktreeLink,
   resolveWorktreePaths,
+  shouldFallbackToLocalVm,
 } = __test__;
 
 test("resolveWorktreePaths places worktree under run dir without a symlink", (t) => {
@@ -129,4 +130,12 @@ test("buildConflictContext reconstructs conflict run context from artifacts", (t
     conflictDetails.conflictContext.conflictingRun?.builderSummary,
     "conflicting summary"
   );
+});
+
+test("shouldFallbackToLocalVm allows unprovisioned or missing VMs", () => {
+  assert.equal(shouldFallbackToLocalVm(null), true);
+  assert.equal(shouldFallbackToLocalVm({ status: "not_provisioned" }), true);
+  assert.equal(shouldFallbackToLocalVm({ status: "deleted" }), true);
+  assert.equal(shouldFallbackToLocalVm({ status: "stopped" }), false);
+  assert.equal(shouldFallbackToLocalVm({ status: "running" }), false);
 });
