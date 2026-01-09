@@ -8,7 +8,7 @@ created: 2026-01-02
 updated: 2026-01-06
 estimate_hours: 6
 depends_on: [WO-2025-011]
-era: chat-v2
+era: v1
 ---
 
 # Chat Attention System with Notifications

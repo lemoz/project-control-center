@@ -27,7 +27,7 @@ status: done
 created_at: 2026-01-04
 updated_at: 2026-01-06
 depends_on: [WO-2025-011]
-era: chat-v2
+era: v1
 ---
 ## Notes
 - Ensure SSE respects ngrok/basic-auth exposure (no sensitive payloads beyond what the UI already renders).
