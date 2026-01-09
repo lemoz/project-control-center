@@ -37,7 +37,9 @@ estimate_hours: 6
 status: done
 created_at: 2026-01-08
 updated_at: 2026-01-08
-depends_on: []
+depends_on:
+  - WO-2025-011
+  - WO-2026-020
 era: v1
 ---
 # Chat Worktree Isolation

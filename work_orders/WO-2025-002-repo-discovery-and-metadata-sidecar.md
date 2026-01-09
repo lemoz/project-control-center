@@ -29,7 +29,7 @@ created_at: 2025-12-12
 updated_at: 2025-12-13
 depends_on:
   - WO-2025-001
-era: foundation
+era: v0
 ---
 ## Notes
 - Default discovery roots: `$HOME` (configurable via `CONTROL_CENTER_SCAN_ROOTS`).

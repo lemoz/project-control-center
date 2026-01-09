@@ -6,10 +6,13 @@ This repo will become one of the projects it manages (“dogfooding”): we’ll
 
 ## Goals
 - Scan and index local git repos; classify as prototype vs long-term; surface stage/status/priority/next work orders.
-- Per-repo Kanban of Work Orders with a strict “Ready” contract.
+- Per-repo Kanban of Work Orders with a strict "Ready" contract.
 - One-click runs: Builder agent implements a Work Order, then a fresh Reviewer agent approves/requests fixes before anything is shown to you.
 - Local runner that shells out to agent CLIs (Codex first, then Claude Code and Gemini CLI).
 - PWA-quality responsive UI usable from desktop or mobile, exposed via ngrok with basic auth.
+- Chat system with scoped threads (global, per-project, per-work-order) and worktree isolation.
+- Tech tree visualization showing work order dependencies and era progression.
+- VM-based project isolation for safe, sandboxed agent execution.
 
 ## Non-goals (v0)
 - Cloud hosting or cross-device sync.
@@ -124,17 +127,32 @@ By default, tests run the API on `http://127.0.0.1:4011` and the built UI on `ht
 Override with `E2E_API_PORT`, `E2E_WEB_PORT`, and `E2E_OFFLINE_WEB_PORT` if those ports are in use.
 
 ## Roadmap
-**v0**
-- Scaffold Next.js PWA + local server + SQLite.
-- Repo scanner + portfolio dashboard.
-- Work Order Kanban per repo.
-- Codex builder + reviewer loop with handoff summaries.
-- Settings page for provider/model.
 
-**v1**
-- Add Claude Code + Gemini providers.
-- Notifier plugins (iMessage, email, etc.).
-- Per-repo settings overrides.
+**v0 (Done)**
+- ✅ Scaffold Next.js PWA + local server + SQLite.
+- ✅ Repo scanner + portfolio dashboard.
+- ✅ Work Order Kanban per repo.
+- ✅ Codex builder + reviewer loop with handoff summaries.
+- ✅ Settings page for provider/model.
+
+**v1 (Current)**
+- ✅ Chat system with scoped threads and attention notifications.
+- ✅ Starred projects in portfolio.
+- ✅ E2E testing with Playwright (desktop + mobile).
+- ✅ ngrok exposure with basic auth.
+- ✅ Git worktree isolation for runner and chat.
+- ✅ Tech tree visualization for WO dependencies.
+- ⏳ Claude Code + Gemini CLI providers.
+- ⏳ iMessage notifier plugin.
+
+**v2 (In Progress)**
+- ✅ VM isolation scaffolding (DB, API, UI).
+- ✅ VM provisioning + lifecycle (GCP/SSH/IP).
+- ⏳ Remote exec + repo sync with safety guardrails.
+- ⏳ Runner integration with VM artifact egress.
+- ⏳ Constitution system (schema, generation, injection).
+- ⏳ Autonomous run policy + scheduler.
+- ⏳ Cost metering (VM runtime, tokens, APIs).
 
 ## Runner smoke test
 - Codex runner smoke test ran (WO-2025-010, 2025-12-12).

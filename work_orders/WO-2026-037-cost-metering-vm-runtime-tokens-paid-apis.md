@@ -35,7 +35,7 @@ depends_on:
   - WO-2026-035
   - WO-2026-027
   - WO-2025-004
-era: autonomous
+era: v2
 ---
 ## Notes
 - 

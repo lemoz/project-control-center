@@ -20,6 +20,9 @@ priority: 1
 tags: ["portfolio", "ux"]
 estimate_hours: 1
 status: done
+depends_on:
+  - WO-2025-002
+era: v1
 created_at: "2025-12-12"
 updated_at: "2025-12-12"
 ---

@@ -25,5 +25,5 @@ updated_at: "2025-12-12"
 depends_on:
   - WO-2025-001
   - WO-2025-002
-era: foundation
+era: v0
 ---

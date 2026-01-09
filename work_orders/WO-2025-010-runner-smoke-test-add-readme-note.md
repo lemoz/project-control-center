@@ -14,6 +14,9 @@ tags:
   - smoke
 estimate_hours: 0.5
 status: done
+depends_on:
+  - WO-2025-004
+era: v0
 created_at: 2025-12-12
 updated_at: 2025-12-13
 ---

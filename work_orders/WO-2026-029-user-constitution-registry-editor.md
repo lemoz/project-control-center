@@ -18,7 +18,7 @@ non_goals:
   - Enforcing constitution in agent prompts.
 stop_conditions:
   - If statement schema becomes complex, start with a plain list of strings and versioning only.
-priority: 3
+priority: 2
 tags:
   - planning
   - governance

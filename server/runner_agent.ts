@@ -1072,7 +1072,10 @@ function findConflictingRun(params: {
 
   if (!candidates.length) return null;
   const preferred = candidates.filter(
-    (c) => c.run.merge_status === "merged" || c.run.status === "you_review"
+    (c) =>
+      c.run.merge_status === "merged" ||
+      c.run.status === "you_review" ||
+      c.run.status === "merged"
   );
   const pool = preferred.length ? preferred : candidates;
   pool.sort((a, b) => {
