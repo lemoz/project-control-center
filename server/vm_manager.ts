@@ -306,6 +306,8 @@ function buildPrereqInstallScript(): string {
     "fi",
     // Install missing tools
     "if command -v apt-get >/dev/null 2>&1; then",
+    "  sudo -n rm -rf /var/lib/apt/lists/*",
+    "  sudo -n apt-get clean",
     "  sudo -n apt-get update -y",
     "  sudo -n apt-get install -y git rsync nodejs python3 docker.io",
     "  if command -v systemctl >/dev/null 2>&1; then sudo -n systemctl enable --now docker >/dev/null 2>&1 || true; fi",
