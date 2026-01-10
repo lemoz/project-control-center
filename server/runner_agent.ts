@@ -1775,6 +1775,11 @@ async function syncRemoteWorkspace(
   await remoteUpload(config.projectId, localPath, config.workspacePath, {
     allowDelete: true,
   });
+  log(`Installing dependencies in VM workspace...`);
+  await remoteExec(config.projectId, "npm ci", {
+    cwd: config.workspacePath,
+    allowAbsolute: true,
+  });
 }
 
 async function runRemoteTests(params: {
