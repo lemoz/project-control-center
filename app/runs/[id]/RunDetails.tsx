@@ -5,6 +5,7 @@ import Link from "next/link";
 
 type RunStatus =
   | "queued"
+  | "baseline_failed"
   | "building"
   | "ai_review"
   | "testing"
@@ -197,6 +198,18 @@ export function RunDetails({ runId }: { runId: string }) {
               </ul>
             </div>
           )}
+        </section>
+      )}
+
+      {run?.status === "baseline_failed" && (
+        <section className="card">
+          <div style={{ fontWeight: 800 }}>Baseline Failed</div>
+          <div className="muted" style={{ marginTop: 8 }}>
+            This run cannot proceed because tests are failing on main. Fix the baseline first.
+          </div>
+          <div className="muted" style={{ marginTop: 6 }}>
+            {run.error || "Unknown error"}
+          </div>
         </section>
       )}
 

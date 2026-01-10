@@ -965,6 +965,26 @@ function buildBuilderPrompt(params: {
       "```\n\n" +
       "Please analyze the failure and fix the issues.\n\n"
     : "";
+  const resourcefulPostureBlock =
+    `## Completing Tasks (Resourceful Posture)\n\n` +
+    `Your default stance is: "I can do this."\n\n` +
+    `When you encounter a task - including external services, account creation, API setup:\n\n` +
+    `1. **Attempt it** - Use browser automation, APIs, available tools. Actually try.\n\n` +
+    `2. **Be resourceful** - If one approach doesn't work, try another:\n` +
+    `   - Need an account? Create an email, sign up.\n` +
+    `   - Need verification? Look for alternatives.\n` +
+    `   - Hit a wall? Try a different angle.\n\n` +
+    `3. **Never fabricate completions**:\n` +
+    `   - No fake URLs, invite links, or endpoints\n` +
+    `   - No invented IDs, API keys, or credentials\n` +
+    `   - No marking tasks "complete" without actually completing them\n` +
+    `   - Fabricating completions is a critical safety violation\n\n` +
+    `4. **Fail honestly** - If you genuinely tried and couldn't complete something:\n` +
+    `   - Say what you attempted\n` +
+    `   - Explain what blocked you\n` +
+    `   - Don't pretend it's done\n\n` +
+    `5. **Escalate only when genuinely stuck** - After trying multiple approaches, you can request user help (see escalation format). But exhaust reasonable options first.\n\n` +
+    `The industry is moving toward agent-friendly interfaces. Don't assume things are impossible. Try first, be creative, be persistent.\n\n`;
   return `You are the Builder agent.\n\n` +
     constitutionBlock +
     `Task: Implement the Work Order in this repository.\n\n` +
@@ -985,6 +1005,7 @@ function buildBuilderPrompt(params: {
     `Only use blocking_fix for genuine blockers, not nice-to-have improvements.\n` +
     `\n` +
     `- At the end, output a JSON object matching the required schema.\n\n` +
+    resourcefulPostureBlock +
     iterationLine +
     historyBlock +
     failureBlock +
@@ -1328,16 +1349,22 @@ function getTestScriptInfo(repoPath: string): { hasTests: boolean; message: stri
   return { hasTests: true, message: "test script present" };
 }
 
-async function runRepoTests(repoPath: string, runDir: string, iteration: number) {
+async function runRepoTests(
+  repoPath: string,
+  runDir: string,
+  iteration: number,
+  options?: { logPath?: string; label?: string }
+) {
   const testInfo = getTestScriptInfo(repoPath);
   if (!testInfo.hasTests) {
     return [{ command: "(no tests)", passed: true, output: testInfo.message }];
   }
 
-  const logPath = path.join(runDir, "tests", "npm-test.log");
+  const logPath = options?.logPath ?? path.join(runDir, "tests", "npm-test.log");
+  const label = options?.label ?? "npm test";
   ensureDir(path.dirname(logPath));
   const logStream = fs.createWriteStream(logPath, { flags: "a" });
-  logStream.write(`[${nowIso()}] npm test start (iter ${iteration})\n`);
+  logStream.write(`[${nowIso()}] ${label} start (iter ${iteration})\n`);
   const outputCapture = createOutputCapture(MAX_TEST_OUTPUT_LINES);
 
   const child = spawn(npmCommand(), ["test"], {
@@ -1371,7 +1398,7 @@ async function runRepoTests(repoPath: string, runDir: string, iteration: number)
     MAX_TEST_OUTPUT_LINES
   );
 
-  logStream.write(`[${nowIso()}] npm test end exit=${exitCode}\n`);
+  logStream.write(`[${nowIso()}] ${label} end exit=${exitCode}\n`);
   logStream.end();
 
   return [
@@ -1435,19 +1462,22 @@ async function runRemoteTests(params: {
   runDir: string;
   iteration: number;
   remote: RemoteRunConfig;
+  logPath?: string;
+  labelPrefix?: string;
 }) {
   const testInfo = getTestScriptInfo(params.repoPath);
   if (!testInfo.hasTests) {
     return [{ command: "(no tests)", passed: true, output: testInfo.message }];
   }
 
-  const logPath = path.join(params.runDir, "tests", "npm-test.log");
+  const logPath = params.logPath ?? path.join(params.runDir, "tests", "npm-test.log");
+  const labelPrefix = params.labelPrefix ? `${params.labelPrefix} ` : "";
   ensureDir(path.dirname(logPath));
   const logStream = fs.createWriteStream(logPath, { flags: "a" });
   const env = { CI: "1", NEXT_DIST_DIR: ".system/next-run-tests" };
 
   const runRemoteCommand = async (label: string, command: string) => {
-    logStream.write(`[${nowIso()}] ${label} start (iter ${params.iteration})\n`);
+    logStream.write(`[${nowIso()}] ${labelPrefix}${label} start (iter ${params.iteration})\n`);
     const result = await remoteExec(params.remote.projectId, command, {
       cwd: params.remote.workspacePath,
       env,
@@ -1457,7 +1487,7 @@ async function runRemoteTests(params: {
 
     if (result.stdout) logStream.write(result.stdout);
     if (result.stderr) logStream.write(result.stderr);
-    logStream.write(`[${nowIso()}] ${label} end exit=${result.exitCode}\n`);
+    logStream.write(`[${nowIso()}] ${labelPrefix}${label} end exit=${result.exitCode}\n`);
 
     const outputCapture = createOutputCapture(MAX_TEST_OUTPUT_LINES);
     outputCapture.pushChunk(Buffer.from(result.stdout));
@@ -1781,6 +1811,93 @@ export async function runRun(runId: string) {
         return;
       }
     }
+
+    const baselineResultsPath = path.join(runDir, "tests", "baseline-results.json");
+    const baselineLogPath = path.join(runDir, "tests", "baseline-npm-test.log");
+    let baselineTests =
+      readJsonIfExists<Array<{ command: string; passed: boolean; output?: string }>>(baselineResultsPath);
+    if (!baselineTests) {
+      log("Running baseline health check...");
+      if (remoteConfig) {
+        try {
+          await syncRemoteWorkspace(remoteConfig, worktreePath, log);
+        } catch (err) {
+          const message = `remote workspace sync failed: ${String(err)}`;
+          log(message);
+          updateRun(runId, {
+            status: "failed",
+            error: message,
+            finished_at: nowIso(),
+          });
+          return;
+        }
+      }
+      try {
+        baselineTests = remoteConfig
+          ? await runRemoteTests({
+              repoPath: worktreePath,
+              runDir,
+              iteration: 0,
+              remote: remoteConfig,
+              logPath: baselineLogPath,
+              labelPrefix: "baseline",
+            })
+          : await runRepoTests(worktreePath, runDir, 0, {
+              logPath: baselineLogPath,
+              label: "baseline npm test",
+            });
+        writeJson(baselineResultsPath, baselineTests);
+      } catch (err) {
+        baselineTests = [{ command: "tests", passed: false, output: String(err) }];
+        writeJson(baselineResultsPath, baselineTests);
+      }
+
+      if (remoteConfig) {
+        try {
+          await stageRemoteTestArtifacts({ remote: remoteConfig, iteration: 0, log });
+          await syncRemoteTestArtifacts({ remote: remoteConfig, runDir, iteration: 0, log });
+        } catch (err) {
+          const message = `remote artifact sync failed: ${String(err)}`;
+          log(message);
+          updateRun(runId, {
+            status: "failed",
+            error: message,
+            finished_at: nowIso(),
+          });
+          return;
+        }
+      } else {
+        copyLocalTestArtifacts({ worktreePath, runDir, iteration: 0, log });
+      }
+    } else {
+      log("Using cached baseline test results");
+    }
+
+    if (!baselineTests) {
+      const message = "baseline tests did not return results";
+      updateRun(runId, {
+        status: "failed",
+        error: message,
+        finished_at: nowIso(),
+      });
+      log(message);
+      return;
+    }
+
+    const baselineFailures = baselineTests.filter((test) => !test.passed);
+    if (baselineFailures.length) {
+      const failedTests = baselineFailures.map((test) => test.command).join(", ");
+      const message = `Cannot start run: baseline tests failing. Fix these first: ${failedTests}`;
+      updateRun(runId, {
+        status: "baseline_failed",
+        error: message,
+        finished_at: nowIso(),
+      });
+      log(message);
+      return;
+    }
+
+    log("Baseline healthy, starting builder...");
 
     // Move Work Order into building inside the run branch.
     try {
