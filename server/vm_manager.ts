@@ -288,6 +288,12 @@ function wrapRemoteError(context: string, err: unknown): VmManagerError {
 function buildPrereqInstallScript(): string {
   return [
     "set -e",
+    // Create project directory with proper permissions
+    "if [ ! -d /home/project ]; then",
+    "  sudo -n mkdir -p /home/project",
+    "  sudo -n chown $(whoami):$(whoami) /home/project",
+    "fi",
+    // Check for missing tools
     "missing=''",
     "for tool in git rsync node npm python3 docker; do",
     "  if ! command -v \"$tool\" >/dev/null 2>&1; then",
@@ -297,6 +303,7 @@ function buildPrereqInstallScript(): string {
     "if [ -z \"$missing\" ]; then",
     "  exit 0",
     "fi",
+    // Install missing tools
     "if command -v apt-get >/dev/null 2>&1; then",
     "  sudo -n apt-get update -y",
     "  sudo -n apt-get install -y git rsync nodejs python3 docker.io",
