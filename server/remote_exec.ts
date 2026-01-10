@@ -1,7 +1,7 @@
 import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
-import { getProjectVm } from "./db.js";
+import { getProjectVm, type ProjectVmStatus } from "./db.js";
 
 export type ExecResult = {
   exitCode: number;
@@ -15,12 +15,14 @@ export type RemoteExecOptions = {
   env?: Record<string, string>;
   allowFailure?: boolean;
   allowAbsolute?: boolean;
+  allowVmStatuses?: ProjectVmStatus[];
 };
 
 export type RemoteSyncOptions = {
   allowDelete?: boolean;
   allowAbsolute?: boolean;
   exclude?: string[];
+  allowVmStatuses?: ProjectVmStatus[];
 };
 
 export type RemoteExecErrorCode =
@@ -81,6 +83,7 @@ const DEFAULT_EXCLUDES = [
   "node_modules",
   "e2e/.tmp",
 ];
+const DEFAULT_ALLOWED_VM_STATUSES: ProjectVmStatus[] = ["running"];
 
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
@@ -257,7 +260,7 @@ function resolveVmRepoRoot(): string {
   return normalized.replace(/\/+$/g, "") || "/";
 }
 
-function resolveVmTarget(projectId: string): VmTarget {
+function resolveVmTarget(projectId: string, allowVmStatuses?: ProjectVmStatus[]): VmTarget {
   const vm = getProjectVm(projectId);
   if (!vm) {
     throw new RemoteExecError(
@@ -265,7 +268,11 @@ function resolveVmTarget(projectId: string): VmTarget {
       "VM not configured for project. Provision a VM before remote operations."
     );
   }
-  if (vm.status !== "running") {
+  const allowedStatuses =
+    allowVmStatuses && allowVmStatuses.length > 0
+      ? new Set(allowVmStatuses)
+      : new Set(DEFAULT_ALLOWED_VM_STATUSES);
+  if (!allowedStatuses.has(vm.status)) {
     throw new RemoteExecError(
       "not_running",
       `VM is not running (status=${vm.status}). Start the VM first.`
@@ -596,7 +603,7 @@ export async function remoteExec(
     throw new RemoteExecError("invalid_command", "Command must be a non-empty string.");
   }
 
-  const target = resolveVmTarget(projectId);
+  const target = resolveVmTarget(projectId, options?.allowVmStatuses);
   const timeoutMs = execTimeoutMs(options?.timeout);
   const envPrefix = buildEnvPrefix(options?.env);
   const cwd = resolveRemoteCwd(options?.cwd, options?.allowAbsolute);
@@ -653,7 +660,7 @@ export async function remoteUpload(
   remotePath: string,
   options?: RemoteSyncOptions
 ): Promise<void> {
-  const target = resolveVmTarget(projectId);
+  const target = resolveVmTarget(projectId, options?.allowVmStatuses);
   await ensureLocalTool(RSYNC_COMMAND, "rsync");
   await ensureRemoteTool(target, "rsync");
 
@@ -721,7 +728,7 @@ export async function remoteDownload(
   localPath: string,
   options?: RemoteSyncOptions
 ): Promise<void> {
-  const target = resolveVmTarget(projectId);
+  const target = resolveVmTarget(projectId, options?.allowVmStatuses);
   await ensureLocalTool(RSYNC_COMMAND, "rsync");
   await ensureRemoteTool(target, "rsync");
 

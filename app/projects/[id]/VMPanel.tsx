@@ -35,6 +35,9 @@ type VmResponse = {
 
 type LifecycleAction = "provision" | "start" | "stop" | "resize" | "delete";
 
+const IN_PROGRESS_STATUSES = new Set(["provisioning", "installing", "syncing"]);
+const PROVISION_POLL_INTERVAL_MS = 4000;
+
 function formatTimestamp(value: string | null | undefined): string {
   if (!value) return "n/a";
   const ms = Date.parse(value);
@@ -50,9 +53,9 @@ export function VMPanel({ repoId }: { repoId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const load = useCallback(async (options?: { preserveNotice?: boolean }) => {
-    setLoading(true);
-    setError(null);
+  const load = useCallback(async (options?: { preserveNotice?: boolean; silent?: boolean }) => {
+    if (!options?.silent) setLoading(true);
+    if (!options?.silent) setError(null);
     if (!options?.preserveNotice) setNotice(null);
     try {
       const res = await fetch(`/api/repos/${encodeURIComponent(repoId)}/vm`, {
@@ -61,10 +64,11 @@ export function VMPanel({ repoId }: { repoId: string }) {
       const json = (await res.json().catch(() => null)) as VmResponse | null;
       if (!res.ok) throw new Error(json?.error || "failed to load VM data");
       setData(json);
+      setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed to load VM data");
     } finally {
-      setLoading(false);
+      if (!options?.silent) setLoading(false);
     }
   }, [repoId]);
 
@@ -169,8 +173,10 @@ export function VMPanel({ repoId }: { repoId: string }) {
     data?.vm?.last_activity_at ?? data?.vm?.last_started_at ?? null
   );
   const lastError = data?.vm?.last_error || "n/a";
+  const isInProgressStatus = IN_PROGRESS_STATUSES.has(status);
   const allowAnyAction = status === "error";
-  const actionLocked = loading || saving || lifecycleAction !== null || status === "provisioning";
+  const actionLocked =
+    loading || saving || lifecycleAction !== null || isInProgressStatus;
   const canProvision =
     !actionLocked && (allowAnyAction || status === "not_provisioned" || status === "deleted");
   const canStart = !actionLocked && (allowAnyAction || status === "stopped");
@@ -179,12 +185,31 @@ export function VMPanel({ repoId }: { repoId: string }) {
     !actionLocked && (allowAnyAction || status === "running" || status === "stopped");
   const canDelete = !actionLocked && (allowAnyAction || status !== "deleted");
 
+  useEffect(() => {
+    if (!lifecycleAction && !isInProgressStatus) return;
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled) return;
+      await load({ preserveNotice: true, silent: true });
+    };
+    void poll();
+    const interval = setInterval(poll, PROVISION_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [lifecycleAction, isInProgressStatus, load]);
+
   const lifecycleReason = useMemo(() => {
     switch (status) {
       case "not_provisioned":
         return "VM not provisioned yet. Use Provision to create a GCP instance.";
       case "provisioning":
-        return "VM action in progress. This can take a few minutes.";
+        return "Provisioning VM instance. This can take a few minutes.";
+      case "installing":
+        return "Installing VM prerequisites (git, node, etc.).";
+      case "syncing":
+        return "Syncing repo to VM. This can take a few minutes.";
       case "running":
         return "VM is running. Stop or resize when needed.";
       case "stopped":
@@ -211,7 +236,7 @@ export function VMPanel({ repoId }: { repoId: string }) {
           <button
             className="btnSecondary"
             onClick={() => void load()}
-            disabled={loading || saving || lifecycleAction !== null}
+            disabled={loading || saving}
           >
             Refresh
           </button>

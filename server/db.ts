@@ -28,6 +28,8 @@ export type ProjectRow = {
 export type ProjectVmStatus =
   | "not_provisioned"
   | "provisioning"
+  | "installing"
+  | "syncing"
   | "running"
   | "stopped"
   | "deleted"
@@ -63,6 +65,7 @@ export type RunRow = {
   provider: string;
   status:
     | "queued"
+    | "baseline_failed"
     | "building"
     | "waiting_for_input"
     | "ai_review"

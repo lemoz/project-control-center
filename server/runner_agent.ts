@@ -1126,8 +1126,35 @@ function builderSchema(): object {
           required: ["command", "passed", "output"],
         },
       },
+      changes: {
+        type: "array",
+        items: {
+          oneOf: [
+            {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                file: { type: "string" },
+                type: { const: "wo_implementation" },
+                reason: { type: "string" },
+              },
+              required: ["file", "type"],
+            },
+            {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                file: { type: "string" },
+                type: { const: "blocking_fix" },
+                reason: { type: "string", minLength: 1, pattern: "\\S" },
+              },
+              required: ["file", "type", "reason"],
+            },
+          ],
+        },
+      },
     },
-    required: ["summary", "risks", "tests"],
+    required: ["summary", "risks", "tests", "changes"],
   };
 }
 
@@ -1284,6 +1311,16 @@ function buildBuilderPrompt(params: {
     `- Do NOT edit the Work Order file itself.\n` +
     `- Prefer minimal, high-quality changes; update docs/tests if needed.\n` +
     `- Learn from previous iteration feedback - do not repeat the same mistakes.\n` +
+    `\n` +
+    `## Change Classification\n` +
+    `For each file you modify, classify the change:\n` +
+    `- wo_implementation: Directly implements the Work Order\n` +
+    `- blocking_fix: Fixes an issue that blocks WO completion (not part of WO scope, but necessary)\n` +
+    `For blocking_fix changes, explain WHY it's necessary:\n` +
+    `- What breaks without this fix?\n` +
+    `- Why can't the WO be completed without it?\n` +
+    `Only use blocking_fix for genuine blockers, not nice-to-have improvements.\n` +
+    `\n` +
     `- At the end, output a JSON object matching the required schema.\n\n` +
     resourcefulPostureBlock +
     escalationRuntimeBlock +
@@ -1302,8 +1339,28 @@ function buildReviewerPrompt(params: {
   workOrderMarkdown: string;
   diffPatch: string;
   constitution?: string;
+  builderChanges?: BuilderChange[];
+  builderChangesPath?: string;
 }) {
   const constitutionBlock = formatConstitutionBlock(params.constitution ?? "");
+  const builderChanges = params.builderChanges ?? [];
+  const builderChangesPath = params.builderChangesPath?.trim();
+  const builderChangesLines = builderChanges.length
+    ? builderChanges.map((change) => {
+        const label =
+          change.type === "blocking_fix"
+            ? `blocking_fix: ${change.reason || "(reason missing)"}`
+            : "wo_implementation";
+        return `- ${change.file} (${label})`;
+      })
+    : ["- (no change classifications available)"];
+  const builderChangesBlock =
+    builderChanges.length || builderChangesPath
+      ? `## Builder Change Classification\n` +
+        `${builderChangesLines.join("\n")}\n` +
+        (builderChangesPath ? `\nBuilder output file: ${builderChangesPath}\n` : "") +
+        `\n`
+      : "";
   return (
     `You are a fresh Reviewer agent.\n\n` +
     constitutionBlock +
@@ -1318,6 +1375,18 @@ function buildReviewerPrompt(params: {
     `- If changes are needed, return status=changes_requested with actionable notes.\n` +
     `- Otherwise return status=approved.\n` +
     `- Output JSON matching the required schema.\n\n` +
+    builderChangesBlock +
+    `## Evaluating Blocking Fixes\n` +
+    `When builder claims a change is a "blocking_fix":\n` +
+    `1. Verify the claim - is it actually blocking?\n` +
+    `   - Would tests fail without this change?\n` +
+    `   - Is there a type error or import issue?\n` +
+    `2. Check the reason - does it make sense?\n` +
+    `   - Is the explanation specific and verifiable?\n` +
+    `   - Can you confirm by inspection?\n` +
+    `3. Decide:\n` +
+    `   - If legitimate blocker -> allow\n` +
+    `   - If disguised scope creep -> reject with note: "This doesn't appear to be a true blocker because..."\n\n` +
     `Work Order (${params.workOrderId}):\n\n` +
     `${params.workOrderMarkdown}\n\n` +
     `Diff:\n\n` +
@@ -1358,6 +1427,11 @@ function buildConflictResolutionPrompt(params: {
     `- Resolve the conflict preserving both goals where possible\n` +
     `- If goals are mutually exclusive, preserve the higher-priority Work Order's intent\n` +
     `- Document your resolution reasoning in the summary\n\n` +
+    `## Change Classification\n` +
+    `For each file you modify, classify the change:\n` +
+    `- wo_implementation: Directly implements the Work Order\n` +
+    `- blocking_fix: Required to resolve the conflict or unblock the merge\n` +
+    `For blocking_fix changes, explain WHY it's necessary.\n\n` +
     `Current Work Order:\n\n${params.currentWorkOrderMarkdown}\n\n` +
     `Conflicting Work Order:\n\n${params.conflictingWorkOrderMarkdown}\n\n` +
     `Current diff:\n\n${params.currentDiff || "(no diff available)"}\n\n` +
@@ -1383,14 +1457,44 @@ type ConflictContext = {
   gitConflictOutput: string;
 };
 
+type BuilderChangeType = "wo_implementation" | "blocking_fix";
+
+type BuilderChange = {
+  file: string;
+  type: BuilderChangeType;
+  reason?: string;
+};
+
 type RunIterationHistoryEntry = {
   iteration: number;
   builder_summary: string | null;
   builder_risks: string[];
+  builder_changes?: BuilderChange[];
   tests: Array<{ command: string; passed: boolean; output: string }>;
   reviewer_verdict: "approved" | "changes_requested" | null;
   reviewer_notes: string[] | null;
 };
+
+function normalizeBuilderChanges(value: unknown): BuilderChange[] {
+  if (!Array.isArray(value)) return [];
+  const changes: BuilderChange[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as { file?: unknown; type?: unknown; reason?: unknown };
+    const file = typeof record.file === "string" ? record.file.trim() : "";
+    const type =
+      record.type === "wo_implementation" || record.type === "blocking_fix"
+        ? record.type
+        : null;
+    if (!file || !type) continue;
+    const reason = typeof record.reason === "string" ? record.reason.trim() : "";
+    if (type === "blocking_fix" && !reason) continue;
+    const change: BuilderChange = { file, type };
+    if (reason) change.reason = reason;
+    changes.push(change);
+  }
+  return changes;
+}
 
 function buildConflictContext(params: {
   repoPath: string;
@@ -1565,16 +1669,22 @@ function getTestScriptInfo(repoPath: string): { hasTests: boolean; message: stri
   return { hasTests: true, message: "test script present" };
 }
 
-async function runRepoTests(repoPath: string, runDir: string, iteration: number) {
+async function runRepoTests(
+  repoPath: string,
+  runDir: string,
+  iteration: number,
+  options?: { logPath?: string; label?: string }
+) {
   const testInfo = getTestScriptInfo(repoPath);
   if (!testInfo.hasTests) {
     return [{ command: "(no tests)", passed: true, output: testInfo.message }];
   }
 
-  const logPath = path.join(runDir, "tests", "npm-test.log");
+  const logPath = options?.logPath ?? path.join(runDir, "tests", "npm-test.log");
+  const label = options?.label ?? "npm test";
   ensureDir(path.dirname(logPath));
   const logStream = fs.createWriteStream(logPath, { flags: "a" });
-  logStream.write(`[${nowIso()}] npm test start (iter ${iteration})\n`);
+  logStream.write(`[${nowIso()}] ${label} start (iter ${iteration})\n`);
   const outputCapture = createOutputCapture(MAX_TEST_OUTPUT_LINES);
 
   const child = spawn(npmCommand(), ["test"], {
@@ -1608,7 +1718,7 @@ async function runRepoTests(repoPath: string, runDir: string, iteration: number)
     MAX_TEST_OUTPUT_LINES
   );
 
-  logStream.write(`[${nowIso()}] npm test end exit=${exitCode}\n`);
+  logStream.write(`[${nowIso()}] ${label} end exit=${exitCode}\n`);
   logStream.end();
 
   return [
@@ -1672,19 +1782,22 @@ async function runRemoteTests(params: {
   runDir: string;
   iteration: number;
   remote: RemoteRunConfig;
+  logPath?: string;
+  labelPrefix?: string;
 }) {
   const testInfo = getTestScriptInfo(params.repoPath);
   if (!testInfo.hasTests) {
     return [{ command: "(no tests)", passed: true, output: testInfo.message }];
   }
 
-  const logPath = path.join(params.runDir, "tests", "npm-test.log");
+  const logPath = params.logPath ?? path.join(params.runDir, "tests", "npm-test.log");
+  const labelPrefix = params.labelPrefix ? `${params.labelPrefix} ` : "";
   ensureDir(path.dirname(logPath));
   const logStream = fs.createWriteStream(logPath, { flags: "a" });
   const env = { CI: "1", NEXT_DIST_DIR: ".system/next-run-tests" };
 
   const runRemoteCommand = async (label: string, command: string) => {
-    logStream.write(`[${nowIso()}] ${label} start (iter ${params.iteration})\n`);
+    logStream.write(`[${nowIso()}] ${labelPrefix}${label} start (iter ${params.iteration})\n`);
     const result = await remoteExec(params.remote.projectId, command, {
       cwd: params.remote.workspacePath,
       env,
@@ -1694,7 +1807,7 @@ async function runRemoteTests(params: {
 
     if (result.stdout) logStream.write(result.stdout);
     if (result.stderr) logStream.write(result.stderr);
-    logStream.write(`[${nowIso()}] ${label} end exit=${result.exitCode}\n`);
+    logStream.write(`[${nowIso()}] ${labelPrefix}${label} end exit=${result.exitCode}\n`);
 
     const outputCapture = createOutputCapture(MAX_TEST_OUTPUT_LINES);
     outputCapture.pushChunk(Buffer.from(result.stdout));
@@ -2019,6 +2132,93 @@ export async function runRun(runId: string) {
       }
     }
 
+    const baselineResultsPath = path.join(runDir, "tests", "baseline-results.json");
+    const baselineLogPath = path.join(runDir, "tests", "baseline-npm-test.log");
+    let baselineTests =
+      readJsonIfExists<Array<{ command: string; passed: boolean; output?: string }>>(baselineResultsPath);
+    if (!baselineTests) {
+      log("Running baseline health check...");
+      if (remoteConfig) {
+        try {
+          await syncRemoteWorkspace(remoteConfig, worktreePath, log);
+        } catch (err) {
+          const message = `remote workspace sync failed: ${String(err)}`;
+          log(message);
+          updateRun(runId, {
+            status: "failed",
+            error: message,
+            finished_at: nowIso(),
+          });
+          return;
+        }
+      }
+      try {
+        baselineTests = remoteConfig
+          ? await runRemoteTests({
+              repoPath: worktreePath,
+              runDir,
+              iteration: 0,
+              remote: remoteConfig,
+              logPath: baselineLogPath,
+              labelPrefix: "baseline",
+            })
+          : await runRepoTests(worktreePath, runDir, 0, {
+              logPath: baselineLogPath,
+              label: "baseline npm test",
+            });
+        writeJson(baselineResultsPath, baselineTests);
+      } catch (err) {
+        baselineTests = [{ command: "tests", passed: false, output: String(err) }];
+        writeJson(baselineResultsPath, baselineTests);
+      }
+
+      if (remoteConfig) {
+        try {
+          await stageRemoteTestArtifacts({ remote: remoteConfig, iteration: 0, log });
+          await syncRemoteTestArtifacts({ remote: remoteConfig, runDir, iteration: 0, log });
+        } catch (err) {
+          const message = `remote artifact sync failed: ${String(err)}`;
+          log(message);
+          updateRun(runId, {
+            status: "failed",
+            error: message,
+            finished_at: nowIso(),
+          });
+          return;
+        }
+      } else {
+        copyLocalTestArtifacts({ worktreePath, runDir, iteration: 0, log });
+      }
+    } else {
+      log("Using cached baseline test results");
+    }
+
+    if (!baselineTests) {
+      const message = "baseline tests did not return results";
+      updateRun(runId, {
+        status: "failed",
+        error: message,
+        finished_at: nowIso(),
+      });
+      log(message);
+      return;
+    }
+
+    const baselineFailures = baselineTests.filter((test) => !test.passed);
+    if (baselineFailures.length) {
+      const failedTests = baselineFailures.map((test) => test.command).join(", ");
+      const message = `Cannot start run: baseline tests failing. Fix these first: ${failedTests}`;
+      updateRun(runId, {
+        status: "baseline_failed",
+        error: message,
+        finished_at: nowIso(),
+      });
+      log(message);
+      return;
+    }
+
+    log("Baseline healthy, starting builder...");
+
     // Move Work Order into building inside the run branch.
     try {
       if (workOrder.status === "ready") {
@@ -2079,8 +2279,15 @@ export async function runRun(runId: string) {
       const builderOutputPath = path.join(builderDir, "result.json");
       const builderLogPath = path.join(builderDir, "codex.log");
       let builderResult:
-        | { summary: string; risks: string[]; tests: unknown[]; escalation?: string }
+        | {
+            summary: string;
+            risks: string[];
+            tests: unknown[];
+            escalation?: string;
+            changes?: unknown;
+          }
         | null = null;
+      let builderChanges: BuilderChange[] = [];
 
       while (true) {
         const builderPrompt = buildBuilderPrompt({
@@ -2151,13 +2358,16 @@ export async function runRun(runId: string) {
         }
 
         builderResult = null;
+        builderChanges = [];
         try {
           builderResult = JSON.parse(fs.readFileSync(builderOutputPath, "utf8")) as {
             summary: string;
             risks: string[];
             tests: unknown[];
             escalation?: string;
+            changes?: unknown;
           };
+          builderChanges = normalizeBuilderChanges(builderResult?.changes);
         } catch {
           // keep going; reviewer can still evaluate diff
         }
@@ -2225,6 +2435,7 @@ export async function runRun(runId: string) {
         iteration,
         builder_summary: builderResult?.summary ?? null,
         builder_risks: builderResult?.risks ?? [],
+        builder_changes: builderChanges,
         tests: [],
         reviewer_verdict: null,
         reviewer_notes: null,
@@ -2318,11 +2529,25 @@ export async function runRun(runId: string) {
         // ignore; reviewer can still use diff-only review
       }
 
+      const reviewerBuilderResultPath = path.join(
+        reviewerDir,
+        "builder_result.json"
+      );
+      try {
+        fs.copyFileSync(builderOutputPath, reviewerBuilderResultPath);
+      } catch {
+        // ignore; reviewer can still rely on prompt summary
+      }
+
       const reviewerPrompt = buildReviewerPrompt({
         workOrderId: workOrder.id,
         workOrderMarkdown,
         diffPatch: diffPatch || "(no changes detected)",
         constitution: reviewerConstitution.content,
+        builderChanges,
+        builderChangesPath: fs.existsSync(reviewerBuilderResultPath)
+          ? "builder_result.json"
+          : undefined,
       });
       fs.writeFileSync(
         path.join(reviewerDir, "prompt.txt"),

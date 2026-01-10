@@ -812,7 +812,7 @@ Guidelines for dependencies:
     `When a work order run is triggered (via work_order_start_run), outputs are stored at .system/runs/{runId}/\n` +
     `Key files to examine for debugging:\n` +
     `- run.log: Main execution timeline with timestamps\n` +
-    `- builder/iter-{n}/result.json: Builder output {summary, risks, tests}\n` +
+    `- builder/iter-{n}/result.json: Builder output {summary, risks, tests, changes}\n` +
     `- reviewer/iter-{n}/verdict.json: Review verdict {status, notes}\n` +
     `- tests/results.json: Test pass/fail results\n` +
     `- tests/npm-test.log: Raw test output\n` +
