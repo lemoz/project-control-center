@@ -6,6 +6,25 @@ import Database from "better-sqlite3";
 
 const e2eDir = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Ensures test repos are in a clean state (beta exists, beta-moved doesn't).
+ * Call this before tests that might leave dirty state.
+ */
+function ensureCleanRepoState() {
+  const tmpDir = path.join(e2eDir, ".tmp");
+  const betaRepoPath = path.join(tmpDir, "repos", "beta");
+  const movedRepoPath = path.join(tmpDir, "repos", "beta-moved");
+
+  // If beta-moved exists but beta doesn't, restore it
+  if (fs.existsSync(movedRepoPath) && !fs.existsSync(betaRepoPath)) {
+    fs.renameSync(movedRepoPath, betaRepoPath);
+  }
+  // If both exist (shouldn't happen), remove beta-moved
+  if (fs.existsSync(movedRepoPath) && fs.existsSync(betaRepoPath)) {
+    fs.rmSync(movedRepoPath, { recursive: true, force: true });
+  }
+}
+
 async function repoIdFromCard(card: import("@playwright/test").Locator): Promise<string> {
   const href = await card.locator("a.stretchedLink").getAttribute("href");
   if (!href) throw new Error("repo card missing href");
@@ -41,6 +60,15 @@ function trackPageErrors(page: import("@playwright/test").Page) {
 }
 
 test.describe("Project Control Center smoke", () => {
+  // Ensure clean repo state before/after each test to prevent pollution from failed tests
+  test.beforeEach(() => {
+    ensureCleanRepoState();
+  });
+
+  test.afterEach(() => {
+    ensureCleanRepoState();
+  });
+
   test("Server health + repo scan endpoints respond", async ({ request }) => {
     const apiPort = Number(process.env.E2E_API_PORT || process.env.CONTROL_CENTER_PORT || 4011);
     const apiBase = `http://127.0.0.1:${apiPort}`;
