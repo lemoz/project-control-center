@@ -28,6 +28,8 @@ export type ProjectRow = {
 export type ProjectVmStatus =
   | "not_provisioned"
   | "provisioning"
+  | "installing"
+  | "syncing"
   | "running"
   | "stopped"
   | "deleted"

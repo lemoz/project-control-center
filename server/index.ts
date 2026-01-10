@@ -576,7 +576,6 @@ app.post("/repos/:id/vm/provision", async (req, res) => {
       size: project.vm_size || "medium",
       zone,
       image,
-      repoPath: project.path,
     });
     return res.json(buildVmResponse(project, vm));
   } catch (err) {
