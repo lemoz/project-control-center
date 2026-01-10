@@ -357,6 +357,7 @@ async function syncVmRepo(projectId: string, repoPath: string): Promise<void> {
 async function installVmDependencies(projectId: string): Promise<void> {
   try {
     await remoteExec(projectId, "npm ci", {
+      cwd: ".",  // Run in repo root
       allowVmStatuses: PROVISIONING_ALLOWED_VM_STATUSES,
     });
   } catch (err) {
