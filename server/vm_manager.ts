@@ -311,7 +311,7 @@ function buildPrereqInstallScript(): string {
     "  echo \"Missing tools:$missing. Install git, rsync, node, npm, python3, docker manually.\" >&2",
     "  exit 1",
     "fi",
-  ].join("; ");
+  ].join("\n");
 }
 
 async function ensureVmPrereqs(projectId: string): Promise<void> {
