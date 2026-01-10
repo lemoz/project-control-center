@@ -23,14 +23,13 @@ tags:
   - infrastructure
   - bug
 estimate_hours: 2
-status: ready
+status: you_review
 created_at: 2026-01-10
 updated_at: 2026-01-10
 depends_on:
   - WO-2026-027
 era: v1
 ---
-
 ## Problem
 
 When provisioning a VM via the UI (VMPanel "Provision" button), the VM is created successfully but is not ready to run tasks. Runs fail with:

@@ -2,6 +2,7 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import {
+  findProjectById,
   getProjectVm,
   updateProjectVm,
   upsertProjectVm,
@@ -85,6 +86,12 @@ const GCLOUD_COMMAND = process.env.CONTROL_CENTER_GCLOUD_PATH || "gcloud";
 const SSH_COMMAND = process.env.CONTROL_CENTER_SSH_PATH || "ssh";
 const DEFAULT_VM_REPO_ROOT = "/home/project/repo";
 const VM_PROVIDER: ProjectVmProvider = "gcp";
+const PROVISIONING_ALLOWED_VM_STATUSES: ProjectVmStatus[] = [
+  "provisioning",
+  "installing",
+  "syncing",
+  "running",
+];
 const SSH_USER_ENV = "CONTROL_CENTER_GCP_SSH_USER";
 const SSH_KEY_ENV = "CONTROL_CENTER_GCP_SSH_KEY_PATH";
 const GCP_PROJECT_ENV = "CONTROL_CENTER_GCP_PROJECT";
@@ -176,6 +183,35 @@ function ensureVmRow(projectId: string): ProjectVmRow {
   const row = defaultVmRow(projectId);
   upsertProjectVm(row);
   return row;
+}
+
+function resolveProjectRepoPath(config: VMConfig): string {
+  if (config.repoPath?.trim()) return config.repoPath;
+  const project = findProjectById(config.projectId);
+  if (!project?.path) {
+    throw new VmManagerError(
+      "preflight",
+      "Project repo path not found. Re-scan the project before provisioning."
+    );
+  }
+  return project.path;
+}
+
+function ensureLocalRepoPath(repoPath: string): string {
+  const resolved = path.resolve(repoPath);
+  let stats: fs.Stats;
+  try {
+    stats = fs.statSync(resolved);
+  } catch {
+    throw new VmManagerError("preflight", `Project repo path not found at ${resolved}.`);
+  }
+  if (!stats.isDirectory()) {
+    throw new VmManagerError(
+      "preflight",
+      `Project repo path ${resolved} must be a directory.`
+    );
+  }
+  return resolved;
 }
 
 function buildInstanceName(projectId: string): string {
@@ -280,7 +316,9 @@ function buildPrereqInstallScript(): string {
 async function ensureVmPrereqs(projectId: string): Promise<void> {
   const script = buildPrereqInstallScript();
   try {
-    await remoteExec(projectId, `bash -lc ${shellEscape(script)}`);
+    await remoteExec(projectId, `bash -lc ${shellEscape(script)}`, {
+      allowVmStatuses: PROVISIONING_ALLOWED_VM_STATUSES,
+    });
   } catch (err) {
     throw wrapRemoteError("Failed to install VM prerequisites", err);
   }
@@ -291,6 +329,7 @@ async function syncVmRepo(projectId: string, repoPath: string): Promise<void> {
     await remoteUpload(projectId, repoPath, ".", {
       allowDelete: true,
       exclude: [".system", "*.db*"],
+      allowVmStatuses: PROVISIONING_ALLOWED_VM_STATUSES,
     });
   } catch (err) {
     throw wrapRemoteError("Failed to sync repo to VM", err);
@@ -678,6 +717,7 @@ async function createInstance(params: {
 
 export async function provisionVM(config: VMConfig): Promise<ProjectVmRow> {
   return withVmAction(config.projectId, async () => {
+    const repoPath = ensureLocalRepoPath(resolveProjectRepoPath(config));
     const vm = ensureVmRow(config.projectId);
     const gcp = await resolveGcpConfig({
       zoneOverride: config.zone,
@@ -725,7 +765,7 @@ export async function provisionVM(config: VMConfig): Promise<ProjectVmRow> {
 
     const startedAt = nowIso();
     updateVm(config.projectId, {
-      status: "running",
+      status: "installing",
       gcp_instance_id: details.id,
       external_ip: details.externalIp,
       internal_ip: details.internalIp,
@@ -740,16 +780,22 @@ export async function provisionVM(config: VMConfig): Promise<ProjectVmRow> {
       repo_path: repoRoot,
     });
 
-    if (config.repoPath) {
-      await ensureVmPrereqs(config.projectId);
-      await syncVmRepo(config.projectId, config.repoPath);
-      updateVm(config.projectId, {
-        last_activity_at: nowIso(),
-        last_error: null,
-        provider: VM_PROVIDER,
-        repo_path: repoRoot,
-      });
-    }
+    await ensureVmPrereqs(config.projectId);
+    updateVm(config.projectId, {
+      status: "syncing",
+      last_activity_at: nowIso(),
+      last_error: null,
+      provider: VM_PROVIDER,
+      repo_path: repoRoot,
+    });
+    await syncVmRepo(config.projectId, repoPath);
+    updateVm(config.projectId, {
+      status: "running",
+      last_activity_at: nowIso(),
+      last_error: null,
+      provider: VM_PROVIDER,
+      repo_path: repoRoot,
+    });
 
     return getProjectVm(config.projectId) ?? defaultVmRow(config.projectId);
   });
