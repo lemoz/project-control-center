@@ -193,6 +193,15 @@ a {
   font-size: 13px;
 }
 
+.notice {
+  background: #12263a;
+  border: 1px solid #1f3957;
+  color: #cfe3ff;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
 .spinner {
   width: 14px;
   height: 14px;

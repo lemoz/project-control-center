@@ -21,14 +21,13 @@ tags:
   - constitution
   - polish
 estimate_hours: 1
-status: ready
+status: you_review
 created_at: 2026-01-10
 updated_at: 2026-01-10
 depends_on:
   - WO-2026-025
 era: v1
 ---
-
 ## Problem
 
 When generating a constitution draft, if the AI omits existing content, the system correctly falls back to local merge. However, the current messaging looks like an error:
