@@ -30,6 +30,7 @@ export type ProjectVmStatus =
   | "provisioning"
   | "installing"
   | "syncing"
+  | "installing_deps"
   | "running"
   | "stopped"
   | "deleted"

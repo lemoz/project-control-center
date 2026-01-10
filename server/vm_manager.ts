@@ -91,6 +91,7 @@ const PROVISIONING_ALLOWED_VM_STATUSES: ProjectVmStatus[] = [
   "provisioning",
   "installing",
   "syncing",
+  "installing_deps",
   "running",
 ];
 const SSH_USER_ENV = "CONTROL_CENTER_GCP_SSH_USER";
@@ -341,6 +342,16 @@ async function syncVmRepo(projectId: string, repoPath: string): Promise<void> {
     });
   } catch (err) {
     throw wrapRemoteError("Failed to sync repo to VM", err);
+  }
+}
+
+async function installVmDependencies(projectId: string): Promise<void> {
+  try {
+    await remoteExec(projectId, "npm ci", {
+      allowVmStatuses: PROVISIONING_ALLOWED_VM_STATUSES,
+    });
+  } catch (err) {
+    throw wrapRemoteError("Failed to install dependencies on VM", err);
   }
 }
 
@@ -842,6 +853,14 @@ export async function provisionVM(config: VMConfig): Promise<ProjectVmRow> {
       repo_path: repoRoot,
     });
     await syncVmRepo(config.projectId, repoPath);
+    updateVm(config.projectId, {
+      status: "installing_deps",
+      last_activity_at: nowIso(),
+      last_error: null,
+      provider: VM_PROVIDER,
+      repo_path: repoRoot,
+    });
+    await installVmDependencies(config.projectId);
     updateVm(config.projectId, {
       status: "running",
       last_activity_at: nowIso(),
