@@ -27,7 +27,7 @@ tags:
   - ux
   - agent-behavior
 estimate_hours: 4
-status: you_review
+status: done
 created_at: 2026-01-10
 updated_at: 2026-01-10
 depends_on:
