@@ -35,7 +35,7 @@ tags:
   - chat-history
   - autonomy
 estimate_hours: 10
-status: you_review
+status: done
 created_at: 2026-01-06
 updated_at: 2026-01-09
 depends_on:
