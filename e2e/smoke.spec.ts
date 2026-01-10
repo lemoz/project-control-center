@@ -345,11 +345,12 @@ test.describe("Project Control Center smoke", () => {
     const alphaCard = page.locator(".grid .card.cardLink", { hasText: "alpha" });
     await alphaCard.locator("a.stretchedLink").click();
 
-    await expect(page.locator(".board")).toBeVisible();
-    await expect(page.getByText("Backlog")).toBeVisible();
-    await expect(page.getByText("Ready")).toBeVisible();
-    await expect(page.getByText("Building")).toBeVisible();
-    await expect(page.getByText("Done")).toBeVisible();
+    const board = page.locator(".board");
+    await expect(board).toBeVisible();
+    await expect(board.getByText("Backlog", { exact: true })).toBeVisible();
+    await expect(board.getByText("Ready", { exact: true })).toBeVisible();
+    await expect(board.getByText("Building", { exact: true })).toBeVisible();
+    await expect(board.getByText("Done", { exact: true })).toBeVisible();
   });
 
   test("Server offline fallback renders", async ({ page }) => {
