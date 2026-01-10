@@ -38,6 +38,7 @@ type WorkOrdersResponse = {
 
 type RunStatus =
   | "queued"
+  | "baseline_failed"
   | "building"
   | "ai_review"
   | "testing"
@@ -477,10 +478,16 @@ function WorkOrderCard({
         )}
       </div>
 
-      {(latestRun?.status === "failed" || latestRun?.status === "merge_conflict") && (
+      {(latestRun?.status === "failed" ||
+        latestRun?.status === "merge_conflict" ||
+        latestRun?.status === "baseline_failed") && (
         <div className="error" style={{ marginTop: 10 }}>
           <div style={{ fontWeight: 700 }}>
-            {latestRun?.status === "merge_conflict" ? "Last run hit merge conflict" : "Last run failed"}
+            {latestRun?.status === "merge_conflict"
+              ? "Last run hit merge conflict"
+              : latestRun?.status === "baseline_failed"
+                ? "Last run failed baseline tests"
+                : "Last run failed"}
           </div>
           <div style={{ marginTop: 6 }}>
             {latestRun.error?.trim() || "Unknown error"}

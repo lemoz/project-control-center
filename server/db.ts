@@ -63,6 +63,7 @@ export type RunRow = {
   provider: string;
   status:
     | "queued"
+    | "baseline_failed"
     | "building"
     | "ai_review"
     | "testing"
