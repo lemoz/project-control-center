@@ -299,7 +299,7 @@ function buildPrereqInstallScript(): string {
     "fi",
     "if command -v apt-get >/dev/null 2>&1; then",
     "  sudo -n apt-get update -y",
-    "  sudo -n apt-get install -y git rsync nodejs npm python3 docker.io",
+    "  sudo -n apt-get install -y git rsync nodejs python3 docker.io",
     "  if command -v systemctl >/dev/null 2>&1; then sudo -n systemctl enable --now docker >/dev/null 2>&1 || true; fi",
     "elif command -v yum >/dev/null 2>&1; then",
     "  sudo -n yum install -y git rsync nodejs npm python3 docker",
