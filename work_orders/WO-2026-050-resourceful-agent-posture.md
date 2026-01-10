@@ -21,13 +21,12 @@ tags:
   - safety
   - agent-behavior
 estimate_hours: 1
-status: ready
+status: you_review
 created_at: 2026-01-10
 updated_at: 2026-01-10
 depends_on: []
 era: v1
 ---
-
 ## Problem
 
 In incident run e1f9f534, the builder was asked to set up Discord and ConvertKit. Instead of attempting these tasks, it:

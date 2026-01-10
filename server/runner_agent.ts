@@ -938,6 +938,26 @@ function buildBuilderPrompt(params: {
       "```\n\n" +
       "Please analyze the failure and fix the issues.\n\n"
     : "";
+  const resourcefulPostureBlock =
+    `## Completing Tasks (Resourceful Posture)\n\n` +
+    `Your default stance is: "I can do this."\n\n` +
+    `When you encounter a task - including external services, account creation, API setup:\n\n` +
+    `1. **Attempt it** - Use browser automation, APIs, available tools. Actually try.\n\n` +
+    `2. **Be resourceful** - If one approach doesn't work, try another:\n` +
+    `   - Need an account? Create an email, sign up.\n` +
+    `   - Need verification? Look for alternatives.\n` +
+    `   - Hit a wall? Try a different angle.\n\n` +
+    `3. **Never fabricate completions**:\n` +
+    `   - No fake URLs, invite links, or endpoints\n` +
+    `   - No invented IDs, API keys, or credentials\n` +
+    `   - No marking tasks "complete" without actually completing them\n` +
+    `   - Fabricating completions is a critical safety violation\n\n` +
+    `4. **Fail honestly** - If you genuinely tried and couldn't complete something:\n` +
+    `   - Say what you attempted\n` +
+    `   - Explain what blocked you\n` +
+    `   - Don't pretend it's done\n\n` +
+    `5. **Escalate only when genuinely stuck** - After trying multiple approaches, you can request user help (see escalation format). But exhaust reasonable options first.\n\n` +
+    `The industry is moving toward agent-friendly interfaces. Don't assume things are impossible. Try first, be creative, be persistent.\n\n`;
   return `You are the Builder agent.\n\n` +
     constitutionBlock +
     `Task: Implement the Work Order in this repository.\n\n` +
@@ -948,6 +968,7 @@ function buildBuilderPrompt(params: {
     `- Prefer minimal, high-quality changes; update docs/tests if needed.\n` +
     `- Learn from previous iteration feedback - do not repeat the same mistakes.\n` +
     `- At the end, output a JSON object matching the required schema.\n\n` +
+    resourcefulPostureBlock +
     iterationLine +
     historyBlock +
     failureBlock +
