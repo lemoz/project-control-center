@@ -34,6 +34,7 @@ type WorkOrder = {
 type RunStatus =
   | "queued"
   | "building"
+  | "waiting_for_input"
   | "ai_review"
   | "testing"
   | "you_review"

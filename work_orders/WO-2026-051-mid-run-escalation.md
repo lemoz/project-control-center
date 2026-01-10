@@ -27,14 +27,13 @@ tags:
   - ux
   - agent-behavior
 estimate_hours: 4
-status: ready
+status: you_review
 created_at: 2026-01-10
 updated_at: 2026-01-10
 depends_on:
   - WO-2026-050
 era: v1
 ---
-
 ## Problem
 
 When a builder is genuinely stuck (after trying - see WO-2026-050), it currently has two options:

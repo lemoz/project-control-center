@@ -1,7 +1,8 @@
-import { spawn, spawnSync } from "child_process";
+import { spawn, spawnSync, type ChildProcess } from "child_process";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import YAML from "yaml";
 import {
   createRun,
   findProjectById,
@@ -84,6 +85,10 @@ const IGNORE_FILE_NAMES = new Set([
 ]);
 
 const IGNORE_FILE_REGEX = /\.(db|sqlite|sqlite3)-(wal|shm|journal)$/i;
+const ESCALATION_REGEX = /<<<NEED_HELP>>>([\s\S]*?)<<<END_HELP>>>/;
+const ESCALATION_OUTPUT_BUFFER_MAX = 200_000;
+const ESCALATION_RESOLUTION_RELATIVE_PATH = ".system/escalation/resolution.json";
+const ESCALATION_POLL_INTERVAL_MS = 250;
 
 const DENY_BASENAME_PREFIXES = [".env"];
 const DENY_BASENAMES = new Set([
@@ -750,6 +755,188 @@ function readJsonIfExists<T>(filePath: string): T | null {
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+type EscalationInput = { key: string; label: string };
+type EscalationRequest = {
+  what_i_tried: string;
+  what_i_need: string;
+  inputs: EscalationInput[];
+};
+type EscalationRecord = EscalationRequest & {
+  created_at: string;
+  resolved_at?: string;
+  resolution?: Record<string, string>;
+};
+
+function normalizeEscalationObject(value: unknown): EscalationRequest | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const whatTried =
+    typeof record.what_i_tried === "string" ? record.what_i_tried.trim() : "";
+  const whatNeed =
+    typeof record.what_i_need === "string" ? record.what_i_need.trim() : "";
+  const inputsRaw = Array.isArray(record.inputs) ? record.inputs : [];
+  const inputs = inputsRaw
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const input = entry as Record<string, unknown>;
+      const key = typeof input.key === "string" ? input.key.trim() : "";
+      const label = typeof input.label === "string" ? input.label.trim() : "";
+      if (!key || !label) return null;
+      return { key, label };
+    })
+    .filter((entry): entry is EscalationInput => Boolean(entry));
+  if (!whatTried || !whatNeed || inputs.length === 0) return null;
+  return { what_i_tried: whatTried, what_i_need: whatNeed, inputs };
+}
+
+function parseEscalationPayload(raw: string): EscalationRequest | null {
+  if (!raw.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = YAML.parse(raw);
+  } catch {
+    return null;
+  }
+  return normalizeEscalationObject(parsed);
+}
+
+function parseEscalationRecord(raw: string | null): EscalationRecord | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const base = normalizeEscalationObject(parsed);
+  if (!base) return null;
+  const record = parsed as Record<string, unknown>;
+  const createdAt =
+    typeof record.created_at === "string" ? record.created_at : "";
+  if (!createdAt) return null;
+  const resolvedAt =
+    typeof record.resolved_at === "string" ? record.resolved_at : undefined;
+  const resolutionRaw =
+    record.resolution && typeof record.resolution === "object"
+      ? (record.resolution as Record<string, unknown>)
+      : null;
+  const resolution =
+    resolutionRaw &&
+    Object.entries(resolutionRaw).reduce<Record<string, string>>((acc, [key, value]) => {
+      if (typeof value === "string") acc[key] = value;
+      return acc;
+    }, {});
+  return {
+    ...base,
+    created_at: createdAt,
+    resolved_at: resolvedAt,
+    resolution: resolution && Object.keys(resolution).length ? resolution : undefined,
+  };
+}
+
+function getEscalationResolutionPath(runDir: string): string {
+  const { worktreePath } = resolveWorktreePaths(runDir);
+  return path.join(worktreePath, ESCALATION_RESOLUTION_RELATIVE_PATH);
+}
+
+function writeEscalationResolution(runDir: string, record: EscalationRecord): void {
+  const resolutionPath = getEscalationResolutionPath(runDir);
+  ensureDir(path.dirname(resolutionPath));
+  writeJson(resolutionPath, record);
+}
+
+function findEscalationRequest(texts: Array<string | null | undefined>): EscalationRequest | null {
+  for (const text of texts) {
+    if (!text) continue;
+    const match = text.match(ESCALATION_REGEX);
+    if (!match) continue;
+    const payload = parseEscalationPayload(match[1]);
+    if (payload) return payload;
+  }
+  return null;
+}
+
+function appendEscalationBuffer(buffer: string, chunk: string): string {
+  const combined = buffer + chunk;
+  if (combined.length <= ESCALATION_OUTPUT_BUFFER_MAX) return combined;
+  return combined.slice(combined.length - ESCALATION_OUTPUT_BUFFER_MAX);
+}
+
+function pauseChildProcess(child: ChildProcess, log?: (line: string) => void): void {
+  if (process.platform === "win32") {
+    throw new Error("Escalation pause/resume is not supported on Windows.");
+  }
+  if (child.exitCode !== null) {
+    throw new Error("Builder subprocess already exited before escalation pause.");
+  }
+  const paused = child.kill("SIGSTOP");
+  if (!paused) {
+    throw new Error("Failed to pause builder subprocess for escalation.");
+  }
+  log?.("Paused builder subprocess for escalation input.");
+}
+
+function resumeChildProcess(child: ChildProcess, log?: (line: string) => void): void {
+  if (process.platform === "win32") {
+    throw new Error("Escalation pause/resume is not supported on Windows.");
+  }
+  if (child.exitCode !== null) {
+    throw new Error("Builder subprocess exited before escalation resume.");
+  }
+  const resumed = child.kill("SIGCONT");
+  if (!resumed) {
+    throw new Error("Failed to resume builder subprocess after escalation.");
+  }
+  log?.("Resumed builder subprocess after escalation input.");
+}
+
+function formatEscalationContext(
+  request: EscalationRequest,
+  resolution?: Record<string, string>
+): string {
+  const lines = [
+    "## Escalation Context",
+    "",
+    "What was tried:",
+    request.what_i_tried,
+    "",
+    "What's needed:",
+    request.what_i_need,
+  ];
+  if (resolution && Object.keys(resolution).length) {
+    lines.push("", "User provided inputs:");
+    for (const [key, value] of Object.entries(resolution)) {
+      lines.push(`- ${key}: ${value}`);
+    }
+  }
+  return `${lines.join("\n")}\n\n`;
+}
+
+async function waitForEscalationResolution(
+  runId: string,
+  log: (line: string) => void
+): Promise<EscalationRecord | null> {
+  log("Run waiting for user input");
+  while (true) {
+    await sleep(1000);
+    const run = getRunById(runId);
+    if (!run) return null;
+    if (run.status === "canceled" || run.status === "failed") return null;
+    const record = parseEscalationRecord(run.escalation);
+    if (record?.resolved_at && record.resolution) return record;
+  }
+}
+
+type CodexExecResult = {
+  escalationRequested: boolean;
+  escalationResolved: EscalationRecord | null;
+};
+
 async function runCodexExec(params: {
   cwd: string;
   prompt: string;
@@ -760,7 +947,9 @@ async function runCodexExec(params: {
   skipGitRepoCheck?: boolean;
   model?: string;
   cliPath?: string;
-}) {
+  onEscalation?: (request: EscalationRequest) => Promise<EscalationRecord | null>;
+  log?: (line: string) => void;
+}): Promise<CodexExecResult> {
   const args: string[] = ["--ask-for-approval", "never", "exec"];
   const model = params.model?.trim();
   if (model) args.push("--model", model);
@@ -798,8 +987,94 @@ async function runCodexExec(params: {
     env: { ...process.env },
   });
 
-  child.stdout?.on("data", (buf) => logStream.write(buf));
-  child.stderr?.on("data", (buf) => logStream.write(buf));
+  let escalationBuffer = "";
+  let escalationRequested = false;
+  let escalationResolved: EscalationRecord | null = null;
+  let escalationPromise: Promise<void> | null = null;
+  let escalationError: Error | null = null;
+  let outputSize = 0;
+  let outputMtimeMs = 0;
+  let outputPoller: NodeJS.Timeout | null = null;
+
+  const startEscalation = (request: EscalationRequest) => {
+    if (!params.onEscalation || escalationRequested) return;
+    escalationRequested = true;
+    escalationPromise = (async () => {
+      try {
+        pauseChildProcess(child, params.log);
+        const resolved = await params.onEscalation?.(request);
+        escalationResolved = resolved ?? null;
+        if (!resolved) {
+          if (child.exitCode === null) {
+            child.kill("SIGTERM");
+          }
+          return;
+        }
+        resumeChildProcess(child, params.log);
+      } catch (err) {
+        escalationError = err instanceof Error ? err : new Error(String(err));
+        if (child.exitCode === null) {
+          child.kill("SIGTERM");
+        }
+      }
+    })();
+  };
+
+  const handleChunk = (buf: Buffer) => {
+    if (!params.onEscalation || escalationRequested) return;
+    escalationBuffer = appendEscalationBuffer(escalationBuffer, buf.toString("utf8"));
+    const request = findEscalationRequest([escalationBuffer]);
+    if (!request) return;
+    startEscalation(request);
+  };
+
+  const checkOutputFile = () => {
+    if (!params.onEscalation || escalationRequested) return;
+    if (child.exitCode !== null) return;
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(params.outputPath);
+    } catch {
+      return;
+    }
+    if (stat.size === outputSize && stat.mtimeMs === outputMtimeMs) return;
+    outputSize = stat.size;
+    outputMtimeMs = stat.mtimeMs;
+    const outputText = readTextIfExists(params.outputPath);
+    let request: EscalationRequest | null = null;
+    try {
+      const parsed = JSON.parse(outputText) as Record<string, unknown>;
+      if (parsed && typeof parsed === "object") {
+        const escalationText =
+          typeof parsed.escalation === "string" ? parsed.escalation : null;
+        const summaryText = typeof parsed.summary === "string" ? parsed.summary : null;
+        request = findEscalationRequest([escalationText, summaryText]);
+      }
+    } catch {
+      // ignore parse errors; fallback to raw output scan
+    }
+    if (!request) {
+      request = findEscalationRequest([
+        appendEscalationBuffer("", outputText),
+      ]);
+    }
+    if (request) {
+      startEscalation(request);
+    }
+  };
+
+  child.stdout?.on("data", (buf) => {
+    logStream.write(buf);
+    handleChunk(buf);
+  });
+  child.stderr?.on("data", (buf) => {
+    logStream.write(buf);
+    handleChunk(buf);
+  });
+  if (params.onEscalation) {
+    checkOutputFile();
+    outputPoller = setInterval(checkOutputFile, ESCALATION_POLL_INTERVAL_MS);
+  }
   child.stdin?.write(params.prompt);
   child.stdin?.end();
 
@@ -808,12 +1083,26 @@ async function runCodexExec(params: {
     child.on("error", () => resolve(1));
   });
 
+  if (outputPoller) {
+    clearInterval(outputPoller);
+  }
+
+  if (escalationPromise) {
+    await escalationPromise;
+  }
+
   logStream.write(`[${nowIso()}] codex exec end exit=${exitCode}\n`);
   logStream.end();
+
+  if (escalationError) {
+    throw escalationError;
+  }
 
   if (exitCode !== 0) {
     throw new Error(`codex exec failed (exit ${exitCode})`);
   }
+
+  return { escalationRequested, escalationResolved };
 }
 
 function builderSchema(): object {
@@ -823,6 +1112,7 @@ function builderSchema(): object {
     properties: {
       summary: { type: "string" },
       risks: { type: "array", items: { type: "string" } },
+      escalation: { type: "string" },
       tests: {
         type: "array",
         items: {
@@ -921,6 +1211,7 @@ function buildBuilderPrompt(params: {
   testFailureOutput?: string | null;
   constitution?: string;
   iterationHistory?: RunIterationHistoryEntry[];
+  escalationContext?: EscalationRecord | null;
 }) {
   const feedback = params.reviewerFeedback?.trim();
   const testFailureOutput = params.testFailureOutput?.trim();
@@ -930,6 +1221,12 @@ function buildBuilderPrompt(params: {
     params.iterationHistory ?? [],
     params.iteration
   );
+  const escalationContextBlock = params.escalationContext
+    ? formatEscalationContext(
+        params.escalationContext,
+        params.escalationContext.resolution
+      )
+    : "";
   const failureBlock = testFailureOutput
     ? `## Previous Attempt Failed\n\n` +
       `Your previous implementation failed tests. Here's the output:\n\n` +
@@ -958,6 +1255,26 @@ function buildBuilderPrompt(params: {
     `   - Don't pretend it's done\n\n` +
     `5. **Escalate only when genuinely stuck** - After trying multiple approaches, you can request user help (see escalation format). But exhaust reasonable options first.\n\n` +
     `The industry is moving toward agent-friendly interfaces. Don't assume things are impossible. Try first, be creative, be persistent.\n\n`;
+  const escalationRuntimeBlock =
+    `## Escalation Runtime\n\n` +
+    `If you must request help:\n` +
+    `- Immediately emit the escalation block below to stdout (use a shell command like printf if needed) so the runner can pause you.\n` +
+    `- Then wait for ${ESCALATION_RESOLUTION_RELATIVE_PATH} to appear.\n` +
+    `- After resume, read the JSON file and use its "resolution" values to continue from where you paused.\n` +
+    `- Do not exit while waiting for input.\n\n`;
+  const escalationFormatBlock =
+    `## Escalation Format\n\n` +
+    `If you are genuinely stuck after exhausting reasonable options, include the following block inside the "escalation" field of your JSON output:\n\n` +
+    `<<<NEED_HELP>>>\n` +
+    `what_i_tried: |\n` +
+    `  1. ...\n` +
+    `what_i_need: |\n` +
+    `  ...\n` +
+    `inputs:\n` +
+    `  - key: example_key\n` +
+    `    label: Example Label\n` +
+    `<<<END_HELP>>>\n\n` +
+    `When escalating, still output valid JSON and keep summary/risks/tests populated (use empty arrays if needed).\n\n`;
   return `You are the Builder agent.\n\n` +
     constitutionBlock +
     `Task: Implement the Work Order in this repository.\n\n` +
@@ -969,9 +1286,12 @@ function buildBuilderPrompt(params: {
     `- Learn from previous iteration feedback - do not repeat the same mistakes.\n` +
     `- At the end, output a JSON object matching the required schema.\n\n` +
     resourcefulPostureBlock +
+    escalationRuntimeBlock +
+    escalationFormatBlock +
     iterationLine +
     historyBlock +
     failureBlock +
+    escalationContextBlock +
     (feedback ? `Reviewer feedback to address:\n${feedback}\n\n` : "") +
     `Work Order (${params.workOrder.id}):\n\n` +
     `${params.workOrderMarkdown}\n`;
@@ -1734,6 +2054,7 @@ export async function runRun(runId: string) {
     let reviewerVerdict: "approved" | "changes_requested" | null = null;
     let reviewerNotes: string[] = [];
     let testFailureOutput: string | null = null;
+    let escalationContext: EscalationRecord | null = null;
     const iterationHistory: RunIterationHistoryEntry[] = [];
     const iterationHistoryPath = path.join(runDir, "iteration_history.json");
     const writeIterationHistory = () => {
@@ -1755,53 +2076,130 @@ export async function runRun(runId: string) {
       ensureDir(builderDir);
       ensureDir(reviewerDir);
 
-      const builderPrompt = buildBuilderPrompt({
-        workOrderMarkdown,
-        workOrder,
-        iteration,
-        maxIterations,
-        reviewerFeedback,
-        testFailureOutput,
-        constitution: builderConstitution.content,
-        iterationHistory,
-      });
-      fs.writeFileSync(path.join(builderDir, "prompt.txt"), builderPrompt, "utf8");
-
       const builderOutputPath = path.join(builderDir, "result.json");
       const builderLogPath = path.join(builderDir, "codex.log");
-
-      try {
-        await runCodexExec({
-          cwd: worktreePath,
-          prompt: builderPrompt,
-          schemaPath: builderSchemaPath,
-          outputPath: builderOutputPath,
-          logPath: builderLogPath,
-          sandbox: "workspace-write",
-          model: runnerSettings.builder.model,
-          cliPath: runnerSettings.builder.cliPath,
-        });
-      } catch (err) {
-        log(`Builder failed: ${String(err)}`);
-        updateRun(runId, {
-          status: "failed",
-          error: `builder failed: ${String(err)}`,
-          finished_at: nowIso(),
-        });
-        return;
-      }
-
       let builderResult:
-        | { summary: string; risks: string[]; tests: unknown[] }
+        | { summary: string; risks: string[]; tests: unknown[]; escalation?: string }
         | null = null;
-      try {
-        builderResult = JSON.parse(fs.readFileSync(builderOutputPath, "utf8")) as {
-          summary: string;
-          risks: string[];
-          tests: unknown[];
-        };
-      } catch {
-        // keep going; reviewer can still evaluate diff
+
+      while (true) {
+        const builderPrompt = buildBuilderPrompt({
+          workOrderMarkdown,
+          workOrder,
+          iteration,
+          maxIterations,
+          reviewerFeedback,
+          testFailureOutput,
+          constitution: builderConstitution.content,
+          iterationHistory,
+          escalationContext,
+        });
+        fs.writeFileSync(path.join(builderDir, "prompt.txt"), builderPrompt, "utf8");
+
+        let builderExecResult: CodexExecResult;
+        try {
+          builderExecResult = await runCodexExec({
+            cwd: worktreePath,
+            prompt: builderPrompt,
+            schemaPath: builderSchemaPath,
+            outputPath: builderOutputPath,
+            logPath: builderLogPath,
+            sandbox: "workspace-write",
+            model: runnerSettings.builder.model,
+            cliPath: runnerSettings.builder.cliPath,
+            onEscalation: async (request) => {
+              const escalationRecord: EscalationRecord = {
+                ...request,
+                created_at: nowIso(),
+              };
+              updateRun(runId, {
+                status: "waiting_for_input",
+                escalation: JSON.stringify(escalationRecord),
+              });
+              writeJson(path.join(runDir, "escalation.json"), escalationRecord);
+              log("Escalation requested; waiting for user input");
+
+              const resolved = await waitForEscalationResolution(runId, log);
+              if (!resolved?.resolution) return null;
+              try {
+                writeEscalationResolution(runDir, resolved);
+              } catch (err) {
+                log(`Failed to persist escalation resolution: ${String(err)}`);
+                return null;
+              }
+              return resolved;
+            },
+            log,
+          });
+        } catch (err) {
+          log(`Builder failed: ${String(err)}`);
+          updateRun(runId, {
+            status: "failed",
+            error: `builder failed: ${String(err)}`,
+            finished_at: nowIso(),
+          });
+          return;
+        }
+
+        if (builderExecResult.escalationRequested && !builderExecResult.escalationResolved) {
+          log("Escalation resolution missing; exiting run");
+          return;
+        }
+        if (builderExecResult.escalationResolved) {
+          escalationContext = builderExecResult.escalationResolved;
+          log("Escalation resolved; continuing builder iteration with user input");
+        }
+
+        builderResult = null;
+        try {
+          builderResult = JSON.parse(fs.readFileSync(builderOutputPath, "utf8")) as {
+            summary: string;
+            risks: string[];
+            tests: unknown[];
+            escalation?: string;
+          };
+        } catch {
+          // keep going; reviewer can still evaluate diff
+        }
+
+        if (!builderExecResult.escalationRequested) {
+          let escalationRequest = findEscalationRequest([
+            builderResult?.escalation,
+            builderResult?.summary,
+          ]);
+          if (!escalationRequest) {
+            const builderOutputText = readTextIfExists(builderOutputPath);
+            const builderLogText = readTextIfExists(builderLogPath);
+            escalationRequest = findEscalationRequest([builderOutputText, builderLogText]);
+          }
+          if (escalationRequest) {
+            const escalationRecord: EscalationRecord = {
+              ...escalationRequest,
+              created_at: nowIso(),
+            };
+            updateRun(runId, {
+              status: "waiting_for_input",
+              escalation: JSON.stringify(escalationRecord),
+            });
+            writeJson(path.join(runDir, "escalation.json"), escalationRecord);
+            log("Escalation requested after builder output; waiting for user input");
+
+            const resolved = await waitForEscalationResolution(runId, log);
+            if (!resolved?.resolution) {
+              log("Escalation resolution missing; exiting run");
+              return;
+            }
+            escalationContext = resolved;
+            try {
+              fs.writeFileSync(builderOutputPath, "", "utf8");
+              fs.writeFileSync(builderLogPath, "", "utf8");
+            } catch (err) {
+              log(`Failed to clear builder outputs before retry: ${String(err)}`);
+            }
+            continue;
+          }
+        }
+        break;
       }
 
       const changedFiles = computeChangedFiles(baselineRoot, worktreePath);
@@ -2550,6 +2948,7 @@ export function enqueueCodexRun(projectId: string, workOrderId: string): RunRow 
     started_at: null,
     finished_at: null,
     error: null,
+    escalation: null,
   };
 
   createRun(run);
@@ -2571,7 +2970,8 @@ export function getRunsForProject(projectId: string, limit = 50): RunRow[] {
   return listRunsByProject(projectId, limit);
 }
 
-export type RunDetails = RunRow & {
+export type RunDetails = Omit<RunRow, "escalation"> & {
+  escalation: EscalationRecord | null;
   log_tail: string;
   builder_log_tail: string;
   reviewer_log_tail: string;
@@ -2601,15 +3001,56 @@ export function getRun(runId: string): RunDetails | null {
     readJsonIfExists<RunIterationHistoryEntry[]>(
       path.join(run.run_dir, "iteration_history.json")
     ) || [];
+  const escalation = parseEscalationRecord(run.escalation);
 
   return {
     ...run,
+    escalation,
     log_tail: tailFile(run.log_path),
     builder_log_tail: tailFile(builderLogPath),
     reviewer_log_tail: tailFile(reviewerLogPath),
     tests_log_tail: tailFile(testsLogPath),
     iteration_history: iterationHistory,
   };
+}
+
+export function provideRunInput(
+  runId: string,
+  inputs: Record<string, unknown>
+): { ok: true } | { ok: false; error: string } {
+  const run = getRunById(runId);
+  if (!run) return { ok: false, error: "Run not found" };
+  if (run.status !== "waiting_for_input") {
+    return { ok: false, error: `Run status is ${run.status}, expected waiting_for_input` };
+  }
+  const escalation = parseEscalationRecord(run.escalation);
+  if (!escalation) return { ok: false, error: "Run has no escalation request" };
+  if (escalation.resolved_at) return { ok: false, error: "Escalation already resolved" };
+
+  const missing: string[] = [];
+  const resolution: Record<string, string> = {};
+  for (const input of escalation.inputs) {
+    const value = inputs[input.key];
+    if (typeof value !== "string" || !value.trim()) {
+      missing.push(input.key);
+      continue;
+    }
+    resolution[input.key] = value.trim();
+  }
+  if (missing.length) {
+    return { ok: false, error: `Missing inputs: ${missing.join(", ")}` };
+  }
+
+  const updated: EscalationRecord = {
+    ...escalation,
+    resolved_at: nowIso(),
+    resolution,
+  };
+  updateRun(runId, {
+    status: "building",
+    escalation: JSON.stringify(updated),
+  });
+  return { ok: true };
 }
 
 export function finalizeManualRunResolution(
@@ -2700,6 +3141,7 @@ export async function remoteDownloadForProject(
 export const __test__ = {
   buildConflictContext,
   ensureWorktreeLink,
+  findEscalationRequest,
   removeWorktreeLink,
   resolveWorktreePaths,
   shouldFallbackToLocalVm,

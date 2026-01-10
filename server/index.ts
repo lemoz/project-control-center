@@ -63,6 +63,7 @@ import {
   finalizeManualRunResolution,
   getRun,
   getRunsForProject,
+  provideRunInput,
   remoteDownloadForProject,
   remoteExecForProject,
   remoteUploadForProject,
@@ -1002,6 +1003,19 @@ app.get("/runs/:runId", (req, res) => {
   const run = getRun(req.params.runId);
   if (!run) return res.status(404).json({ error: "run not found" });
   return res.json(run);
+});
+
+app.post("/runs/:runId/provide-input", (req, res) => {
+  const inputs =
+    req.body && typeof req.body === "object" && "inputs" in req.body
+      ? (req.body.inputs as Record<string, unknown>)
+      : null;
+  if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) {
+    return res.status(400).json({ error: "inputs object required" });
+  }
+  const result = provideRunInput(req.params.runId, inputs);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  return res.json({ ok: true });
 });
 
 app.post("/runs/:runId/resolve", (req, res) => {

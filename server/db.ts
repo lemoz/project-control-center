@@ -64,6 +64,7 @@ export type RunRow = {
   status:
     | "queued"
     | "building"
+    | "waiting_for_input"
     | "ai_review"
     | "testing"
     | "you_review"
@@ -85,6 +86,7 @@ export type RunRow = {
   started_at: string | null;
   finished_at: string | null;
   error: string | null;
+  escalation: string | null;
 };
 
 export type SettingRow = {
@@ -191,6 +193,7 @@ function initSchema(database: Database.Database) {
       started_at TEXT,
       finished_at TEXT,
       error TEXT,
+      escalation TEXT,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
     );
 
@@ -398,6 +401,7 @@ function initSchema(database: Database.Database) {
   const hasMergeStatus = runColumns.some((c) => c.name === "merge_status");
   const hasConflictWithRunId = runColumns.some((c) => c.name === "conflict_with_run_id");
   const hasBuilderIteration = runColumns.some((c) => c.name === "builder_iteration");
+  const hasEscalation = runColumns.some((c) => c.name === "escalation");
   if (!hasBranchName) {
     database.exec("ALTER TABLE runs ADD COLUMN branch_name TEXT;");
   }
@@ -409,6 +413,9 @@ function initSchema(database: Database.Database) {
   }
   if (!hasBuilderIteration) {
     database.exec("ALTER TABLE runs ADD COLUMN builder_iteration INTEGER NOT NULL DEFAULT 1;");
+  }
+  if (!hasEscalation) {
+    database.exec("ALTER TABLE runs ADD COLUMN escalation TEXT;");
   }
 
   // chat_threads migrations
@@ -825,9 +832,9 @@ export function createRun(run: RunRow): void {
   database
     .prepare(
       `INSERT INTO runs
-        (id, project_id, work_order_id, provider, status, iteration, builder_iteration, reviewer_verdict, reviewer_notes, summary, branch_name, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error)
+        (id, project_id, work_order_id, provider, status, iteration, builder_iteration, reviewer_verdict, reviewer_notes, summary, branch_name, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error, escalation)
        VALUES
-        (@id, @project_id, @work_order_id, @provider, @status, @iteration, @builder_iteration, @reviewer_verdict, @reviewer_notes, @summary, @branch_name, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error)`
+        (@id, @project_id, @work_order_id, @provider, @status, @iteration, @builder_iteration, @reviewer_verdict, @reviewer_notes, @summary, @branch_name, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error, @escalation)`
     )
     .run(run);
 }
@@ -849,6 +856,7 @@ export function updateRun(
       | "started_at"
       | "finished_at"
       | "error"
+      | "escalation"
     >
   >
 ): boolean {
@@ -866,6 +874,7 @@ export function updateRun(
     { key: "started_at", column: "started_at" },
     { key: "finished_at", column: "finished_at" },
     { key: "error", column: "error" },
+    { key: "escalation", column: "escalation" },
   ];
   const sets = fields
     .filter((f) => patch[f.key] !== undefined)
@@ -913,7 +922,7 @@ export function markInProgressRunsFailed(reason: string): number {
        SET status = 'failed',
            error = ?,
            finished_at = COALESCE(finished_at, ?)
-       WHERE status IN ('queued', 'building', 'ai_review', 'testing')`
+       WHERE status IN ('queued', 'building', 'ai_review', 'testing', 'waiting_for_input')`
     )
     .run(reason, now);
   return result.changes;
