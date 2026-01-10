@@ -40,6 +40,7 @@ type RunStatus =
   | "queued"
   | "baseline_failed"
   | "building"
+  | "waiting_for_input"
   | "ai_review"
   | "testing"
   | "you_review"
@@ -114,7 +115,13 @@ export function KanbanBoard({ repoId }: { repoId: string }) {
       const latestRun = latestRunByWorkOrderId.get(wo.id);
       let effectiveStatus = wo.status;
       if (latestRun) {
-        if (latestRun.status === "queued" || latestRun.status === "building" || latestRun.status === "testing") {
+        if (latestRun.status === "waiting_for_input") {
+          effectiveStatus = "blocked";
+        } else if (
+          latestRun.status === "queued" ||
+          latestRun.status === "building" ||
+          latestRun.status === "testing"
+        ) {
           effectiveStatus = "building";
         } else if (latestRun.status === "ai_review") {
           effectiveStatus = "ai_review";
@@ -398,6 +405,7 @@ function WorkOrderCard({
   const runInProgress =
     latestRun?.status === "queued" ||
     latestRun?.status === "building" ||
+    latestRun?.status === "waiting_for_input" ||
     latestRun?.status === "ai_review" ||
     latestRun?.status === "testing";
 

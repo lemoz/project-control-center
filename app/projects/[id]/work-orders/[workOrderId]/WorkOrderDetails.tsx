@@ -35,6 +35,7 @@ type RunStatus =
   | "queued"
   | "baseline_failed"
   | "building"
+  | "waiting_for_input"
   | "ai_review"
   | "testing"
   | "you_review"

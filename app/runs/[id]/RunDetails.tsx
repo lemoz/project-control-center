@@ -7,6 +7,7 @@ type RunStatus =
   | "queued"
   | "baseline_failed"
   | "building"
+  | "waiting_for_input"
   | "ai_review"
   | "testing"
   | "you_review"
@@ -14,6 +15,20 @@ type RunStatus =
   | "merge_conflict"
   | "failed"
   | "canceled";
+
+type RunEscalationInput = {
+  key: string;
+  label: string;
+};
+
+type RunEscalation = {
+  what_i_tried: string;
+  what_i_need: string;
+  inputs: RunEscalationInput[];
+  created_at: string;
+  resolved_at?: string;
+  resolution?: Record<string, string>;
+};
 
 type BuilderChange = {
   file: string;
@@ -51,6 +66,7 @@ type RunDetails = {
   started_at: string | null;
   finished_at: string | null;
   error: string | null;
+  escalation?: RunEscalation | null;
   log_tail?: string;
   builder_log_tail?: string;
   reviewer_log_tail?: string;
@@ -62,6 +78,10 @@ export function RunDetails({ runId }: { runId: string }) {
   const [run, setRun] = useState<RunDetails | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [inputValues, setInputValues] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [escalationCreatedAt, setEscalationCreatedAt] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -85,12 +105,37 @@ export function RunDetails({ runId }: { runId: string }) {
 
   useEffect(() => {
     if (!run) return;
-    if (run.status !== "queued" && run.status !== "building" && run.status !== "ai_review" && run.status !== "testing") {
+    if (
+      run.status !== "queued" &&
+      run.status !== "building" &&
+      run.status !== "waiting_for_input" &&
+      run.status !== "ai_review" &&
+      run.status !== "testing"
+    ) {
       return;
     }
     const interval = setInterval(() => void load(), 2000);
     return () => clearInterval(interval);
   }, [run, load]);
+
+  useEffect(() => {
+    const escalation = run?.escalation;
+    if (!escalation) {
+      if (escalationCreatedAt !== null) {
+        setEscalationCreatedAt(null);
+        setInputValues({});
+      }
+      return;
+    }
+    if (escalation.created_at === escalationCreatedAt) return;
+    const nextValues: Record<string, string> = {};
+    for (const input of escalation.inputs || []) {
+      nextValues[input.key] = escalation.resolution?.[input.key] ?? "";
+    }
+    setInputValues(nextValues);
+    setSubmitError(null);
+    setEscalationCreatedAt(escalation.created_at);
+  }, [run?.escalation, escalationCreatedAt]);
 
   const notes: string[] = (() => {
     if (!run?.reviewer_notes) return [];
@@ -100,6 +145,41 @@ export function RunDetails({ runId }: { runId: string }) {
       return [];
     }
   })();
+
+  const escalation = run?.escalation ?? null;
+  const missingInputs = escalation
+    ? escalation.inputs.filter((input) => !inputValues[input.key]?.trim())
+    : [];
+  const canSubmit = !!escalation && missingInputs.length === 0 && !submitting;
+
+  const submitInputs = useCallback(async () => {
+    if (!escalation) return;
+    const missing = escalation.inputs.filter((input) => !inputValues[input.key]?.trim());
+    if (missing.length) {
+      setSubmitError("Fill out all fields to resume the run.");
+      return;
+    }
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const payload: Record<string, string> = {};
+      for (const input of escalation.inputs) {
+        payload[input.key] = inputValues[input.key] ?? "";
+      }
+      const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/provide-input`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ inputs: payload }),
+      });
+      const json = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok) throw new Error(json?.error || "failed to submit inputs");
+      await load();
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : "failed to submit inputs");
+    } finally {
+      setSubmitting(false);
+    }
+  }, [escalation, inputValues, load, runId]);
 
   const latestChanges = (() => {
     const history = run?.iteration_history;
@@ -165,6 +245,57 @@ export function RunDetails({ runId }: { runId: string }) {
           </div>
         )}
       </section>
+
+      {run?.status === "waiting_for_input" && escalation && (
+        <section className="card">
+          <div style={{ fontWeight: 800 }}>Builder needs your help</div>
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontWeight: 700 }}>What was tried</div>
+            <div style={{ marginTop: 6, whiteSpace: "pre-wrap", lineHeight: 1.4 }}>
+              {escalation.what_i_tried}
+            </div>
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontWeight: 700 }}>{"What's needed"}</div>
+            <div style={{ marginTop: 6, whiteSpace: "pre-wrap", lineHeight: 1.4 }}>
+              {escalation.what_i_need}
+            </div>
+          </div>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitInputs();
+            }}
+            style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 12 }}
+          >
+            {escalation.inputs.map((input) => (
+              <label key={input.key} className="field">
+                <div className="muted fieldLabel">{input.label}</div>
+                <input
+                  className="input"
+                  value={inputValues[input.key] ?? ""}
+                  onChange={(event) =>
+                    setInputValues((prev) => ({ ...prev, [input.key]: event.target.value }))
+                  }
+                />
+              </label>
+            ))}
+            {missingInputs.length > 0 && (
+              <div className="muted" style={{ fontSize: 12 }}>
+                Fill out all fields to resume the run.
+              </div>
+            )}
+            {!!submitError && (
+              <div className="error" style={{ marginTop: 4 }}>
+                {submitError}
+              </div>
+            )}
+            <button className="btn" type="submit" disabled={!canSubmit}>
+              {submitting ? "Submitting…" : "Provide & Resume"}
+            </button>
+          </form>
+        </section>
+      )}
 
       {!!run?.summary && (run.status === "you_review" || run.status === "merged") && (
         <section className="card">
