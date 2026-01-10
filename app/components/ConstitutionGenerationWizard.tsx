@@ -196,6 +196,25 @@ export function ConstitutionGenerationWizard(props: {
         .map((item) => ({ category: item.category, text: item.text.trim() })),
     [insights]
   );
+  const { fallbackWarnings: draftFallbackWarnings, otherWarnings: draftOtherWarnings } = useMemo(
+    () => {
+      if (draftWarnings.length === 0) {
+        return { fallbackWarnings: [], otherWarnings: [] };
+      }
+      const fallbackWarnings: string[] = [];
+      const otherWarnings: string[] = [];
+      for (const warning of draftWarnings) {
+        const normalized = warning.toLowerCase();
+        if (normalized.includes("falling back to local")) {
+          fallbackWarnings.push(warning);
+        } else {
+          otherWarnings.push(warning);
+        }
+      }
+      return { fallbackWarnings, otherWarnings };
+    },
+    [draftWarnings]
+  );
   const hasSelection = selection.claude || selection.codex || selection.pcc;
 
   const rangeValue = useMemo(
@@ -657,7 +676,16 @@ export function ConstitutionGenerationWizard(props: {
             <strong>Generating draft...</strong>
           </div>
           {draftLoading && <div className="loadingBar" />}
-          {draftWarnings.length ? warningsBlock(draftWarnings) : null}
+          {draftFallbackWarnings.length > 0 && (
+            <div className="notice">
+              <strong>Preserving your existing content while merging new insights.</strong>
+              <div className="muted" style={{ marginTop: 4 }}>
+                Preserved: current constitution text. Added: {acceptedInsights.length} selected
+                insight{acceptedInsights.length === 1 ? "" : "s"}.
+              </div>
+            </div>
+          )}
+          {draftOtherWarnings.length ? warningsBlock(draftOtherWarnings) : null}
           {!draftLoading && draft && (
             <textarea className="input" rows={10} value={draft} readOnly />
           )}
