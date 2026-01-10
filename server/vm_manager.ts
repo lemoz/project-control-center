@@ -1,5 +1,6 @@
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import {
   findProjectById,
@@ -573,6 +574,50 @@ async function describeInstance(params: {
   };
 }
 
+function updateKnownHosts(host: string): void {
+  const knownHostsPath = path.join(os.homedir(), ".ssh", "known_hosts");
+
+  // Remove old entries for this host
+  if (fs.existsSync(knownHostsPath)) {
+    try {
+      const content = fs.readFileSync(knownHostsPath, "utf8");
+      const lines = content.split("\n");
+      const filtered = lines.filter((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) return true;
+        // Line format: "host key-type key [comment]" or "[host]:port key-type key"
+        const hostPart = trimmed.split(/\s+/)[0] || "";
+        return hostPart !== host && !hostPart.startsWith(`${host},`) && hostPart !== `[${host}]`;
+      });
+      fs.writeFileSync(knownHostsPath, filtered.join("\n"), "utf8");
+    } catch {
+      // Ignore errors removing old entries
+    }
+  }
+
+  // Get new host key via ssh-keyscan
+  const keyscan = spawnSync("ssh-keyscan", ["-t", "ed25519,rsa", "-H", host], {
+    timeout: 10000,
+    encoding: "utf8",
+  });
+
+  if (keyscan.status !== 0 || !keyscan.stdout?.trim()) {
+    // Fall back to non-hashed scan
+    const keyscanUnhashed = spawnSync("ssh-keyscan", ["-t", "ed25519,rsa", host], {
+      timeout: 10000,
+      encoding: "utf8",
+    });
+    if (keyscanUnhashed.status !== 0 || !keyscanUnhashed.stdout?.trim()) {
+      // ssh-keyscan failed, but don't fail provisioning - SSH might still work
+      return;
+    }
+    fs.appendFileSync(knownHostsPath, keyscanUnhashed.stdout);
+    return;
+  }
+
+  fs.appendFileSync(knownHostsPath, keyscan.stdout);
+}
+
 async function waitForSshReady(params: { host: string; ssh: SshConfig }): Promise<void> {
   const deadline = Date.now() + sshTimeoutMs();
   const retryDelay = sshRetryMs();
@@ -762,6 +807,7 @@ export async function provisionVM(config: VMConfig): Promise<ProjectVmRow> {
     }
 
     await waitForSshReady({ host: details.externalIp, ssh: gcp.ssh });
+    updateKnownHosts(details.externalIp);
 
     const startedAt = nowIso();
     updateVm(config.projectId, {
@@ -832,6 +878,7 @@ export async function startVM(projectId: string): Promise<ProjectVmRow> {
         throw new VmManagerError("preflight", "SSH config unavailable for readiness check.");
       }
       await waitForSshReady({ host: existing.externalIp, ssh: gcp.ssh });
+      updateKnownHosts(existing.externalIp);
       updateVm(projectId, {
         status: "running",
         gcp_instance_id: existing.id,
@@ -900,6 +947,7 @@ export async function startVM(projectId: string): Promise<ProjectVmRow> {
     }
 
     await waitForSshReady({ host: details.externalIp, ssh: gcp.ssh });
+    updateKnownHosts(details.externalIp);
 
     const startedAt = nowIso();
     updateVm(projectId, {
@@ -1114,6 +1162,7 @@ export async function resizeVM(projectId: string, newSize: ProjectVmSize): Promi
     if (status === "running" && details.externalIp) {
       const ssh = resolveSshConfig();
       await waitForSshReady({ host: details.externalIp, ssh });
+      updateKnownHosts(details.externalIp);
       patch.last_started_at = nowIso();
     }
 
