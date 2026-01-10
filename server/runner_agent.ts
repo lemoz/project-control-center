@@ -836,8 +836,35 @@ function builderSchema(): object {
           required: ["command", "passed", "output"],
         },
       },
+      changes: {
+        type: "array",
+        items: {
+          oneOf: [
+            {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                file: { type: "string" },
+                type: { const: "wo_implementation" },
+                reason: { type: "string" },
+              },
+              required: ["file", "type"],
+            },
+            {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                file: { type: "string" },
+                type: { const: "blocking_fix" },
+                reason: { type: "string", minLength: 1, pattern: "\\S" },
+              },
+              required: ["file", "type", "reason"],
+            },
+          ],
+        },
+      },
     },
-    required: ["summary", "risks", "tests"],
+    required: ["summary", "risks", "tests", "changes"],
   };
 }
 
@@ -967,6 +994,16 @@ function buildBuilderPrompt(params: {
     `- Do NOT edit the Work Order file itself.\n` +
     `- Prefer minimal, high-quality changes; update docs/tests if needed.\n` +
     `- Learn from previous iteration feedback - do not repeat the same mistakes.\n` +
+    `\n` +
+    `## Change Classification\n` +
+    `For each file you modify, classify the change:\n` +
+    `- wo_implementation: Directly implements the Work Order\n` +
+    `- blocking_fix: Fixes an issue that blocks WO completion (not part of WO scope, but necessary)\n` +
+    `For blocking_fix changes, explain WHY it's necessary:\n` +
+    `- What breaks without this fix?\n` +
+    `- Why can't the WO be completed without it?\n` +
+    `Only use blocking_fix for genuine blockers, not nice-to-have improvements.\n` +
+    `\n` +
     `- At the end, output a JSON object matching the required schema.\n\n` +
     resourcefulPostureBlock +
     iterationLine +
@@ -982,8 +1019,28 @@ function buildReviewerPrompt(params: {
   workOrderMarkdown: string;
   diffPatch: string;
   constitution?: string;
+  builderChanges?: BuilderChange[];
+  builderChangesPath?: string;
 }) {
   const constitutionBlock = formatConstitutionBlock(params.constitution ?? "");
+  const builderChanges = params.builderChanges ?? [];
+  const builderChangesPath = params.builderChangesPath?.trim();
+  const builderChangesLines = builderChanges.length
+    ? builderChanges.map((change) => {
+        const label =
+          change.type === "blocking_fix"
+            ? `blocking_fix: ${change.reason || "(reason missing)"}`
+            : "wo_implementation";
+        return `- ${change.file} (${label})`;
+      })
+    : ["- (no change classifications available)"];
+  const builderChangesBlock =
+    builderChanges.length || builderChangesPath
+      ? `## Builder Change Classification\n` +
+        `${builderChangesLines.join("\n")}\n` +
+        (builderChangesPath ? `\nBuilder output file: ${builderChangesPath}\n` : "") +
+        `\n`
+      : "";
   return (
     `You are a fresh Reviewer agent.\n\n` +
     constitutionBlock +
@@ -998,6 +1055,18 @@ function buildReviewerPrompt(params: {
     `- If changes are needed, return status=changes_requested with actionable notes.\n` +
     `- Otherwise return status=approved.\n` +
     `- Output JSON matching the required schema.\n\n` +
+    builderChangesBlock +
+    `## Evaluating Blocking Fixes\n` +
+    `When builder claims a change is a "blocking_fix":\n` +
+    `1. Verify the claim - is it actually blocking?\n` +
+    `   - Would tests fail without this change?\n` +
+    `   - Is there a type error or import issue?\n` +
+    `2. Check the reason - does it make sense?\n` +
+    `   - Is the explanation specific and verifiable?\n` +
+    `   - Can you confirm by inspection?\n` +
+    `3. Decide:\n` +
+    `   - If legitimate blocker -> allow\n` +
+    `   - If disguised scope creep -> reject with note: "This doesn't appear to be a true blocker because..."\n\n` +
     `Work Order (${params.workOrderId}):\n\n` +
     `${params.workOrderMarkdown}\n\n` +
     `Diff:\n\n` +
@@ -1038,6 +1107,11 @@ function buildConflictResolutionPrompt(params: {
     `- Resolve the conflict preserving both goals where possible\n` +
     `- If goals are mutually exclusive, preserve the higher-priority Work Order's intent\n` +
     `- Document your resolution reasoning in the summary\n\n` +
+    `## Change Classification\n` +
+    `For each file you modify, classify the change:\n` +
+    `- wo_implementation: Directly implements the Work Order\n` +
+    `- blocking_fix: Required to resolve the conflict or unblock the merge\n` +
+    `For blocking_fix changes, explain WHY it's necessary.\n\n` +
     `Current Work Order:\n\n${params.currentWorkOrderMarkdown}\n\n` +
     `Conflicting Work Order:\n\n${params.conflictingWorkOrderMarkdown}\n\n` +
     `Current diff:\n\n${params.currentDiff || "(no diff available)"}\n\n` +
@@ -1063,14 +1137,44 @@ type ConflictContext = {
   gitConflictOutput: string;
 };
 
+type BuilderChangeType = "wo_implementation" | "blocking_fix";
+
+type BuilderChange = {
+  file: string;
+  type: BuilderChangeType;
+  reason?: string;
+};
+
 type RunIterationHistoryEntry = {
   iteration: number;
   builder_summary: string | null;
   builder_risks: string[];
+  builder_changes?: BuilderChange[];
   tests: Array<{ command: string; passed: boolean; output: string }>;
   reviewer_verdict: "approved" | "changes_requested" | null;
   reviewer_notes: string[] | null;
 };
+
+function normalizeBuilderChanges(value: unknown): BuilderChange[] {
+  if (!Array.isArray(value)) return [];
+  const changes: BuilderChange[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as { file?: unknown; type?: unknown; reason?: unknown };
+    const file = typeof record.file === "string" ? record.file.trim() : "";
+    const type =
+      record.type === "wo_implementation" || record.type === "blocking_fix"
+        ? record.type
+        : null;
+    if (!file || !type) continue;
+    const reason = typeof record.reason === "string" ? record.reason.trim() : "";
+    if (type === "blocking_fix" && !reason) continue;
+    const change: BuilderChange = { file, type };
+    if (reason) change.reason = reason;
+    changes.push(change);
+  }
+  return changes;
+}
 
 function buildConflictContext(params: {
   repoPath: string;
@@ -1888,14 +1992,17 @@ export async function runRun(runId: string) {
       }
 
       let builderResult:
-        | { summary: string; risks: string[]; tests: unknown[] }
+        | { summary: string; risks: string[]; tests: unknown[]; changes?: unknown }
         | null = null;
+      let builderChanges: BuilderChange[] = [];
       try {
         builderResult = JSON.parse(fs.readFileSync(builderOutputPath, "utf8")) as {
           summary: string;
           risks: string[];
           tests: unknown[];
+          changes?: unknown;
         };
+        builderChanges = normalizeBuilderChanges(builderResult?.changes);
       } catch {
         // keep going; reviewer can still evaluate diff
       }
@@ -1923,6 +2030,7 @@ export async function runRun(runId: string) {
         iteration,
         builder_summary: builderResult?.summary ?? null,
         builder_risks: builderResult?.risks ?? [],
+        builder_changes: builderChanges,
         tests: [],
         reviewer_verdict: null,
         reviewer_notes: null,
@@ -2016,11 +2124,25 @@ export async function runRun(runId: string) {
         // ignore; reviewer can still use diff-only review
       }
 
+      const reviewerBuilderResultPath = path.join(
+        reviewerDir,
+        "builder_result.json"
+      );
+      try {
+        fs.copyFileSync(builderOutputPath, reviewerBuilderResultPath);
+      } catch {
+        // ignore; reviewer can still rely on prompt summary
+      }
+
       const reviewerPrompt = buildReviewerPrompt({
         workOrderId: workOrder.id,
         workOrderMarkdown,
         diffPatch: diffPatch || "(no changes detected)",
         constitution: reviewerConstitution.content,
+        builderChanges,
+        builderChangesPath: fs.existsSync(reviewerBuilderResultPath)
+          ? "builder_result.json"
+          : undefined,
       });
       fs.writeFileSync(
         path.join(reviewerDir, "prompt.txt"),

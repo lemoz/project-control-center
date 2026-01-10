@@ -24,14 +24,13 @@ tags:
   - builder
   - reviewer
 estimate_hours: 3
-status: ready
+status: you_review
 created_at: 2026-01-10
 updated_at: 2026-01-10
 depends_on:
   - WO-2026-054
 era: v1
 ---
-
 ## Problem
 
 Sometimes builders discover issues mid-run that block completion:

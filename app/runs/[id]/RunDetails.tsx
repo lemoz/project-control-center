@@ -15,10 +15,17 @@ type RunStatus =
   | "failed"
   | "canceled";
 
+type BuilderChange = {
+  file: string;
+  type: "wo_implementation" | "blocking_fix";
+  reason?: string | null;
+};
+
 type RunIterationHistory = {
   iteration: number;
   builder_summary: string | null;
   builder_risks: string[];
+  builder_changes?: BuilderChange[];
   tests: Array<{ command: string; passed: boolean; output: string }>;
   reviewer_verdict: "approved" | "changes_requested" | null;
   reviewer_notes: string[] | null;
@@ -94,6 +101,12 @@ export function RunDetails({ runId }: { runId: string }) {
     }
   })();
 
+  const latestChanges = (() => {
+    const history = run?.iteration_history;
+    if (!history?.length) return [];
+    return history[history.length - 1]?.builder_changes || [];
+  })();
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <section className="card">
@@ -157,6 +170,24 @@ export function RunDetails({ runId }: { runId: string }) {
         <section className="card">
           <div style={{ fontWeight: 800 }}>Approved Summary</div>
           <div style={{ marginTop: 8, whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{run.summary}</div>
+          {!!latestChanges.length && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontWeight: 700 }}>Changes</div>
+              <ul style={{ marginTop: 6, marginBottom: 0, paddingLeft: 18 }}>
+                {latestChanges.map((change, idx) => {
+                  const label =
+                    change.type === "blocking_fix"
+                      ? `Blocking fix: ${change.reason || "reason not provided"}`
+                      : "WO implementation";
+                  return (
+                    <li key={`${change.file}-${idx}`}>
+                      <code>{change.file || "(unknown file)"}</code> ({label})
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
           {!!notes.length && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontWeight: 700 }}>Reviewer Notes</div>
