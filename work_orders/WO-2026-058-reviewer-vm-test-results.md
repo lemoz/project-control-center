@@ -24,7 +24,7 @@ tags:
   - reviewer
   - testing
 estimate_hours: 1
-status: you_review
+status: done
 created_at: 2026-01-11
 updated_at: 2026-01-11
 depends_on: []
