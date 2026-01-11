@@ -1,262 +1,317 @@
 ---
 id: WO-2026-028
 title: Per-Run Containers Inside Project VM
-goal: Execute each run inside a fresh container on the project's persistent VM, with cleanup and artifact capture per run.
+goal: Execute builder and reviewer agents inside fresh containers on the project's VM, with full isolation and artifact capture.
 context:
-  - work_orders/WO-2026-027-vm-based-project-isolation.md (VM isolation foundation)
-  - server/runner_agent.ts (execution path)
-  - server/index.ts (API wiring)
-  - docs/work_orders.md (contract)
+  - server/runner_agent.ts:1943 (runRun orchestration, codexExec calls)
+  - server/runner_agent.ts:938 (codexExec - currently spawns local codex process)
+  - server/remote_exec.ts (remoteExec, remoteUpload, remoteDownload)
+  - server/vm_manager.ts:289 (buildPrereqInstallScript - docker.io already installed)
+  - work_orders/WO-2026-027-vm-based-project-isolation.md (VM foundation - done)
+  - work_orders/WO-2026-041-runner-integration-artifact-egress-remote-test-setup.md (tests on VM - done)
 acceptance_criteria:
-  - When project mode is vm+container, each run creates a fresh container inside the project VM and removes it on completion or failure.
-  - Run workspace is isolated per run; repo is copied from the VM-hosted repo and optional cache volumes are mounted.
-  - Container execution captures stdout/stderr, exit codes, diffs/tests, and exports artifacts to host .system/runs/....
-  - Base image selection follows project type with optional .control-container.yml overrides.
-  - If the container runtime is unavailable or fails to start, runner falls back to VM-only execution and records the reason.
-  - Container resource limits (cpu/memory/timeout) are applied from project defaults or overrides.
+  - When project isolation_mode is "vm", builder and reviewer run inside containers on the VM (not locally).
+  - Each run creates a fresh container with Codex CLI pre-installed and OPENAI_API_KEY injected.
+  - Container has access to run workspace at /workspace (copied from VM's .system/run-workspaces/{runId}).
+  - Builder/reviewer output (result.json, logs) are extracted back to host .system/runs/{runId}/.
+  - Container is removed after run completes (success or failure).
+  - Fallback to local execution if container creation fails, with recorded reason.
+  - Baseline tests and post-builder tests continue running on VM (not in container).
 non_goals:
   - Kubernetes or multi-host orchestration.
-  - Long-lived containers or shared workspaces between runs.
-  - Reviewer or tester isolation beyond the builder/test container.
+  - Running tests inside containers (current VM execution is sufficient).
+  - Custom container images per project (use standard image with Codex).
+  - Parallel runs in same VM (sequential for now).
 stop_conditions:
-  - If the container runtime cannot be installed or configured safely on the VM, stop and report.
-  - If mount permissions or artifact egress are unclear, stop and ask.
-priority: 3
+  - If Codex CLI cannot run inside container, stop and report.
+  - If OPENAI_API_KEY injection is insecure, stop and ask.
+priority: 1
 tags:
   - runner
   - infra
   - isolation
   - containers
+  - codex
 estimate_hours: 6
 status: you_review
 created_at: 2026-01-06
 updated_at: 2026-01-11
 depends_on:
-  - WO-2025-004
   - WO-2026-027
+  - WO-2026-041
 era: v1
 ---
 # Ephemeral Container Runs
 
-## Overview
+## Current State (as of 2026-01-11)
 
-Each builder run executes in a fresh Docker container on the project's VM. The container provides a clean, isolated environment that's spun up for the run and torn down afterward. This ensures reproducible builds with no state leakage between runs.
+The VM infrastructure is working:
+- ✅ VM provisioning via GCP (`vm_manager.ts`)
+- ✅ SSH access via `CONTROL_CENTER_GCP_SSH_USER` and `CONTROL_CENTER_GCP_SSH_KEY_PATH`
+- ✅ Remote execution via `remoteExec()` in `remote_exec.ts`
+- ✅ Baseline tests run on VM
+- ✅ Post-builder tests run on VM
+- ✅ Artifacts sync back to host via `remoteDownload()`
+- ✅ Docker installed on VM (in prereq script)
+- ✅ Playwright system deps installed on VM
+
+**What's NOT on VM yet:**
+- ❌ Builder (Codex) - runs locally via `codexExec()` spawning `codex` CLI
+- ❌ Reviewer (Codex) - runs locally via `codexExec()`
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Project VM (e.g., project-control-center)                      │
+│  Host (macOS)                                                   │
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Persistent Storage                                       │   │
-│  │ /home/project/                                           │   │
-│  │ ├── repo/              ← Main branch, always up to date │   │
-│  │ ├── build-cache/       ← Optional: npm cache, etc.      │   │
-│  │ └── run-artifacts/     ← Logs, diffs from past runs     │   │
+│  │ PCC Server (server/index.ts)                            │   │
+│  │ ├── runRun() orchestrates                               │   │
+│  │ ├── Syncs worktree to VM                                │   │
+│  │ ├── Triggers container execution via SSH                │   │
+│  │ └── Downloads artifacts back                            │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│         │                                                       │
+│         │ SSH + rsync                                           │
+│         ▼                                                       │
+┌─────────────────────────────────────────────────────────────────┐
+│  Project VM (GCP)                                               │
+│  IP: from project.vm.external_ip                                │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ /home/project/                                          │   │
+│  │ ├── repo/                    ← Main branch sync         │   │
+│  │ └── .system/                                            │   │
+│  │     └── run-workspaces/                                 │   │
+│  │         └── {runId}/         ← Per-run worktree         │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                 │
-│  ┌─────────────────┐  ┌─────────────────┐                      │
-│  │ Container:      │  │ Container:      │                      │
-│  │ run-abc123      │  │ run-def456      │  ← Parallel runs    │
-│  │                 │  │                 │                      │
-│  │ Fresh clone     │  │ Fresh clone     │                      │
-│  │ npm install     │  │ npm install     │                      │
-│  │ Builder agent   │  │ Builder agent   │                      │
-│  │ Tests           │  │ Tests           │                      │
-│  │                 │  │                 │                      │
-│  │ [EPHEMERAL]     │  │ [EPHEMERAL]     │                      │
-│  └─────────────────┘  └─────────────────┘                      │
-│         │                    │                                  │
-│         ▼                    ▼                                  │
-│     Tear down            Tear down                             │
-│     after run            after run                             │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ Container: pcc-run-{shortId}                            │   │
+│  │ Image: pcc-runner:latest (Node 20 + Codex CLI)          │   │
+│  │                                                         │   │
+│  │ Mounts:                                                 │   │
+│  │ - /home/project/.system/run-workspaces/{runId}          │   │
+│  │   → /workspace (rw)                                     │   │
+│  │                                                         │   │
+│  │ Environment:                                            │   │
+│  │ - OPENAI_API_KEY (injected securely)                    │   │
+│  │                                                         │   │
+│  │ Runs:                                                   │   │
+│  │ 1. cd /workspace                                        │   │
+│  │ 2. codex --model gpt-5.2-codex ... (builder)            │   │
+│  │ 3. codex --model gpt-5.2-codex ... (reviewer)           │   │
+│  │                                                         │   │
+│  │ [EPHEMERAL - removed after run]                         │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  Tests run directly on VM (not in container):                   │
+│  - npm test (Playwright + Chrome)                               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Container Images
+## Implementation Plan
 
-### Base Images by Project Type
+### Phase 1: Container Image
 
-| Project Type | Base Image | Included Tools |
-|--------------|------------|----------------|
-| Node/TypeScript | node:20-slim | npm, node, git |
-| Python | python:3.11-slim | pip, python, git |
-| Go | golang:1.21-alpine | go, git |
-| Rust | rust:1.74-slim | cargo, rustc, git |
-| Generic | ubuntu:22.04 | git, curl, build tools |
+Create a Dockerfile for the runner container:
 
-### Project-Specific Customization
+```dockerfile
+# Dockerfile.pcc-runner
+FROM node:20-slim
 
-Projects can provide a `.control-container.yml` for custom requirements:
+# Install system deps
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-```yaml
-# .control-container.yml
-base: node:20-slim
-apt_packages:
-  - ffmpeg
-  - imagemagick
-npm_global:
-  - typescript
-  - tsx
-env:
-  NODE_ENV: development
-resource_limits:
-  memory: 4g
-  cpus: 2
+# Install Codex CLI
+RUN npm install -g @anthropic-ai/codex-cli
+
+# Working directory
+WORKDIR /workspace
+
+# Default command (overridden per run)
+CMD ["bash"]
 ```
 
-## Run Flow
-
-```
-1. Run triggered
-   └── PCC connects to project VM via SSH
-
-2. Container created
-   └── docker run --name run-{shortId} \
-         --memory=4g --cpus=2 \
-         -v /home/project/repo:/repo:ro \
-         -v /home/project/build-cache:/cache \
-         -w /workspace \
-         {base-image}
-
-3. Inside container
-   └── Clone repo to /workspace (or copy from /repo)
-   └── Install dependencies (npm install, pip install, etc.)
-   └── Run builder agent
-   └── Run tests
-   └── Capture results
-
-4. Results extracted
-   └── Copy artifacts (diff, logs) to /home/project/run-artifacts/{runId}/
-   └── If success: apply changes to /home/project/repo/
-
-5. Container torn down
-   └── docker rm -f run-{shortId}
-   └── Container deleted, all state gone
+Build and push to VM during provisioning:
+```bash
+# In buildPrereqInstallScript() additions
+docker build -t pcc-runner:latest -f /home/project/repo/.docker/Dockerfile.pcc-runner /home/project/repo/.docker/
 ```
 
-## Implementation
+### Phase 2: Container Execution Functions
 
-### Container Management
+Add to `server/remote_exec.ts`:
 
 ```typescript
-// server/container_runner.ts
-
-interface ContainerConfig {
-  runId: string;
+interface ContainerExecOptions {
   projectId: string;
-  image: string;
-  memoryLimit: string;  // e.g., '4g'
-  cpuLimit: number;     // e.g., 2
-  env: Record<string, string>;
-  mounts: Array<{
-    hostPath: string;
-    containerPath: string;
-    readOnly: boolean;
-  }>;
+  runId: string;
+  command: string;
+  env?: Record<string, string>;
+  workspacePath: string;
+  timeout?: number;
 }
 
-interface ContainerRun {
-  containerId: string;
-  status: 'creating' | 'running' | 'completed' | 'failed';
-  startedAt: string;
-  finishedAt?: string;
-  exitCode?: number;
-  logs: string;
-}
+export async function remoteContainerExec(opts: ContainerExecOptions): Promise<{
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}> {
+  const shortId = opts.runId.slice(0, 8);
+  const containerName = `pcc-run-${shortId}`;
 
-export async function createContainer(config: ContainerConfig): Promise<string>;
-export async function execInContainer(containerId: string, command: string): Promise<ExecResult>;
-export async function getContainerLogs(containerId: string): Promise<string>;
-export async function removeContainer(containerId: string): Promise<void>;
-export async function waitForContainer(containerId: string): Promise<ContainerRun>;
+  // Build docker run command
+  const envFlags = Object.entries(opts.env || {})
+    .map(([k, v]) => `-e ${k}=${shellEscape(v)}`)
+    .join(' ');
+
+  const dockerCmd = [
+    'docker run --rm',
+    `--name ${containerName}`,
+    '--network host',  // For API access
+    `-v ${opts.workspacePath}:/workspace`,
+    envFlags,
+    '-w /workspace',
+    'pcc-runner:latest',
+    `bash -c ${shellEscape(opts.command)}`
+  ].join(' ');
+
+  return remoteExec(opts.projectId, dockerCmd, {
+    timeout: opts.timeout || 600000,  // 10 min default
+  });
+}
 ```
 
-### Runner Agent Integration
+### Phase 3: Modify codexExec for Remote Execution
+
+In `server/runner_agent.ts`, modify `codexExec()`:
 
 ```typescript
-// In runner_agent.ts, replace local execution with container execution
+async function codexExec(params: CodexExecParams): Promise<CodexExecResult> {
+  const project = findProjectById(params.projectId);
+  const vm = project ? getProjectVm(project.id) : null;
 
-async function runBuilderInContainer(
-  projectId: string,
-  runId: string,
-  workOrder: WorkOrder
-): Promise<BuilderResult> {
-  const vm = await getVMForProject(projectId);
-  if (!vm) {
-    // Fallback to local execution
-    return runBuilderLocally(runId, workOrder);
+  // If VM mode and VM is running, execute in container
+  if (project?.isolation_mode === 'vm' && vm?.status === 'running') {
+    return codexExecRemote(params, vm);
   }
 
-  const containerConfig = await buildContainerConfig(projectId, runId);
-  const containerId = await createContainer(containerConfig);
+  // Fallback to local execution
+  return codexExecLocal(params);
+}
 
-  try {
-    // Clone repo inside container
-    await execInContainer(containerId, 'git clone /repo /workspace');
+async function codexExecRemote(
+  params: CodexExecParams,
+  vm: ProjectVmRow
+): Promise<CodexExecResult> {
+  // Build codex command
+  const codexCmd = buildCodexCommand(params);
 
-    // Install dependencies
-    await execInContainer(containerId, 'npm install');
+  // Execute in container with OPENAI_API_KEY
+  const result = await remoteContainerExec({
+    projectId: params.projectId,
+    runId: params.runId,
+    command: codexCmd,
+    env: {
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+    },
+    workspacePath: params.workspacePath,
+    timeout: params.timeout,
+  });
 
-    // Run builder agent (codex/claude)
-    const result = await execInContainer(containerId, buildAgentCommand(workOrder));
-
-    // Run tests
-    const testResult = await execInContainer(containerId, 'npm test');
-
-    // Extract results
-    const diff = await execInContainer(containerId, 'git diff');
-
-    return {
-      success: testResult.exitCode === 0,
-      diff: diff.stdout,
-      logs: await getContainerLogs(containerId),
-    };
-  } finally {
-    // Always clean up
-    await removeContainer(containerId);
-  }
+  // Parse result, handle escalation, etc.
+  return parseCodexResult(result, params);
 }
 ```
 
-## Build Cache Management
+### Phase 4: Secret Injection
 
-To speed up runs, certain caches can persist:
+Options for OPENAI_API_KEY:
+1. **Pass via docker -e** (current plan) - Key visible in process list briefly
+2. **Docker secrets** - More secure but requires swarm mode
+3. **File mount** - Write key to temp file, mount, delete after
 
-```yaml
-# Mounted as volumes, not copied into container
-caches:
-  - /home/project/cache/npm:/root/.npm          # npm cache
-  - /home/project/cache/pip:/root/.cache/pip    # pip cache
-  - /home/project/cache/node_modules:/workspace/node_modules  # optional
+Recommended: Option 1 for simplicity, with process isolation via container.
+
+### Phase 5: Update VM Prereqs
+
+Modify `buildPrereqInstallScript()` in `vm_manager.ts`:
+
+```typescript
+// After existing prereqs, add:
+"  # Build PCC runner image if Dockerfile exists",
+"  if [ -f /home/project/repo/.docker/Dockerfile.pcc-runner ]; then",
+"    docker build -t pcc-runner:latest -f /home/project/repo/.docker/Dockerfile.pcc-runner /home/project/repo/.docker/",
+"  fi",
 ```
 
-Cache can be cleared per-project if corruption suspected.
+## Run Flow (Updated)
 
-## Resource Limits
+```
+1. runRun() starts
+   ├── Create worktree locally
+   └── Sync to VM: .system/run-workspaces/{runId}/
 
-Default limits (configurable per project):
+2. Baseline health check
+   └── remoteExec("npm test") on VM (not in container)
 
-| Resource | Default | Max |
-|----------|---------|-----|
-| Memory | 4GB | 16GB |
-| CPU | 2 cores | 8 cores |
-| Disk | 20GB | 100GB |
-| Timeout | 1 hour | 4 hours |
+3. Builder iteration
+   ├── remoteContainerExec() spawns container
+   ├── Container runs: codex --model gpt-5.2-codex ...
+   ├── Builder writes to /workspace/builder/iter-N/result.json
+   └── Container removed
 
-Runs exceeding limits are killed with clear error message.
+4. Post-builder tests
+   └── remoteExec("npm test") on VM (not in container)
 
-## Logging and Debugging
+5. Reviewer iteration
+   ├── remoteContainerExec() spawns new container
+   ├── Container runs: codex --model gpt-5.2-codex ...
+   ├── Reviewer writes to /workspace/reviewer/iter-N/result.json
+   └── Container removed
 
-- All container stdout/stderr captured
-- Logs stored in `/home/project/run-artifacts/{runId}/container.log`
-- Option to keep container running for debugging (manual override)
-- Container events logged (create, start, stop, remove)
+6. Artifact sync
+   └── remoteDownload() copies results to host .system/runs/{runId}/
+```
 
-## Cleanup Policy
+## Files to Modify
 
-- Containers removed immediately after run completes
-- Failed containers removed after 1 hour (allows debugging)
-- Orphaned containers cleaned up daily
-- Build caches pruned when exceeding size limit
+1. **server/remote_exec.ts**
+   - Add `remoteContainerExec()` function
+
+2. **server/runner_agent.ts**
+   - Modify `codexExec()` to check isolation_mode
+   - Add `codexExecRemote()` for container execution
+   - Update `buildCodexCommand()` if needed
+
+3. **server/vm_manager.ts**
+   - Add Docker image build to prereqs
+
+4. **New: .docker/Dockerfile.pcc-runner**
+   - Runner container image with Codex CLI
+
+## Testing
+
+1. Verify container can run codex:
+   ```bash
+   ssh user@vm "docker run --rm -e OPENAI_API_KEY=... pcc-runner:latest codex --version"
+   ```
+
+2. Test full run with isolation_mode=vm
+
+3. Verify artifacts are extracted correctly
+
+4. Test fallback when Docker fails
+
+## Risks
+
+- **API key exposure**: Mitigated by container isolation, key only in container env
+- **Container build time**: Build image during VM provision, not per-run
+- **Network access**: Container needs outbound HTTPS for OpenAI API
+- **Disk space**: Containers are ephemeral, cleaned up after run

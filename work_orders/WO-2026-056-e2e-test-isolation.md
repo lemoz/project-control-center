@@ -4,7 +4,7 @@ title: Comprehensive e2e test isolation
 goal: Ensure e2e tests are fully isolated and cannot pollute each other's state.
 context:
   - e2e/smoke.spec.ts (current test suite)
-  - Incident: "Repo move" test left beta-moved directory, breaking subsequent tests
+  - "Incident: Repo move test left beta-moved directory, breaking subsequent tests"
   - Quick fix added beforeEach/afterEach for repo state, but broader cleanup needed
 acceptance_criteria:
   - Each test starts with guaranteed clean state (repos, database, control files)

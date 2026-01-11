@@ -26,7 +26,7 @@ tags:
   - api
   - ux
 estimate_hours: 2
-status: you_review
+status: done
 created_at: 2026-01-09
 updated_at: 2026-01-11
 depends_on: []

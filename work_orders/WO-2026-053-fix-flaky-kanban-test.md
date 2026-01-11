@@ -21,13 +21,12 @@ tags:
   - bugfix
   - urgent
 estimate_hours: 0.5
-status: ready
+status: done
 created_at: 2026-01-10
-updated_at: 2026-01-10
+updated_at: 2026-01-11
 depends_on: []
 era: v1
 ---
-
 ## Problem
 
 The "Project page renders Kanban columns" test is flaky:

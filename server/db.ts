@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import path from "path";
 
 export type ProjectIsolationMode = "local" | "vm" | "vm+container";
-export type ProjectVmSize = "small" | "medium" | "large" | "xlarge";
+export type ProjectVmSize = "medium" | "large" | "xlarge";
 
 export type ProjectRow = {
   id: string;
