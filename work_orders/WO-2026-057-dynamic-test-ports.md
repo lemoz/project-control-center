@@ -25,13 +25,12 @@ tags:
   - testing
   - parallel
 estimate_hours: 1
-status: ready
+status: you_review
 created_at: 2026-01-11
 updated_at: 2026-01-11
 depends_on: []
 era: v1
 ---
-
 ## Problem
 
 When multiple runs execute on the same VM, they compete for hardcoded test ports:

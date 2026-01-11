@@ -54,6 +54,11 @@ const REMOTE_TEST_TIMEOUT_MS = Math.round(
     DEFAULT_REMOTE_TEST_TIMEOUT_SEC
   ) * 1000
 );
+const E2E_WEB_PORT_BASE = 3012;
+const E2E_OFFLINE_WEB_PORT_BASE = 3013;
+const E2E_API_PORT_BASE = 4011;
+const E2E_PORT_OFFSET_MOD = 90;
+const E2E_PORT_OFFSET_STEP = 10;
 
 const IGNORE_DIRS = new Set([
   ".git",
@@ -120,6 +125,13 @@ function parseNumberEnv(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getPortOffset(runId: string): number {
+  const prefix = runId.slice(0, 4);
+  const hash = Number.parseInt(prefix, 16);
+  if (!Number.isFinite(hash)) return 0;
+  return (hash % E2E_PORT_OFFSET_MOD) * E2E_PORT_OFFSET_STEP;
 }
 
 type ContainerResourceLimits = {
@@ -2206,6 +2218,7 @@ async function runRemoteTests(params: {
   repoPath: string;
   runDir: string;
   iteration: number;
+  runId: string;
   remote: RemoteRunConfig;
   logPath?: string;
   labelPrefix?: string;
@@ -2219,7 +2232,14 @@ async function runRemoteTests(params: {
   const labelPrefix = params.labelPrefix ? `${params.labelPrefix} ` : "";
   ensureDir(path.dirname(logPath));
   const logStream = fs.createWriteStream(logPath, { flags: "a" });
-  const env = { CI: "1", NEXT_DIST_DIR: ".system/next-run-tests" };
+  const portOffset = getPortOffset(params.runId);
+  const env = {
+    CI: "1",
+    NEXT_DIST_DIR: ".system/next-run-tests",
+    E2E_WEB_PORT: String(E2E_WEB_PORT_BASE + portOffset),
+    E2E_OFFLINE_WEB_PORT: String(E2E_OFFLINE_WEB_PORT_BASE + portOffset),
+    E2E_API_PORT: String(E2E_API_PORT_BASE + portOffset),
+  };
 
   const runRemoteCommand = async (label: string, command: string) => {
     logStream.write(`[${nowIso()}] ${labelPrefix}${label} start (iter ${params.iteration})\n`);
@@ -2618,6 +2638,7 @@ export async function runRun(runId: string) {
               repoPath: worktreePath,
               runDir,
               iteration: 0,
+              runId,
               remote: remoteConfig,
               logPath: baselineLogPath,
               labelPrefix: "baseline",
@@ -2983,7 +3004,13 @@ export async function runRun(runId: string) {
       }
       try {
         tests = remoteConfig
-          ? await runRemoteTests({ repoPath: worktreePath, runDir, iteration, remote: remoteConfig })
+          ? await runRemoteTests({
+              repoPath: worktreePath,
+              runDir,
+              iteration,
+              runId,
+              remote: remoteConfig,
+            })
           : await runRepoTests(worktreePath, runDir, iteration);
         writeJson(path.join(runDir, "tests", "results.json"), tests);
       } catch (err) {
