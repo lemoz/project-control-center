@@ -439,7 +439,8 @@ function buildEnvPrefix(env: Record<string, string> | undefined): string {
     }
     assignments.push(`${key}=${shellEscape(String(value))}`);
   }
-  return `env ${assignments.join(" ")} -- `;
+  // Use shell variable assignment (POSIX-compliant) instead of env --
+  return `${assignments.join(" ")} `;
 }
 
 function resolveRemoteCwd(cwd: string | undefined, allowAbsolute?: boolean): string | null {
