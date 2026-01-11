@@ -457,6 +457,32 @@ function buildTestFailureOutput(
     .join("\n\n");
 }
 
+function buildVmTestResults(
+  tests: Array<{ command: string; passed: boolean }>
+): {
+  passed: boolean;
+  total: number;
+  failed: number;
+  summary: string;
+  failedTests: string[];
+} {
+  const total = tests.length;
+  const failedTests = tests.filter((test) => !test.passed).map((test) => test.command);
+  const failed = failedTests.length;
+  const passedCount = Math.max(0, total - failed);
+  const summary =
+    total > 0
+      ? `${passedCount}/${total} commands passed${failed ? `, ${failed} failed` : ""}`
+      : "0/0 commands passed (no tests reported)";
+  return {
+    passed: failed === 0,
+    total,
+    failed,
+    summary,
+    failedTests,
+  };
+}
+
 function copySnapshot(srcRoot: string, dstRoot: string) {
   ensureDir(dstRoot);
 
@@ -1689,6 +1715,13 @@ function buildReviewerPrompt(params: {
   constitution?: string;
   builderChanges?: BuilderChange[];
   builderChangesPath?: string;
+  vmTestResults?: {
+    passed: boolean;
+    total: number;
+    failed: number;
+    summary: string;
+    failedTests: string[];
+  };
 }) {
   const constitutionBlock = formatConstitutionBlock(params.constitution ?? "");
   const builderChanges = params.builderChanges ?? [];
@@ -1709,6 +1742,16 @@ function buildReviewerPrompt(params: {
         (builderChangesPath ? `\nBuilder output file: ${builderChangesPath}\n` : "") +
         `\n`
       : "";
+  const vmTests = params.vmTestResults;
+  const vmTestsBlock = vmTests
+    ? `## Test Results (VM)\n` +
+      `Tests were executed on the VM and ${vmTests.passed ? "**passed**" : "**failed**"}: ${vmTests.summary}\n` +
+      (vmTests.failedTests.length
+        ? `Failed tests:\n${vmTests.failedTests.map((name) => `- ${name}`).join("\n")}\n`
+        : "") +
+      `\n` +
+      `Note: Builder's local test attempt may show failures due to Codex sandbox restrictions (e.g., EPERM on port binding). The VM results above are authoritative.\n\n`
+    : "";
   return (
     `You are a fresh Reviewer agent.\n\n` +
     constitutionBlock +
@@ -1724,6 +1767,7 @@ function buildReviewerPrompt(params: {
     `- Otherwise return status=approved.\n` +
     `- Output JSON matching the required schema.\n\n` +
     builderChangesBlock +
+    vmTestsBlock +
     `## Evaluating Blocking Fixes\n` +
     `When builder claims a change is a "blocking_fix":\n` +
     `1. Verify the claim - is it actually blocking?\n` +
@@ -3022,6 +3066,7 @@ export async function runRun(runId: string) {
         builderChangesPath: fs.existsSync(reviewerBuilderResultPath)
           ? "builder_result.json"
           : undefined,
+        vmTestResults: remoteConfig ? buildVmTestResults(tests) : undefined,
       });
       fs.writeFileSync(
         path.join(reviewerDir, "prompt.txt"),
@@ -3463,11 +3508,18 @@ export async function runRun(runId: string) {
         // ignore
       }
 
+      const mergeVmTests = remoteConfig
+        ? readJsonIfExists<Array<{ command: string; passed: boolean }>>(
+            path.join(runDir, "tests", "results.json")
+          )
+        : null;
       const mergeReviewerPrompt = buildReviewerPrompt({
         workOrderId: workOrder.id,
         workOrderMarkdown,
         diffPatch: resolvedDiff || "(no changes detected)",
         constitution: reviewerConstitution.content,
+        vmTestResults:
+          remoteConfig && mergeVmTests ? buildVmTestResults(mergeVmTests) : undefined,
       });
       fs.writeFileSync(
         path.join(mergeReviewerDir, "prompt.txt"),

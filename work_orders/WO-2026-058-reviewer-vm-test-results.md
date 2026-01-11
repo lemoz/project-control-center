@@ -24,13 +24,12 @@ tags:
   - reviewer
   - testing
 estimate_hours: 1
-status: ready
+status: you_review
 created_at: 2026-01-11
 updated_at: 2026-01-11
 depends_on: []
 era: v1
 ---
-
 ## Problem
 
 The reviewer sees a false positive "TEST GAP" because:
