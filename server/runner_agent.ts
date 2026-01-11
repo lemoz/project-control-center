@@ -1129,28 +1129,15 @@ function builderSchema(): object {
       changes: {
         type: "array",
         items: {
-          oneOf: [
-            {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                file: { type: "string" },
-                type: { const: "wo_implementation" },
-                reason: { type: "string" },
-              },
-              required: ["file", "type"],
-            },
-            {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                file: { type: "string" },
-                type: { const: "blocking_fix" },
-                reason: { type: "string", minLength: 1, pattern: "\\S" },
-              },
-              required: ["file", "type", "reason"],
-            },
-          ],
+          // Note: OpenAI requires all properties in required array when additionalProperties: false
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            file: { type: "string" },
+            type: { type: "string", enum: ["wo_implementation", "blocking_fix"] },
+            reason: { type: "string" },
+          },
+          required: ["file", "type", "reason"],
         },
       },
     },
@@ -1313,10 +1300,10 @@ function buildBuilderPrompt(params: {
     `- Learn from previous iteration feedback - do not repeat the same mistakes.\n` +
     `\n` +
     `## Change Classification\n` +
-    `For each file you modify, classify the change:\n` +
-    `- wo_implementation: Directly implements the Work Order\n` +
-    `- blocking_fix: Fixes an issue that blocks WO completion (not part of WO scope, but necessary)\n` +
-    `For blocking_fix changes, explain WHY it's necessary:\n` +
+    `For each file you modify, classify the change with type and reason:\n` +
+    `- wo_implementation: Directly implements the Work Order (reason can be brief, e.g. "implements WO")\n` +
+    `- blocking_fix: Fixes an issue that blocks WO completion (reason must explain WHY it's necessary)\n` +
+    `For blocking_fix changes, the reason must explain:\n` +
     `- What breaks without this fix?\n` +
     `- Why can't the WO be completed without it?\n` +
     `Only use blocking_fix for genuine blockers, not nice-to-have improvements.\n` +
@@ -1428,10 +1415,9 @@ function buildConflictResolutionPrompt(params: {
     `- If goals are mutually exclusive, preserve the higher-priority Work Order's intent\n` +
     `- Document your resolution reasoning in the summary\n\n` +
     `## Change Classification\n` +
-    `For each file you modify, classify the change:\n` +
-    `- wo_implementation: Directly implements the Work Order\n` +
-    `- blocking_fix: Required to resolve the conflict or unblock the merge\n` +
-    `For blocking_fix changes, explain WHY it's necessary.\n\n` +
+    `For each file you modify, classify the change with type and reason:\n` +
+    `- wo_implementation: Directly implements the Work Order (reason can be brief, e.g. "implements WO")\n` +
+    `- blocking_fix: Required to resolve the conflict or unblock the merge (reason must explain WHY)\n\n` +
     `Current Work Order:\n\n${params.currentWorkOrderMarkdown}\n\n` +
     `Conflicting Work Order:\n\n${params.conflictingWorkOrderMarkdown}\n\n` +
     `Current diff:\n\n${params.currentDiff || "(no diff available)"}\n\n` +

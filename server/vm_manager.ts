@@ -317,6 +317,8 @@ function buildPrereqInstallScript(): string {
     "    sudo -n apt-get update -y",
     "    sudo -n apt-get install -y nodejs",
     "  fi",
+    // Install Playwright system dependencies (libatk, libcups, libgbm, etc.)
+    "  npx --yes playwright install-deps chromium || true",
     "  if command -v systemctl >/dev/null 2>&1; then sudo -n systemctl enable --now docker >/dev/null 2>&1 || true; fi",
     "elif command -v yum >/dev/null 2>&1; then",
     "  sudo -n yum install -y git rsync nodejs npm python3 docker",
