@@ -82,6 +82,8 @@ export function RunDetails({ runId }: { runId: string }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [escalationCreatedAt, setEscalationCreatedAt] = useState<string | null>(null);
+  const [canceling, setCanceling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -151,6 +153,31 @@ export function RunDetails({ runId }: { runId: string }) {
     ? escalation.inputs.filter((input) => !inputValues[input.key]?.trim())
     : [];
   const canSubmit = !!escalation && missingInputs.length === 0 && !submitting;
+  const canCancel =
+    !!run &&
+    (run.status === "queued" ||
+      run.status === "building" ||
+      run.status === "waiting_for_input" ||
+      run.status === "ai_review" ||
+      run.status === "testing");
+
+  const cancelRun = useCallback(async () => {
+    if (!canCancel) return;
+    setCanceling(true);
+    setCancelError(null);
+    try {
+      const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/cancel`, {
+        method: "POST",
+      });
+      const json = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok) throw new Error(json?.error || "failed to cancel run");
+      await load();
+    } catch (e) {
+      setCancelError(e instanceof Error ? e.message : "failed to cancel run");
+    } finally {
+      setCanceling(false);
+    }
+  }, [canCancel, load, runId]);
 
   const submitInputs = useCallback(async () => {
     if (!escalation) return;
@@ -211,11 +238,17 @@ export function RunDetails({ runId }: { runId: string }) {
             <button className="btnSecondary" onClick={() => void load()} disabled={loading}>
               Refresh
             </button>
+            {canCancel && (
+              <button className="btnSecondary" onClick={() => void cancelRun()} disabled={canceling}>
+                {canceling ? "Canceling…" : "Cancel Run"}
+              </button>
+            )}
             {run?.status && <span className="badge">{run.status}</span>}
           </div>
         </div>
 
         {!!error && <div className="error" style={{ marginTop: 10 }}>{error}</div>}
+        {!!cancelError && <div className="error" style={{ marginTop: 10 }}>{cancelError}</div>}
         {loading && <div className="muted" style={{ marginTop: 10 }}>Loading…</div>}
 
         {!!run && (

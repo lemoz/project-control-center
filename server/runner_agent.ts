@@ -89,6 +89,10 @@ const ESCALATION_REGEX = /<<<NEED_HELP>>>([\s\S]*?)<<<END_HELP>>>/;
 const ESCALATION_OUTPUT_BUFFER_MAX = 200_000;
 const ESCALATION_RESOLUTION_RELATIVE_PATH = ".system/escalation/resolution.json";
 const ESCALATION_POLL_INTERVAL_MS = 250;
+const RUNNER_PID_FILENAME = "runner.pid";
+const RUNNER_TERMINATE_TIMEOUT_MS = 4000;
+const RUNNER_KILL_TIMEOUT_MS = 2000;
+const RUNNER_KILL_POLL_MS = 200;
 
 const DENY_BASENAME_PREFIXES = [".env"];
 const DENY_BASENAMES = new Set([
@@ -136,6 +140,33 @@ function writeJson(filePath: string, data: unknown) {
 function appendLog(filePath: string, line: string) {
   const timestamp = new Date().toISOString();
   fs.appendFileSync(filePath, `[${timestamp}] ${line}\n`, "utf8");
+}
+
+function runnerPidPath(runDir: string): string {
+  return path.join(runDir, RUNNER_PID_FILENAME);
+}
+
+function writeRunnerPid(runDir: string, pid: number): void {
+  fs.writeFileSync(runnerPidPath(runDir), `${pid}\n`, "utf8");
+}
+
+function readRunnerPid(runDir: string): number | null {
+  try {
+    const raw = fs.readFileSync(runnerPidPath(runDir), "utf8").trim();
+    if (!raw) return null;
+    const pid = Number.parseInt(raw, 10);
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearRunnerPid(runDir: string): void {
+  try {
+    fs.rmSync(runnerPidPath(runDir), { force: true });
+  } catch {
+    // ignore
+  }
 }
 
 function removePathIfExists(targetPath: string) {
@@ -235,7 +266,7 @@ function shouldPreferTsWorker(): boolean {
   return process.execArgv.some((arg) => arg.includes("tsx"));
 }
 
-function spawnRunWorker(runId: string) {
+function spawnRunWorker(runId: string): ChildProcess {
   const repoRoot = process.cwd();
   const distWorkerPath = path.join(repoRoot, "server", "dist", "runner_worker.js");
   const tsWorkerPath = path.join(repoRoot, "server", "runner_worker.ts");
@@ -285,6 +316,7 @@ function spawnRunWorker(runId: string) {
     detached: true,
   });
   child.unref();
+  return child;
 }
 
 function tailFile(filePath: string, maxBytes = 24_000): string {
@@ -3128,6 +3160,7 @@ export async function runRun(runId: string) {
     } catch {
       // ignore
     }
+    clearRunnerPid(run.run_dir);
   }
 }
 
@@ -3179,8 +3212,13 @@ export function enqueueCodexRun(projectId: string, workOrderId: string): RunRow 
   };
 
   createRun(run);
+  let worker: ChildProcess | null = null;
   try {
-    spawnRunWorker(id);
+    worker = spawnRunWorker(id);
+    if (!worker.pid) {
+      throw new Error("runner worker pid unavailable");
+    }
+    writeRunnerPid(runDir, worker.pid);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     updateRun(id, {
@@ -3188,6 +3226,13 @@ export function enqueueCodexRun(projectId: string, workOrderId: string): RunRow 
       error: `failed to start worker: ${message}`,
       finished_at: nowIso(),
     });
+    if (worker?.pid) {
+      try {
+        process.kill(worker.pid, "SIGTERM");
+      } catch {
+        // ignore
+      }
+    }
     throw err instanceof Error ? err : new Error(message);
   }
   return run;
@@ -3278,6 +3323,112 @@ export function provideRunInput(
     escalation: JSON.stringify(updated),
   });
   return { ok: true };
+}
+
+type CancelRunResult =
+  | { ok: true; run: RunRow }
+  | { ok: false; error: string; code: "not_found" | "not_cancelable" | "kill_failed" };
+
+const CANCELABLE_RUN_STATUSES = new Set<RunRow["status"]>([
+  "queued",
+  "building",
+  "waiting_for_input",
+  "ai_review",
+  "testing",
+]);
+
+function killTargetForPid(pid: number): number {
+  return process.platform === "win32" ? pid : -pid;
+}
+
+function isProcessAlive(target: number): boolean {
+  try {
+    process.kill(target, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return false;
+    if (code === "EPERM") return true;
+    throw err;
+  }
+}
+
+async function waitForExit(target: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(target)) return true;
+    await sleep(RUNNER_KILL_POLL_MS);
+  }
+  return !isProcessAlive(target);
+}
+
+async function terminateRunner(pid: number, log: (line: string) => void): Promise<{
+  ok: boolean;
+  error?: string;
+}> {
+  const target = killTargetForPid(pid);
+  if (!isProcessAlive(target)) return { ok: true };
+
+  log(`Sending SIGTERM to runner process ${pid}`);
+  try {
+    process.kill(target, "SIGTERM");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ESRCH") {
+      return { ok: false, error: `failed to SIGTERM runner: ${String(err)}` };
+    }
+  }
+
+  if (await waitForExit(target, RUNNER_TERMINATE_TIMEOUT_MS)) return { ok: true };
+
+  log("Runner still alive after SIGTERM; sending SIGKILL");
+  try {
+    process.kill(target, "SIGKILL");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ESRCH") {
+      return { ok: false, error: `failed to SIGKILL runner: ${String(err)}` };
+    }
+  }
+
+  const killed = await waitForExit(target, RUNNER_KILL_TIMEOUT_MS);
+  return killed ? { ok: true } : { ok: false, error: "runner did not exit after SIGKILL" };
+}
+
+export async function cancelRun(runId: string): Promise<CancelRunResult> {
+  const run = getRunById(runId);
+  if (!run) return { ok: false, error: "run not found", code: "not_found" };
+  if (!CANCELABLE_RUN_STATUSES.has(run.status)) {
+    return {
+      ok: false,
+      error: `run status is ${run.status}, expected in-progress`,
+      code: "not_cancelable",
+    };
+  }
+
+  const log = (line: string) => appendLog(run.log_path, line);
+  const pid = readRunnerPid(run.run_dir);
+  if (!pid) {
+    log("Runner pid missing; marking run canceled.");
+    const finishedAt = nowIso();
+    updateRun(runId, { status: "canceled", finished_at: finishedAt, error: "canceled by user" });
+    return { ok: true, run: getRunById(runId) ?? run };
+  }
+
+  const terminated = await terminateRunner(pid, log);
+  if (!terminated.ok) {
+    log(`Failed to cancel runner: ${terminated.error ?? "unknown error"}`);
+    return {
+      ok: false,
+      error: terminated.error ?? "failed to cancel runner",
+      code: "kill_failed",
+    };
+  }
+
+  clearRunnerPid(run.run_dir);
+  const finishedAt = nowIso();
+  updateRun(runId, { status: "canceled", finished_at: finishedAt, error: "canceled by user" });
+  return { ok: true, run: getRunById(runId) ?? run };
 }
 
 export function finalizeManualRunResolution(

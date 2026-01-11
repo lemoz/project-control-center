@@ -59,6 +59,7 @@ import {
   markConstitutionGenerationComplete,
 } from "./constitution_generation.js";
 import {
+  cancelRun,
   enqueueCodexRun,
   finalizeManualRunResolution,
   getRun,
@@ -1002,6 +1003,22 @@ app.get("/runs/:runId", (req, res) => {
   const run = getRun(req.params.runId);
   if (!run) return res.status(404).json({ error: "run not found" });
   return res.json(run);
+});
+
+app.post("/runs/:runId/cancel", async (req, res) => {
+  try {
+    const result = await cancelRun(req.params.runId);
+    if (!result.ok) {
+      const status =
+        result.code === "not_found" ? 404 : result.code === "not_cancelable" ? 400 : 500;
+      return res.status(status).json({ error: result.error });
+    }
+    return res.json(result.run);
+  } catch (err) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : "cancel failed",
+    });
+  }
 });
 
 app.post("/runs/:runId/provide-input", (req, res) => {
