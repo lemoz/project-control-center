@@ -9,6 +9,9 @@ RUN apt-get update \
 
 RUN npm install -g @openai/codex
 
+# Note: Codex authentication is provided by mounting ~/.codex from the VM host
+# which contains auth.json from 'codex login'. See vm_manager.ts syncCodexAuth().
+
 WORKDIR /workspace
 
 CMD ["bash"]

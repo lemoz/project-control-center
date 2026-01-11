@@ -391,6 +391,36 @@ async function installVmDependencies(projectId: string): Promise<void> {
   }
 }
 
+/**
+ * Copy local ~/.codex/auth.json to VM for codex CLI authentication.
+ * This enables container-based codex execution with gpt-5.2-codex-max model.
+ * If local auth.json doesn't exist, logs a warning but doesn't fail provisioning.
+ */
+async function syncCodexAuth(projectId: string): Promise<void> {
+  const localAuthPath = path.join(os.homedir(), ".codex", "auth.json");
+  if (!fs.existsSync(localAuthPath)) {
+    console.warn(
+      `[vm_manager] Warning: ~/.codex/auth.json not found. ` +
+      `Run 'codex login' locally to enable codex authentication on VMs.`
+    );
+    return;
+  }
+
+  try {
+    // Create .codex directory on VM and upload auth.json
+    await remoteExec(projectId, "mkdir -p ~/.codex", {
+      allowVmStatuses: PROVISIONING_ALLOWED_VM_STATUSES,
+    });
+    await remoteUpload(projectId, localAuthPath, ".codex/auth.json", {
+      allowAbsolute: true,
+      allowVmStatuses: PROVISIONING_ALLOWED_VM_STATUSES,
+    });
+  } catch (err) {
+    // Don't fail provisioning, just warn
+    console.warn(`[vm_manager] Warning: Failed to sync codex auth to VM: ${err}`);
+  }
+}
+
 function resolveSshConfig(): SshConfig {
   const user = process.env[SSH_USER_ENV]?.trim();
   if (!user) {
@@ -881,6 +911,7 @@ export async function provisionVM(config: VMConfig): Promise<ProjectVmRow> {
     });
 
     await ensureVmPrereqs(config.projectId);
+    await syncCodexAuth(config.projectId);
     updateVm(config.projectId, {
       status: "syncing",
       last_activity_at: nowIso(),

@@ -1308,9 +1308,15 @@ async function runCodexExecInContainer(params: {
   const artifactsHostPath = resolveVmAbsolutePath(params.artifactsDir);
   const workingDir = params.workingDir?.trim() || "/workspace";
 
+  // Get SSH user for home directory path on VM
+  const sshUser = process.env.CONTROL_CENTER_GCP_SSH_USER?.trim() || "cdossman";
+  const codexAuthPath = `/home/${sshUser}/.codex`;
+
   const mountFlags = [
     `-v ${shellEscape(`${workspaceHostPath}:/workspace`)}`,
     `-v ${shellEscape(`${artifactsHostPath}:/artifacts`)}`,
+    // Mount codex auth directory (not read-only - codex needs to write session data)
+    `-v ${shellEscape(`${codexAuthPath}:/root/.codex`)}`,
   ];
 
   const envFlags = Object.entries(params.env)
@@ -1334,6 +1340,10 @@ async function runCodexExecInContainer(params: {
     "sh -lc",
     shellEscape(params.command),
   ].join(" ");
+
+  // Debug: Log env flags (mask the actual key value)
+  const maskedEnvFlags = envFlags.map((f) => f.replace(/='.+'/, "='***'"));
+  console.log(`[DEBUG] Docker env flags: ${maskedEnvFlags.join(" ")}`);
 
   try {
     return await remoteExec(params.projectId, dockerCmd, {
@@ -1369,6 +1379,9 @@ async function runCodexExecRemote(params: RemoteCodexExecParams): Promise<CodexE
   const env = {
     OPENAI_API_KEY: process.env.OPENAI_API_KEY || "",
   };
+
+  // Debug: log API key status
+  params.log?.(`[DEBUG] OPENAI_API_KEY length: ${env.OPENAI_API_KEY.length}`);
 
   ensureDir(path.dirname(params.localLogPath));
   const logStream = fs.createWriteStream(params.localLogPath, { flags: "a" });
