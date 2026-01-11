@@ -32,8 +32,8 @@ tags:
   - isolation
   - containers
   - codex
-estimate_hours: 4
-status: ready
+estimate_hours: 6
+status: you_review
 created_at: 2026-01-06
 updated_at: 2026-01-11
 depends_on:
