@@ -302,6 +302,9 @@ function buildPrereqInstallScript(): string {
     "  fi",
     "done",
     "if [ -z \"$missing\" ]; then",
+    "  if ! command -v codex >/dev/null 2>&1; then",
+    "    sudo -n npm install -g @anthropic-ai/codex-cli",
+    "  fi",
     "  exit 0",
     "fi",
     // Install missing tools
@@ -330,6 +333,9 @@ function buildPrereqInstallScript(): string {
     "  echo \"Missing tools:$missing. Install git, rsync, node, npm, python3, docker manually.\" >&2",
     "  exit 1",
     "fi",
+    "if ! command -v codex >/dev/null 2>&1; then",
+    "  sudo -n npm install -g @anthropic-ai/codex-cli",
+    "fi",
   ].join("\n");
 }
 
@@ -353,6 +359,25 @@ async function syncVmRepo(projectId: string, repoPath: string): Promise<void> {
     });
   } catch (err) {
     throw wrapRemoteError("Failed to sync repo to VM", err);
+  }
+}
+
+async function buildVmRunnerImage(projectId: string): Promise<void> {
+  const script = [
+    "set -e",
+    "if [ ! -f .docker/Dockerfile.pcc-runner ]; then",
+    "  echo 'Missing .docker/Dockerfile.pcc-runner for runner image build.' >&2",
+    "  exit 1",
+    "fi",
+    "docker build -t pcc-runner:latest -f .docker/Dockerfile.pcc-runner .docker",
+  ].join("\n");
+  try {
+    await remoteExec(projectId, `bash -lc ${shellEscape(script)}`, {
+      cwd: ".",
+      allowVmStatuses: PROVISIONING_ALLOWED_VM_STATUSES,
+    });
+  } catch (err) {
+    throw wrapRemoteError("Failed to build runner image on VM", err);
   }
 }
 
@@ -865,6 +890,7 @@ export async function provisionVM(config: VMConfig): Promise<ProjectVmRow> {
       repo_path: repoRoot,
     });
     await syncVmRepo(config.projectId, repoPath);
+    await buildVmRunnerImage(config.projectId);
     updateVm(config.projectId, {
       status: "installing_deps",
       last_activity_at: nowIso(),

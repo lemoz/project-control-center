@@ -43,6 +43,10 @@ const VM_ISOLATION_MODES = new Set(["vm", "vm+container"]);
 const REMOTE_RUN_WORKSPACES_ROOT = ".system/run-workspaces";
 const REMOTE_RUN_ARTIFACTS_ROOT = ".system/run-artifacts";
 const TEST_ARTIFACT_DIRS = ["test-results", "playwright-report"];
+const DEFAULT_CONTAINER_MEMORY = "4g";
+const DEFAULT_CONTAINER_CPUS = 2;
+const DEFAULT_CONTAINER_TIMEOUT_SEC = 3600;
+const DEFAULT_CONTAINER_IMAGE = "pcc-runner:latest";
 const DEFAULT_REMOTE_TEST_TIMEOUT_SEC = 900;
 const REMOTE_TEST_TIMEOUT_MS = Math.round(
   parseNumberEnv(
@@ -93,6 +97,7 @@ const RUNNER_PID_FILENAME = "runner.pid";
 const RUNNER_TERMINATE_TIMEOUT_MS = 4000;
 const RUNNER_KILL_TIMEOUT_MS = 2000;
 const RUNNER_KILL_POLL_MS = 200;
+const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const DENY_BASENAME_PREFIXES = [".env"];
 const DENY_BASENAMES = new Set([
@@ -116,6 +121,17 @@ function parseNumberEnv(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
+
+type ContainerResourceLimits = {
+  memory: string;
+  cpus: number;
+  timeoutSec: number;
+};
+
+type ContainerConfig = {
+  image: string;
+  resources: ContainerResourceLimits;
+};
 
 type VmStatusView = Pick<ProjectVmRow, "status">;
 
@@ -368,6 +384,55 @@ function createOutputCapture(maxLines: number) {
 
 function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function buildContainerConfig(): ContainerConfig {
+  return {
+    image: DEFAULT_CONTAINER_IMAGE,
+    resources: {
+      memory: DEFAULT_CONTAINER_MEMORY,
+      cpus: DEFAULT_CONTAINER_CPUS,
+      timeoutSec: DEFAULT_CONTAINER_TIMEOUT_SEC,
+    },
+  };
+}
+
+function resolveVmRepoRootLocal(): string {
+  const root = (process.env.CONTROL_CENTER_VM_REPO_ROOT || "/home/project/repo").trim();
+  if (!root.startsWith("/")) {
+    throw new Error(`VM repo root must be an absolute POSIX path. Got "${root}".`);
+  }
+  const normalized = path.posix.normalize(root);
+  if (normalized.includes("..")) {
+    throw new Error(`VM repo root must not include traversal segments. Got "${root}".`);
+  }
+  return normalized.replace(/\/+$/g, "") || "/";
+}
+
+function resolveVmAbsolutePath(remotePath: string): string {
+  if (path.posix.isAbsolute(remotePath)) {
+    return path.posix.normalize(remotePath);
+  }
+  const root = resolveVmRepoRootLocal();
+  const normalized = path.posix.normalize(remotePath);
+  if (normalized.includes("..")) {
+    throw new Error(`VM path must not include traversal segments. Got "${remotePath}".`);
+  }
+  const joined = path.posix.join(root, normalized);
+  if (!joined.startsWith(`${root}/`) && joined !== root) {
+    throw new Error(`VM path must stay within ${root}. Got "${remotePath}".`);
+  }
+  return joined;
+}
+
+function buildContainerName(runId: string, label: string): string {
+  const shortId = runId.slice(0, 8);
+  const safeLabel = label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const base = safeLabel ? `pcc-run-${shortId}-${safeLabel}` : `pcc-run-${shortId}`;
+  return base.slice(0, 63);
 }
 
 function formatTestOutput(output: string, truncated: boolean, maxLines: number): string {
@@ -969,19 +1034,13 @@ type CodexExecResult = {
   escalationResolved: EscalationRecord | null;
 };
 
-async function runCodexExec(params: {
-  cwd: string;
-  prompt: string;
+function buildCodexExecArgs(params: {
+  sandbox: "read-only" | "workspace-write";
   schemaPath: string;
   outputPath: string;
-  logPath: string;
-  sandbox: "read-only" | "workspace-write";
   skipGitRepoCheck?: boolean;
   model?: string;
-  cliPath?: string;
-  onEscalation?: (request: EscalationRequest) => Promise<EscalationRecord | null>;
-  log?: (line: string) => void;
-}): Promise<CodexExecResult> {
+}): string[] {
   const args: string[] = ["--ask-for-approval", "never", "exec"];
   const model = params.model?.trim();
   if (model) args.push("--model", model);
@@ -1003,6 +1062,29 @@ async function runCodexExec(params: {
   if (params.skipGitRepoCheck) args.push("--skip-git-repo-check");
 
   args.push("-");
+  return args;
+}
+
+async function runCodexExec(params: {
+  cwd: string;
+  prompt: string;
+  schemaPath: string;
+  outputPath: string;
+  logPath: string;
+  sandbox: "read-only" | "workspace-write";
+  skipGitRepoCheck?: boolean;
+  model?: string;
+  cliPath?: string;
+  onEscalation?: (request: EscalationRequest) => Promise<EscalationRecord | null>;
+  log?: (line: string) => void;
+}): Promise<CodexExecResult> {
+  const args = buildCodexExecArgs({
+    sandbox: params.sandbox,
+    schemaPath: params.schemaPath,
+    outputPath: params.outputPath,
+    skipGitRepoCheck: params.skipGitRepoCheck,
+    model: params.model,
+  });
 
   const cmd =
     params.cliPath?.trim() ||
@@ -1135,6 +1217,232 @@ async function runCodexExec(params: {
   }
 
   return { escalationRequested, escalationResolved };
+}
+
+type RemoteCodexExecParams = {
+  projectId: string;
+  runId: string;
+  workspacePath: string;
+  artifactsDir: string;
+  localPromptPath: string;
+  localSchemaPath: string;
+  localOutputPath: string;
+  localLogPath: string;
+  sandbox: "read-only" | "workspace-write";
+  skipGitRepoCheck?: boolean;
+  model?: string;
+  containerConfig: ContainerConfig;
+  containerName: string;
+  workingDir?: string;
+  log?: (line: string) => void;
+};
+
+const DOCKER_FALLBACK_PATTERNS = [
+  /Cannot connect to the Docker daemon/i,
+  /docker: command not found/i,
+  /Is the docker daemon running/i,
+  /permission denied/i,
+];
+
+class ContainerFallbackError extends Error {
+  reason: string;
+
+  constructor(reason: string) {
+    super(reason);
+    this.reason = reason;
+  }
+}
+
+function summarizeExecOutput(result: ExecResult): string {
+  const combined = `${result.stderr}\n${result.stdout}`.trim();
+  if (!combined) return "unknown error";
+  return combined.replace(/\s+/g, " ").slice(0, 200);
+}
+
+function buildCodexShellCommand(cmd: string, args: string[], promptPath: string): string {
+  const argString = args.map(shellEscape).join(" ");
+  return `cat ${shellEscape(promptPath)} | ${cmd} ${argString}`;
+}
+
+async function checkDockerRuntime(projectId: string): Promise<{ ok: boolean; detail?: string }> {
+  const result = await remoteExec(projectId, "docker info >/dev/null 2>&1", {
+    allowFailure: true,
+    timeout: 15000,
+  });
+  if (result.exitCode === 0) return { ok: true };
+  const detail = summarizeExecOutput(result);
+  return { ok: false, detail };
+}
+
+function shouldFallbackFromContainer(result: ExecResult): string | null {
+  if (result.exitCode === 125) {
+    return `docker run failed: ${summarizeExecOutput(result)}`;
+  }
+  const combined = `${result.stderr}\n${result.stdout}`;
+  if (DOCKER_FALLBACK_PATTERNS.some((pattern) => pattern.test(combined))) {
+    return `docker run failed: ${summarizeExecOutput(result)}`;
+  }
+  return null;
+}
+
+function isCodexMissingInContainer(result: ExecResult): boolean {
+  if (result.exitCode !== 127) return false;
+  const combined = `${result.stderr}\n${result.stdout}`;
+  return /codex: not found/i.test(combined) || /codex.*not found/i.test(combined);
+}
+
+async function runCodexExecInContainer(params: {
+  projectId: string;
+  containerName: string;
+  image: string;
+  workspacePath: string;
+  artifactsDir: string;
+  env: Record<string, string>;
+  resources: ContainerResourceLimits;
+  command: string;
+  workingDir?: string;
+}): Promise<ExecResult> {
+  const workspaceHostPath = resolveVmAbsolutePath(params.workspacePath);
+  const artifactsHostPath = resolveVmAbsolutePath(params.artifactsDir);
+  const workingDir = params.workingDir?.trim() || "/workspace";
+
+  const mountFlags = [
+    `-v ${shellEscape(`${workspaceHostPath}:/workspace`)}`,
+    `-v ${shellEscape(`${artifactsHostPath}:/artifacts`)}`,
+  ];
+
+  const envFlags = Object.entries(params.env)
+    .filter(([key]) => ENV_KEY_PATTERN.test(key))
+    .map(([key, value]) => `-e ${key}=${shellEscape(value)}`);
+
+  const resourceFlags: string[] = [];
+  if (params.resources.cpus > 0) resourceFlags.push(`--cpus=${params.resources.cpus}`);
+  if (params.resources.memory.trim())
+    resourceFlags.push(`--memory=${shellEscape(params.resources.memory.trim())}`);
+
+  const dockerCmd = [
+    "docker run --rm",
+    `--name ${shellEscape(params.containerName)}`,
+    "--network host",
+    ...resourceFlags,
+    ...mountFlags,
+    ...envFlags,
+    `-w ${shellEscape(workingDir)}`,
+    shellEscape(params.image),
+    "sh -lc",
+    shellEscape(params.command),
+  ].join(" ");
+
+  try {
+    return await remoteExec(params.projectId, dockerCmd, {
+      allowFailure: true,
+      timeout: Math.round(params.resources.timeoutSec * 1000),
+    });
+  } finally {
+    await remoteExec(params.projectId, `docker rm -f ${shellEscape(params.containerName)}`, {
+      allowFailure: true,
+    });
+  }
+}
+
+async function runCodexExecRemote(params: RemoteCodexExecParams): Promise<CodexExecResult> {
+  params.log?.(
+    `Running codex in container ${params.containerName} (${params.containerConfig.image})`
+  );
+  const promptName = path.posix.basename(params.localPromptPath);
+  const schemaName = path.posix.basename(params.localSchemaPath);
+  const outputName = path.posix.basename(params.localOutputPath);
+  const remotePromptPath = path.posix.join(params.artifactsDir, promptName);
+  const remoteSchemaPath = path.posix.join(params.artifactsDir, schemaName);
+  const remoteOutputPath = path.posix.join(params.artifactsDir, outputName);
+
+  await remoteExec(
+    params.projectId,
+    `mkdir -p ${shellEscape(params.artifactsDir)}`,
+    { cwd: "." }
+  );
+  await remoteUpload(params.projectId, params.localPromptPath, remotePromptPath);
+  await remoteUpload(params.projectId, params.localSchemaPath, remoteSchemaPath);
+
+  const env = {
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY || "",
+  };
+
+  ensureDir(path.dirname(params.localLogPath));
+  const logStream = fs.createWriteStream(params.localLogPath, { flags: "a" });
+  logStream.write(`[${nowIso()}] codex exec start (${params.sandbox})\n`);
+
+  let logFinalized = false;
+  const writeExecOutput = (result: ExecResult) => {
+    if (result.stdout) logStream.write(result.stdout);
+    if (result.stderr) logStream.write(result.stderr);
+  };
+  const finalizeLog = (exitCode: number, note?: string, result?: ExecResult) => {
+    if (logFinalized) return;
+    if (result) writeExecOutput(result);
+    if (note) logStream.write(`[${nowIso()}] ${note}\n`);
+    logStream.write(`[${nowIso()}] codex exec end exit=${exitCode}\n`);
+    logStream.end();
+    logFinalized = true;
+  };
+
+  try {
+    const dockerReady = await checkDockerRuntime(params.projectId);
+    if (!dockerReady.ok) {
+      const reason = dockerReady.detail
+        ? `docker unavailable: ${dockerReady.detail}`
+        : "docker unavailable";
+      finalizeLog(1, `container fallback: ${reason}`);
+      throw new ContainerFallbackError(reason);
+    }
+
+    const codexArgs = buildCodexExecArgs({
+      sandbox: params.sandbox,
+      schemaPath: `/artifacts/${schemaName}`,
+      outputPath: `/artifacts/${outputName}`,
+      skipGitRepoCheck: params.skipGitRepoCheck,
+      model: params.model,
+    });
+    const command = buildCodexShellCommand("codex", codexArgs, `/artifacts/${promptName}`);
+
+    const containerResult = await runCodexExecInContainer({
+      projectId: params.projectId,
+      containerName: params.containerName,
+      image: params.containerConfig.image,
+      workspacePath: params.workspacePath,
+      artifactsDir: params.artifactsDir,
+      env,
+      resources: params.containerConfig.resources,
+      command,
+      workingDir: params.workingDir,
+    });
+
+    if (isCodexMissingInContainer(containerResult)) {
+      finalizeLog(containerResult.exitCode, undefined, containerResult);
+      throw new Error("codex CLI missing inside container");
+    }
+
+    const fallbackReason = shouldFallbackFromContainer(containerResult);
+    if (fallbackReason) {
+      finalizeLog(containerResult.exitCode, `container fallback: ${fallbackReason}`, containerResult);
+      throw new ContainerFallbackError(fallbackReason);
+    }
+
+    finalizeLog(containerResult.exitCode, undefined, containerResult);
+
+    if (containerResult.exitCode !== 0) {
+      throw new Error(`codex exec failed (exit ${containerResult.exitCode})`);
+    }
+  } catch (err) {
+    if (!logFinalized) {
+      finalizeLog(1);
+    }
+    throw err;
+  }
+
+  await remoteDownload(params.projectId, remoteOutputPath, params.localOutputPath);
+
+  return { escalationRequested: false, escalationResolved: null };
 }
 
 function builderSchema(): object {
@@ -1782,6 +2090,28 @@ async function prepareRemoteRun(config: RemoteRunConfig, log: (line: string) => 
   );
 }
 
+async function syncRemoteWorkspaceFiles(
+  config: RemoteRunConfig,
+  localPath: string,
+  log: (line: string) => void
+) {
+  log(`Syncing worktree to VM workspace ${config.workspacePath}`);
+  await remoteUpload(config.projectId, localPath, config.workspacePath, {
+    allowDelete: true,
+  });
+}
+
+async function syncRemoteWorkspaceToLocal(
+  config: RemoteRunConfig,
+  localPath: string,
+  log: (line: string) => void
+) {
+  log(`Syncing VM workspace ${config.workspacePath} back to worktree`);
+  await remoteDownload(config.projectId, config.workspacePath, localPath, {
+    allowDelete: true,
+  });
+}
+
 async function cleanupRemoteRun(config: RemoteRunConfig, log: (line: string) => void) {
   log(`Cleaning up remote run workspace at ${config.workspacePath}`);
   await remoteExec(config.projectId, `rm -rf ${shellEscape(config.workspacePath)} ${shellEscape(config.artifactsPath)}`, {
@@ -1795,10 +2125,7 @@ async function syncRemoteWorkspace(
   localPath: string,
   log: (line: string) => void
 ) {
-  log(`Syncing worktree to VM workspace ${config.workspacePath}`);
-  await remoteUpload(config.projectId, localPath, config.workspacePath, {
-    allowDelete: true,
-  });
+  await syncRemoteWorkspaceFiles(config, localPath, log);
   log(`Installing dependencies in VM workspace...`);
   await remoteExec(config.projectId, "npm ci", {
     cwd: config.workspacePath,
@@ -1979,6 +2306,9 @@ export async function runRun(runId: string) {
   let runLog: fs.WriteStream | null = null;
   let remoteConfig: RemoteRunConfig | null = null;
   let remoteFallbackReason: string | null = null;
+  let containerConfig: ContainerConfig | null = null;
+  let containerEnabled = false;
+  let containerFallbackReason: string | null = null;
   const log = (line: string) => {
     if (!runLog) return;
     runLog.write(`[${nowIso()}] ${line}\n`);
@@ -2077,8 +2407,12 @@ export async function runRun(runId: string) {
     ensureNodeModulesSymlink(repoPath, worktreePath);
 
     const isolationMode = project.isolation_mode || "local";
-    let vm = getProjectVm(project.id);
     const wantsVmIsolation = VM_ISOLATION_MODES.has(isolationMode);
+    const wantsContainerIsolation = wantsVmIsolation;
+    if (wantsContainerIsolation) {
+      containerConfig = buildContainerConfig();
+    }
+    let vm = getProjectVm(project.id);
     let fallbackToLocal = wantsVmIsolation && shouldFallbackToLocalVm(vm);
     if (wantsVmIsolation) {
       if (!vm) {
@@ -2120,6 +2454,23 @@ export async function runRun(runId: string) {
       }
     }
 
+    containerEnabled = wantsContainerIsolation && !!remoteConfig;
+    const executionPath = path.join(runDir, "execution.json");
+    const updateExecutionMetadata = (patch: Record<string, unknown>) => {
+      const current = readJsonIfExists<Record<string, unknown>>(executionPath) ?? {};
+      writeJson(executionPath, { ...current, ...patch });
+    };
+    const recordContainerFallback = (reason: string) => {
+      if (containerFallbackReason) return;
+      containerFallbackReason = reason;
+      containerEnabled = false;
+      log(`Container runtime unavailable; falling back to local execution: ${reason}`);
+      updateExecutionMetadata({
+        container_execution_mode: "local",
+        container_fallback_reason: reason,
+      });
+    };
+
     const requiresRemote = wantsVmIsolation && !fallbackToLocal;
     if (remoteFallbackReason && wantsVmIsolation) {
       if (requiresRemote) {
@@ -2129,13 +2480,24 @@ export async function runRun(runId: string) {
       }
     }
 
-    writeJson(path.join(runDir, "execution.json"), {
+    const containerExecutionMode = wantsContainerIsolation
+      ? containerEnabled
+        ? "container"
+        : requiresRemote
+          ? "blocked"
+          : "local"
+      : "disabled";
+    writeJson(executionPath, {
       requested_isolation_mode: isolationMode,
       vm_status: vm?.status ?? null,
       execution_mode: remoteConfig ? "remote" : requiresRemote ? "blocked" : "local",
       fallback_reason: remoteFallbackReason,
       remote_workspace_path: remoteConfig?.workspacePath ?? null,
       remote_artifacts_path: remoteConfig?.artifactsPath ?? null,
+      container_requested: wantsContainerIsolation,
+      container_execution_mode: containerExecutionMode,
+      container_image: containerConfig?.image ?? null,
+      container_fallback_reason: containerFallbackReason,
       recorded_at: nowIso(),
     });
 
@@ -2337,9 +2699,8 @@ export async function runRun(runId: string) {
         });
         fs.writeFileSync(path.join(builderDir, "prompt.txt"), builderPrompt, "utf8");
 
-        let builderExecResult: CodexExecResult;
-        try {
-          builderExecResult = await runCodexExec({
+        const runLocalBuilder = async (): Promise<CodexExecResult> =>
+          runCodexExec({
             cwd: worktreePath,
             prompt: builderPrompt,
             schemaPath: builderSchemaPath,
@@ -2372,6 +2733,69 @@ export async function runRun(runId: string) {
             },
             log,
           });
+
+        let builderExecResult: CodexExecResult;
+        try {
+          if (remoteConfig && containerConfig && containerEnabled) {
+            try {
+              await syncRemoteWorkspaceFiles(remoteConfig, worktreePath, log);
+            } catch (err) {
+              const message = `remote workspace sync failed: ${String(err)}`;
+              log(message);
+              updateRun(runId, {
+                status: "failed",
+                error: message,
+                finished_at: nowIso(),
+              });
+              return;
+            }
+            let ranRemote = false;
+            try {
+              builderExecResult = await runCodexExecRemote({
+                projectId: remoteConfig.projectId,
+                runId,
+                workspacePath: remoteConfig.workspacePath,
+                artifactsDir: path.posix.join(
+                  remoteConfig.artifactsPath,
+                  "builder",
+                  `iter-${iteration}`
+                ),
+                localPromptPath: path.join(builderDir, "prompt.txt"),
+                localSchemaPath: builderSchemaPath,
+                localOutputPath: builderOutputPath,
+                localLogPath: builderLogPath,
+                sandbox: "workspace-write",
+                model: runnerSettings.builder.model,
+                containerConfig,
+                containerName: buildContainerName(runId, `builder-${iteration}`),
+                log,
+              });
+              ranRemote = true;
+            } catch (err) {
+              if (err instanceof ContainerFallbackError) {
+                recordContainerFallback(err.reason);
+                builderExecResult = await runLocalBuilder();
+              } else {
+                throw err;
+              }
+            }
+            if (ranRemote) {
+              try {
+                await syncRemoteWorkspaceToLocal(remoteConfig, worktreePath, log);
+              } catch (err) {
+                const message = `remote workspace download failed: ${String(err)}`;
+                log(message);
+                updateRun(runId, {
+                  status: "failed",
+                  error: message,
+                  finished_at: nowIso(),
+                });
+                return;
+              }
+            }
+          } else {
+            builderExecResult = await runLocalBuilder();
+          }
         } catch (err) {
           log(`Builder failed: ${String(err)}`);
           updateRun(runId, {
@@ -2593,9 +3017,8 @@ export async function runRun(runId: string) {
 
       const reviewerOutputPath = path.join(reviewerDir, "verdict.json");
       const reviewerLogPath = path.join(reviewerDir, "codex.log");
-
-      try {
-        await runCodexExec({
+      const runLocalReviewer = () =>
+        runCodexExec({
           cwd: reviewerDir,
           prompt: reviewerPrompt,
           schemaPath: reviewerSchemaPath,
@@ -2606,6 +3029,60 @@ export async function runRun(runId: string) {
           model: runnerSettings.reviewer.model,
           cliPath: runnerSettings.reviewer.cliPath,
         });
+
+      try {
+        if (remoteConfig && containerConfig && containerEnabled) {
+          const remoteReviewerDir = path.posix.join(
+            remoteConfig.artifactsPath,
+            "reviewer",
+            `iter-${iteration}`
+          );
+          try {
+            await remoteUpload(
+              remoteConfig.projectId,
+              reviewerDir,
+              remoteReviewerDir,
+              { allowDelete: true }
+            );
+          } catch (err) {
+            const message = `remote reviewer sync failed: ${String(err)}`;
+            log(message);
+            updateRun(runId, {
+              status: "failed",
+              error: message,
+              finished_at: nowIso(),
+            });
+            return;
+          }
+          try {
+            await runCodexExecRemote({
+              projectId: remoteConfig.projectId,
+              runId,
+              workspacePath: remoteConfig.workspacePath,
+              artifactsDir: remoteReviewerDir,
+              localPromptPath: path.join(reviewerDir, "prompt.txt"),
+              localSchemaPath: reviewerSchemaPath,
+              localOutputPath: reviewerOutputPath,
+              localLogPath: reviewerLogPath,
+              sandbox: "read-only",
+              skipGitRepoCheck: true,
+              model: runnerSettings.reviewer.model,
+              containerConfig,
+              containerName: buildContainerName(runId, `reviewer-${iteration}`),
+              workingDir: "/artifacts",
+              log,
+            });
+          } catch (err) {
+            if (err instanceof ContainerFallbackError) {
+              recordContainerFallback(err.reason);
+              await runLocalReviewer();
+            } else {
+              throw err;
+            }
+          }
+        } else {
+          await runLocalReviewer();
+        }
       } catch (err) {
         log(`Reviewer failed: ${String(err)}`);
         updateRun(runId, {
@@ -2825,8 +3302,8 @@ export async function runRun(runId: string) {
 
       const mergeBuilderOutputPath = path.join(mergeDir, "result.json");
       const mergeBuilderLogPath = path.join(mergeDir, "codex.log");
-      try {
-        await runCodexExec({
+      const runLocalMergeBuilder = () =>
+        runCodexExec({
           cwd: worktreePath,
           prompt: conflictPrompt,
           schemaPath: builderSchemaPath,
@@ -2836,6 +3313,63 @@ export async function runRun(runId: string) {
           model: runnerSettings.builder.model,
           cliPath: runnerSettings.builder.cliPath,
         });
+      try {
+        if (remoteConfig && containerConfig && containerEnabled) {
+          try {
+            await syncRemoteWorkspaceFiles(remoteConfig, worktreePath, log);
+          } catch (err) {
+            const message = `remote workspace sync failed: ${String(err)}`;
+            log(message);
+            finishMergeConflict(message, conflictDetails.conflictingRunId, conflictFiles);
+            return {
+              ok: false,
+              conflictRunId: conflictDetails.conflictingRunId,
+              conflictFiles,
+            };
+          }
+          let ranRemote = false;
+          try {
+            await runCodexExecRemote({
+              projectId: remoteConfig.projectId,
+              runId,
+              workspacePath: remoteConfig.workspacePath,
+              artifactsDir: path.posix.join(remoteConfig.artifactsPath, "merge", "builder"),
+              localPromptPath: path.join(mergeDir, "prompt.txt"),
+              localSchemaPath: builderSchemaPath,
+              localOutputPath: mergeBuilderOutputPath,
+              localLogPath: mergeBuilderLogPath,
+              sandbox: "workspace-write",
+              model: runnerSettings.builder.model,
+              containerConfig,
+              containerName: buildContainerName(runId, "merge-builder"),
+              log,
+            });
+            ranRemote = true;
+          } catch (err) {
+            if (err instanceof ContainerFallbackError) {
+              recordContainerFallback(err.reason);
+              await runLocalMergeBuilder();
+            } else {
+              throw err;
+            }
+          }
+          if (ranRemote) {
+            try {
+              await syncRemoteWorkspaceToLocal(remoteConfig, worktreePath, log);
+            } catch (err) {
+              const message = `remote workspace download failed: ${String(err)}`;
+              log(message);
+              finishMergeConflict(message, conflictDetails.conflictingRunId, conflictFiles);
+              return {
+                ok: false,
+                conflictRunId: conflictDetails.conflictingRunId,
+                conflictFiles,
+              };
+            }
+          }
+        } else {
+          await runLocalMergeBuilder();
+        }
       } catch (err) {
         const message = `merge builder failed: ${String(err)}`;
         log(`Merge builder failed: ${String(err)}`);
@@ -2935,8 +3469,8 @@ export async function runRun(runId: string) {
 
       const mergeReviewerOutputPath = path.join(mergeReviewerDir, "verdict.json");
       const mergeReviewerLogPath = path.join(mergeReviewerDir, "codex.log");
-      try {
-        await runCodexExec({
+      const runLocalMergeReviewer = () =>
+        runCodexExec({
           cwd: mergeReviewerDir,
           prompt: mergeReviewerPrompt,
           schemaPath: reviewerSchemaPath,
@@ -2947,6 +3481,59 @@ export async function runRun(runId: string) {
           model: runnerSettings.reviewer.model,
           cliPath: runnerSettings.reviewer.cliPath,
         });
+      try {
+        if (remoteConfig && containerConfig && containerEnabled) {
+          const remoteMergeReviewerDir = path.posix.join(
+            remoteConfig.artifactsPath,
+            "merge",
+            "reviewer"
+          );
+          try {
+            await remoteUpload(
+              remoteConfig.projectId,
+              mergeReviewerDir,
+              remoteMergeReviewerDir,
+              { allowDelete: true }
+            );
+          } catch (err) {
+            const message = `remote merge reviewer sync failed: ${String(err)}`;
+            log(message);
+            finishMergeConflict(message, conflictDetails.conflictingRunId, conflictFiles);
+            return {
+              ok: false,
+              conflictRunId: conflictDetails.conflictingRunId,
+              conflictFiles,
+            };
+          }
+          try {
+            await runCodexExecRemote({
+              projectId: remoteConfig.projectId,
+              runId,
+              workspacePath: remoteConfig.workspacePath,
+              artifactsDir: remoteMergeReviewerDir,
+              localPromptPath: path.join(mergeReviewerDir, "prompt.txt"),
+              localSchemaPath: reviewerSchemaPath,
+              localOutputPath: mergeReviewerOutputPath,
+              localLogPath: mergeReviewerLogPath,
+              sandbox: "read-only",
+              skipGitRepoCheck: true,
+              model: runnerSettings.reviewer.model,
+              containerConfig,
+              containerName: buildContainerName(runId, "merge-reviewer"),
+              workingDir: "/artifacts",
+              log,
+            });
+          } catch (err) {
+            if (err instanceof ContainerFallbackError) {
+              recordContainerFallback(err.reason);
+              await runLocalMergeReviewer();
+            } else {
+              throw err;
+            }
+          }
+        } else {
+          await runLocalMergeReviewer();
+        }
       } catch (err) {
         const message = `merge reviewer failed: ${String(err)}`;
         log(`Merge reviewer failed: ${String(err)}`);

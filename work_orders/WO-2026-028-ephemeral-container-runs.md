@@ -28,9 +28,9 @@ tags:
   - isolation
   - containers
 estimate_hours: 6
-status: ready
+status: you_review
 created_at: 2026-01-06
-updated_at: 2026-01-08
+updated_at: 2026-01-11
 depends_on:
   - WO-2025-004
   - WO-2026-027
