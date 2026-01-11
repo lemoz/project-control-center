@@ -450,7 +450,7 @@ app.put("/repos/:id/constitution", (req, res) => {
 });
 
 const VM_ISOLATION_MODES = new Set(["local", "vm", "vm+container"]);
-const VM_SIZES = new Set(["small", "medium", "large", "xlarge"]);
+const VM_SIZES = new Set(["medium", "large", "xlarge"]);
 
 function buildVmResponse(project: ProjectRow, vm: ProjectVmRow | null) {
   const fallbackVm = {
@@ -553,7 +553,7 @@ app.patch("/repos/:id/vm", (req, res) => {
   }
   if (vm_size !== undefined && (typeof vm_size !== "string" || !VM_SIZES.has(vm_size))) {
     return res.status(400).json({
-      error: "`vm_size` must be one of small, medium, large, xlarge",
+      error: "`vm_size` must be one of medium, large, xlarge",
     });
   }
 
@@ -616,7 +616,7 @@ app.put("/repos/:id/vm/resize", async (req, res) => {
   const requestedSize = req.body?.vm_size ?? req.body?.size ?? project.vm_size;
   if (typeof requestedSize !== "string" || !VM_SIZES.has(requestedSize)) {
     return res.status(400).json({
-      error: "`vm_size` must be one of small, medium, large, xlarge",
+      error: "`vm_size` must be one of medium, large, xlarge",
     });
   }
 

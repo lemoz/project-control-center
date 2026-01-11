@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 type IsolationMode = "local" | "vm" | "vm+container";
-type VmSize = "small" | "medium" | "large" | "xlarge";
+type VmSize = "medium" | "large" | "xlarge";
 
 type VmResponse = {
   project: {
@@ -280,7 +280,6 @@ export function VMPanel({ repoId }: { repoId: string }) {
                 }
                 disabled={saving}
               >
-                <option value="small">Small</option>
                 <option value="medium">Medium</option>
                 <option value="large">Large</option>
                 <option value="xlarge">XLarge</option>

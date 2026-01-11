@@ -77,7 +77,6 @@ export class VmManagerError extends Error {
 }
 
 const MACHINE_TYPES: Record<ProjectVmSize, string> = {
-  small: "e2-small",
   medium: "e2-medium",
   large: "e2-standard-4",
   xlarge: "e2-standard-8",
