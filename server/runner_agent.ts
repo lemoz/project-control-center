@@ -222,7 +222,9 @@ function isDeniedRelPath(relPath: string): boolean {
 }
 
 function listGitTrackedFiles(repoPath: string): string[] {
-  const res = spawnSync("git", ["ls-files", "-z"], {
+  // Include --others to capture new untracked files (e.g., created by builder)
+  // --exclude-standard respects .gitignore
+  const res = spawnSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
     cwd: repoPath,
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "buffer",
