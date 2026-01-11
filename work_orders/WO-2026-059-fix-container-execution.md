@@ -25,9 +25,10 @@ tags:
   - infrastructure
   - docker
 estimate_hours: 2
-status: ready
+status: done
 created_at: 2026-01-11
 updated_at: 2026-01-11
+completed_at: 2026-01-11
 depends_on: []
 era: v1
 ---
@@ -88,3 +89,23 @@ The container execution fails with "unknown error" and falls back to local Codex
 - `server/runner_agent.ts` - Container execution logic
 - `Dockerfile` or `docker/` - Container image definition (if exists)
 - Any container-related scripts in `scripts/`
+
+## Resolution
+
+**Root causes identified and fixed:**
+
+1. **Docker socket permissions** - User `cdossman` was not in the `docker` group on the VM
+   - Fix: `sudo usermod -aG docker cdossman`
+
+2. **Missing pcc-runner image** - The Docker image didn't exist on the VM
+   - Fix: Built image on VM with `docker build -t pcc-runner:latest`
+
+3. **Wrong package name in Dockerfile** - `.docker/Dockerfile.pcc-runner` referenced `@anthropic-ai/codex-cli` which doesn't exist
+   - Fix: Changed to `@openai/codex` (the correct package)
+
+**Verification:**
+```bash
+# On VM
+docker run --rm pcc-runner:latest codex --version
+# Output: codex-cli 0.80.0
+```
