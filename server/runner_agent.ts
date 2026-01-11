@@ -1141,7 +1141,8 @@ function builderSchema(): object {
         },
       },
     },
-    required: ["summary", "risks", "tests", "changes"],
+    // Note: OpenAI requires all properties in required array when additionalProperties: false
+    required: ["summary", "risks", "escalation", "tests", "changes"],
   };
 }
 
@@ -1276,18 +1277,23 @@ function buildBuilderPrompt(params: {
     `- Then wait for ${ESCALATION_RESOLUTION_RELATIVE_PATH} to appear.\n` +
     `- After resume, read the JSON file and use its "resolution" values to continue from where you paused.\n` +
     `- Do not exit while waiting for input.\n\n`;
+  // Note: We use markers with spaces (< < < and > > >) in the example to avoid
+  // the escalation regex matching the example itself from the prompt in the log.
   const escalationFormatBlock =
     `## Escalation Format\n\n` +
     `If you are genuinely stuck after exhausting reasonable options, include the following block inside the "escalation" field of your JSON output:\n\n` +
-    `<<<NEED_HELP>>>\n` +
+    `\`\`\`\n` +
+    `< < <NEED_HELP> > >\n` +
     `what_i_tried: |\n` +
-    `  1. ...\n` +
+    `  1. Describe what you tried\n` +
     `what_i_need: |\n` +
-    `  ...\n` +
+    `  Describe what you need from the user\n` +
     `inputs:\n` +
-    `  - key: example_key\n` +
-    `    label: Example Label\n` +
-    `<<<END_HELP>>>\n\n` +
+    `  - key: some_key\n` +
+    `    label: Human-readable label\n` +
+    `< < <END_HELP> > >\n` +
+    `\`\`\`\n\n` +
+    `Replace the spaces in the markers: \`< < <NEED_HELP> > >\` becomes \`<<<NEED_HELP>>>\` (no spaces).\n\n` +
     `When escalating, still output valid JSON and keep summary/risks/tests populated (use empty arrays if needed).\n\n`;
   return `You are the Builder agent.\n\n` +
     constitutionBlock +
