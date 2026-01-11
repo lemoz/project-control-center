@@ -33,7 +33,7 @@ tags:
   - policy
   - scheduling
 estimate_hours: 6
-status: backlog
+status: deprecated
 created_at: 2026-01-07
 updated_at: 2026-01-11
 depends_on:
@@ -41,6 +41,7 @@ depends_on:
   - WO-2026-020
   - WO-2026-028
 era: v2
+deprecated_reason: Superseded by Agent Shift system (WO-2026-060 through 065). Queue-processor approach replaced by goal-directed agent model.
 ---
 
 ## Implementation Plan
