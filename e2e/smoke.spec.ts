@@ -1,29 +1,10 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import Database from "better-sqlite3";
 
 const e2eDir = path.dirname(fileURLToPath(import.meta.url));
-
-/**
- * Ensures test repos are in a clean state (beta exists, beta-moved doesn't).
- * Call this before tests that might leave dirty state.
- */
-function ensureCleanRepoState() {
-  const tmpDir = path.join(e2eDir, ".tmp");
-  const betaRepoPath = path.join(tmpDir, "repos", "beta");
-  const movedRepoPath = path.join(tmpDir, "repos", "beta-moved");
-
-  // If beta-moved exists but beta doesn't, restore it
-  if (fs.existsSync(movedRepoPath) && !fs.existsSync(betaRepoPath)) {
-    fs.renameSync(movedRepoPath, betaRepoPath);
-  }
-  // If both exist (shouldn't happen), remove beta-moved
-  if (fs.existsSync(movedRepoPath) && fs.existsSync(betaRepoPath)) {
-    fs.rmSync(movedRepoPath, { recursive: true, force: true });
-  }
-}
 
 async function repoIdFromCard(card: import("@playwright/test").Locator): Promise<string> {
   const href = await card.locator("a.stretchedLink").getAttribute("href");
@@ -60,15 +41,6 @@ function trackPageErrors(page: import("@playwright/test").Page) {
 }
 
 test.describe("Project Control Center smoke", () => {
-  // Ensure clean repo state before/after each test to prevent pollution from failed tests
-  test.beforeEach(() => {
-    ensureCleanRepoState();
-  });
-
-  test.afterEach(() => {
-    ensureCleanRepoState();
-  });
-
   test("Server health + repo scan endpoints respond", async ({ request }) => {
     const apiPort = Number(process.env.E2E_API_PORT || process.env.CONTROL_CENTER_PORT || 4011);
     const apiBase = `http://127.0.0.1:${apiPort}`;
@@ -93,9 +65,8 @@ test.describe("Project Control Center smoke", () => {
           .map((r) => (typeof r?.name === "string" ? r.name : null))
           .filter((name): name is string => typeof name === "string")
       : [];
-    // Accept either "beta" or "beta-moved" since the repo move test may leave transient state
     expect(repoNames).toContain("alpha");
-    expect(repoNames.some((n) => n === "beta" || n === "beta-moved")).toBe(true);
+    expect(repoNames).toContain("beta");
   });
 
   test("Portfolio loads without crashing", async ({ page }) => {
