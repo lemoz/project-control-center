@@ -23,13 +23,12 @@ tags:
   - infrastructure
   - stability
 estimate_hours: 2
-status: ready
+status: you_review
 created_at: 2026-01-10
-updated_at: 2026-01-10
+updated_at: 2026-01-11
 depends_on: []
 era: v1
 ---
-
 ## Problem
 
 E2e tests modify shared state (filesystem, database) and can pollute each other:

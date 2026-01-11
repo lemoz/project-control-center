@@ -125,6 +125,7 @@ npm test
 ```
 By default, tests run the API on `http://127.0.0.1:4011` and the built UI on `http://127.0.0.1:3012` (+ an offline-mode UI on `:3013`).  
 Override with `E2E_API_PORT`, `E2E_WEB_PORT`, and `E2E_OFFLINE_WEB_PORT` if those ports are in use.
+Isolation patterns and fixtures are documented in `docs/e2e_testing.md`.
 
 ## Roadmap
 
