@@ -393,7 +393,7 @@ async function installVmDependencies(projectId: string): Promise<void> {
 
 /**
  * Copy local ~/.codex/auth.json to VM for codex CLI authentication.
- * This enables container-based codex execution with gpt-5.2-codex-max model.
+ * This enables container-based codex execution with gpt-5.2-codex model.
  * If local auth.json doesn't exist, logs a warning but doesn't fail provisioning.
  */
 async function syncCodexAuth(projectId: string): Promise<void> {

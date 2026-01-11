@@ -1068,13 +1068,18 @@ function buildCodexExecArgs(params: {
   outputPath: string;
   skipGitRepoCheck?: boolean;
   model?: string;
+  reasoningEffort?: string;
 }): string[] {
   const args: string[] = ["--ask-for-approval", "never", "exec"];
-  const model = params.model?.trim();
-  if (model) args.push("--model", model);
+  const model = params.model?.trim() || "gpt-5.2-codex";
+  args.push("--model", model);
 
   // Enable full network access for agent runs (will be properly isolated when moved to VMs)
   args.push("-c", 'sandbox_permissions=["network-full-access"]');
+
+  // Set reasoning effort level (xhigh for maximum thinking)
+  const reasoningEffort = params.reasoningEffort?.trim() || "xhigh";
+  args.push("-c", `model_reasoning_effort=${reasoningEffort}`);
 
   args.push(
     "--sandbox",
