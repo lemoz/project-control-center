@@ -1780,6 +1780,11 @@ async function syncRemoteWorkspace(
     cwd: config.workspacePath,
     allowAbsolute: true,
   });
+  log(`Installing Playwright browsers...`);
+  await remoteExec(config.projectId, "npx playwright install chromium", {
+    cwd: config.workspacePath,
+    allowAbsolute: true,
+  });
 }
 
 async function runRemoteTests(params: {
