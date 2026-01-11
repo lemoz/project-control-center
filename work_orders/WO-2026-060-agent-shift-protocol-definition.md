@@ -4,7 +4,7 @@ title: Agent Shift Protocol Definition
 goal: Define the operating model for how autonomous agents take "shifts" to advance projects toward their goals.
 context:
   - .control.yml (success_criteria, success_metrics)
-  - "Projects can self-determine and self-attain their own success"
+  - Projects can self-determine and self-attain their own success
   - Current WO system is task-queue based, not goal-directed
   - Constitution system provides learning/preferences
 acceptance_criteria:
@@ -28,13 +28,12 @@ tags:
   - foundation
   - documentation
 estimate_hours: 2
-status: ready
+status: you_review
 created_at: 2026-01-11
 updated_at: 2026-01-11
 depends_on: []
 era: v2
 ---
-
 ## Overview
 
 An Agent Shift is the operating model for autonomous project progress. Unlike task automation (execute predefined queue), shifts are goal-directed (understand goals, decide what helps, do it).
