@@ -896,6 +896,30 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const SYNC_RETRY_BACKOFF_MS = [1000, 3000, 10000];
+const SYNC_MAX_RETRIES = 3;
+
+async function withRetry<T>(
+  operation: () => Promise<T>,
+  name: string,
+  log: (line: string) => void
+): Promise<T> {
+  for (let attempt = 1; attempt <= SYNC_MAX_RETRIES; attempt++) {
+    try {
+      return await operation();
+    } catch (err) {
+      if (attempt === SYNC_MAX_RETRIES) {
+        log(`${name} failed after ${SYNC_MAX_RETRIES} attempts, giving up`);
+        throw err;
+      }
+      const backoffMs = SYNC_RETRY_BACKOFF_MS[attempt - 1];
+      log(`${name} failed (attempt ${attempt}/${SYNC_MAX_RETRIES}), retrying in ${backoffMs}ms...`);
+      await sleep(backoffMs);
+    }
+  }
+  throw new Error(`${name} failed after ${SYNC_MAX_RETRIES} attempts`);
+}
+
 type EscalationInput = { key: string; label: string };
 type EscalationRequest = {
   what_i_tried: string;
@@ -2173,9 +2197,13 @@ async function syncRemoteWorkspaceFiles(
   log: (line: string) => void
 ) {
   log(`Syncing worktree to VM workspace ${config.workspacePath}`);
-  await remoteUpload(config.projectId, localPath, config.workspacePath, {
-    allowDelete: true,
-  });
+  await withRetry(
+    () => remoteUpload(config.projectId, localPath, config.workspacePath, {
+      allowDelete: true,
+    }),
+    "remote upload",
+    log
+  );
 }
 
 async function syncRemoteWorkspaceToLocal(
@@ -2184,9 +2212,13 @@ async function syncRemoteWorkspaceToLocal(
   log: (line: string) => void
 ) {
   log(`Syncing VM workspace ${config.workspacePath} back to worktree`);
-  await remoteDownload(config.projectId, config.workspacePath, localPath, {
-    allowDelete: true,
-  });
+  await withRetry(
+    () => remoteDownload(config.projectId, config.workspacePath, localPath, {
+      allowDelete: true,
+    }),
+    "remote download",
+    log
+  );
 }
 
 async function cleanupRemoteRun(config: RemoteRunConfig, log: (line: string) => void) {
