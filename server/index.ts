@@ -84,6 +84,7 @@ import {
 import { RemoteExecError } from "./remote_exec.js";
 import { readControlMetadata } from "./sidecar.js";
 import { buildShiftContext } from "./shift_context.js";
+import { buildGlobalContextResponse } from "./global_context.js";
 import {
   enqueueChatTurn,
   enqueueChatTurnForThread,
@@ -568,6 +569,11 @@ function parseAbandonShiftInput(
   const trimmed = record.reason.trim();
   return { ok: true, reason: trimmed ? trimmed : null };
 }
+
+app.get("/global/context", (_req, res) => {
+  const response = buildGlobalContextResponse();
+  return res.json(response);
+});
 
 app.get("/projects/:id/shift-context", (req, res) => {
   const context = buildShiftContext(req.params.id);
