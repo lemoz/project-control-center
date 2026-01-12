@@ -107,6 +107,21 @@ export type WorkOrderDepRow = {
   created_at: string;
 };
 
+export type ShiftStatus = "active" | "completed" | "expired" | "failed";
+
+export type ShiftRow = {
+  id: string;
+  project_id: string;
+  status: ShiftStatus;
+  agent_type: string | null;
+  agent_id: string | null;
+  started_at: string;
+  completed_at: string | null;
+  expires_at: string | null;
+  handoff_id: string | null;
+  error: string | null;
+};
+
 export type ShiftHandoffDecision = {
   decision: string;
   rationale: string;
@@ -285,6 +300,24 @@ function initSchema(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_shift_handoffs_project_created
       ON shift_handoffs(project_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS shifts (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      agent_type TEXT,
+      agent_id TEXT,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      expires_at TEXT,
+      handoff_id TEXT,
+      error TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (handoff_id) REFERENCES shift_handoffs(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_shifts_project_status
+      ON shifts(project_id, status);
 
     CREATE TABLE IF NOT EXISTS chat_threads (
       id TEXT PRIMARY KEY,
@@ -1076,6 +1109,157 @@ export function listAllWorkOrderDeps(projectId: string): WorkOrderDepRow[] {
   return database
     .prepare("SELECT * FROM work_order_deps WHERE project_id = ?")
     .all(projectId) as WorkOrderDepRow[];
+}
+
+const DEFAULT_SHIFT_TIMEOUT_MINUTES = 120;
+
+type StartShiftResult =
+  | { ok: true; shift: ShiftRow }
+  | { ok: false; activeShift: ShiftRow };
+
+function normalizeOptionalString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function normalizeTimeoutMinutes(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_SHIFT_TIMEOUT_MINUTES;
+  }
+  const minutes = Math.trunc(value);
+  return minutes > 0 ? minutes : DEFAULT_SHIFT_TIMEOUT_MINUTES;
+}
+
+function expireStaleShiftsWithDatabase(
+  database: Database.Database,
+  options: { projectId?: string | null; now: Date }
+): number {
+  const nowIso = options.now.toISOString();
+  const params: Array<string> = [nowIso, nowIso];
+  let sql = `UPDATE shifts
+             SET status = 'expired',
+                 completed_at = COALESCE(completed_at, ?),
+                 error = COALESCE(error, 'Shift expired')
+             WHERE status = 'active'
+               AND expires_at IS NOT NULL
+               AND expires_at < ?`;
+  if (options.projectId) {
+    sql += " AND project_id = ?";
+    params.push(options.projectId);
+  }
+  const result = database.prepare(sql).run(...params);
+  return result.changes;
+}
+
+export function expireStaleShifts(projectId?: string): number {
+  const database = getDb();
+  return expireStaleShiftsWithDatabase(database, { projectId, now: new Date() });
+}
+
+export function startShift(params: {
+  projectId: string;
+  agentType?: string | null;
+  agentId?: string | null;
+  timeoutMinutes?: number | null;
+}): StartShiftResult {
+  const database = getDb();
+  const now = new Date();
+  const agentType = normalizeOptionalString(params.agentType);
+  const agentId = normalizeOptionalString(params.agentId);
+  const timeoutMinutes = normalizeTimeoutMinutes(params.timeoutMinutes);
+  const startedAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + timeoutMinutes * 60_000).toISOString();
+
+  const tx = database.transaction(() => {
+    expireStaleShiftsWithDatabase(database, { projectId: params.projectId, now });
+    const active = database
+      .prepare(
+        "SELECT * FROM shifts WHERE project_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1"
+      )
+      .get(params.projectId) as ShiftRow | undefined;
+    if (active) return { ok: false, activeShift: active } as const;
+
+    const id = crypto.randomUUID();
+    const row: ShiftRow = {
+      id,
+      project_id: params.projectId,
+      status: "active",
+      agent_type: agentType,
+      agent_id: agentId,
+      started_at: startedAt,
+      completed_at: null,
+      expires_at: expiresAt,
+      handoff_id: null,
+      error: null,
+    };
+
+    database
+      .prepare(
+        `INSERT INTO shifts
+          (id, project_id, status, agent_type, agent_id, started_at, completed_at, expires_at, handoff_id, error)
+         VALUES
+          (@id, @project_id, @status, @agent_type, @agent_id, @started_at, @completed_at, @expires_at, @handoff_id, @error)`
+      )
+      .run(row);
+    return { ok: true, shift: row } as const;
+  });
+
+  return tx();
+}
+
+export function getActiveShift(projectId: string): ShiftRow | null {
+  const database = getDb();
+  expireStaleShiftsWithDatabase(database, { projectId, now: new Date() });
+  const row = database
+    .prepare(
+      "SELECT * FROM shifts WHERE project_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1"
+    )
+    .get(projectId) as ShiftRow | undefined;
+  return row || null;
+}
+
+export function listShifts(projectId: string, limit = 10): ShiftRow[] {
+  const database = getDb();
+  expireStaleShiftsWithDatabase(database, { projectId, now: new Date() });
+  const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+  return database
+    .prepare(
+      "SELECT * FROM shifts WHERE project_id = ? ORDER BY started_at DESC LIMIT ?"
+    )
+    .all(projectId, safeLimit) as ShiftRow[];
+}
+
+export function getShiftByProjectId(projectId: string, shiftId: string): ShiftRow | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM shifts WHERE id = ? AND project_id = ? LIMIT 1")
+    .get(shiftId, projectId) as ShiftRow | undefined;
+  return row || null;
+}
+
+export function updateShift(
+  id: string,
+  patch: Partial<
+    Pick<ShiftRow, "status" | "completed_at" | "expires_at" | "handoff_id" | "error">
+  >
+): boolean {
+  const database = getDb();
+  const fields: Array<{ key: keyof typeof patch; column: string }> = [
+    { key: "status", column: "status" },
+    { key: "completed_at", column: "completed_at" },
+    { key: "expires_at", column: "expires_at" },
+    { key: "handoff_id", column: "handoff_id" },
+    { key: "error", column: "error" },
+  ];
+  const sets = fields
+    .filter((field) => patch[field.key] !== undefined)
+    .map((field) => `${field.column} = @${field.key}`);
+  if (!sets.length) return false;
+  const result = database
+    .prepare(`UPDATE shifts SET ${sets.join(", ")} WHERE id = @id`)
+    .run({ id, ...patch });
+  return result.changes > 0;
 }
 
 function normalizeStringArrayInput(value: unknown): string[] {
