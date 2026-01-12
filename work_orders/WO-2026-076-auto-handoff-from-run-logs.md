@@ -26,7 +26,7 @@ tags:
   - handoff
   - runner
 estimate_hours: 3
-status: ready
+status: done
 created_at: 2026-01-12
 updated_at: 2026-01-12
 depends_on:

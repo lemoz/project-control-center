@@ -1,37 +1,39 @@
 ---
 id: WO-2026-074
-title: Shift Orchestrator
-goal: Create the orchestrator that invokes Claude Code agents to take shifts on projects, with full network access via Chrome extension.
+title: Shift Agent (Local)
+goal: Implement the shift agent that runs the autonomous shift loop locally using Claude CLI with full permissions.
 context:
   - docs/agent_shift_protocol.md (WO-2026-060)
   - WO-2026-061 (context assembly) - done
   - WO-2026-062 (handoff storage) - done
   - WO-2026-063 (shift lifecycle) - done
   - WO-2026-064 (decision prompt) - done
-  - Agent is Claude Code with MCP Chrome extension for full network access
+  - Shift agent is the "brain" - runs locally with full access
+  - Run system is the "hands" - executes on VM, sandboxed
 acceptance_criteria:
-  - Orchestrator can start a shift on a project
-  - Invokes Claude Code with shift context + decision prompt
-  - Claude Code has access to MCP browser tools (full network)
-  - Agent executes decision (WO run, direct action, research, etc.)
-  - Shift completes with handoff stored
-  - Configurable trigger modes (manual, scheduled, event-driven)
-  - Per-project shift policies (enabled, frequency, max duration)
-  - Logging and observability of shift execution
+  - Shift agent runs locally via Claude CLI
+  - Agent has full permissions (filesystem, browser, network)
+  - Gathers context via GET /projects/:id/shift-context
+  - Makes decisions using LLM + context
+  - Executes decisions (kick runs via API, research, direct actions)
+  - Monitors runs and loops until shift complete
+  - Completes shift with auto-generated or manual handoff
+  - Handles escalations locally (can ask user directly)
 non_goals:
-  - Multi-agent concurrent shifts (one at a time per project)
-  - Cross-project coordination
-  - Custom agent types (Claude Code only for now)
+  - Running on VM (separate WO for that)
+  - Multi-agent concurrent shifts
+  - Cross-project coordination (global agent's job)
+  - Scheduled/event triggers (manual only for MVP)
 stop_conditions:
-  - If Claude Code invocation is unreliable, start with manual trigger only
+  - If Claude CLI is unreliable, simplify to API-only actions
 priority: 1
 tags:
   - autonomous
   - orchestrator
-  - claude-code
-  - infrastructure
-estimate_hours: 6
-status: draft
+  - shift
+  - local
+estimate_hours: 4
+status: ready
 created_at: 2026-01-12
 updated_at: 2026-01-12
 depends_on:
@@ -39,153 +41,138 @@ depends_on:
   - WO-2026-062
   - WO-2026-063
   - WO-2026-064
-  - WO-2026-075
+  - WO-2026-076
 era: v2
 ---
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    SHIFT ORCHESTRATOR                       │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  TRIGGER                                                    │
-│  ├── Manual: POST /projects/:id/shifts/start-autonomous     │
-│  ├── Scheduled: Cron per project (e.g., every 4 hours)      │
-│  └── Event: On WO ready, on run complete, on human review   │
-│                                                             │
-│  INVOKE AGENT                                               │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │ claude-code --project <path> --prompt <shift_prompt>  │  │
-│  │                                                       │  │
-│  │ Agent has:                                            │  │
-│  │ • Full filesystem access                              │  │
-│  │ • MCP Chrome extension (full network)                 │  │
-│  │ • Shift context injected                              │  │
-│  │ • Decision framework prompt                           │  │
-│  │ • Access to WO runner, VM, direct actions             │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                                                             │
-│  MONITOR                                                    │
-│  ├── Track shift duration                                   │
-│  ├── Capture agent output/logs                              │
-│  ├── Detect completion or timeout                           │
-│  └── Handle escalations                                     │
-│                                                             │
-│  COMPLETE                                                   │
-│  ├── Agent calls shift complete API with handoff            │
-│  ├── Or orchestrator force-completes on timeout             │
-│  └── Log shift outcome for learning                         │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+LOCAL (your machine)
+┌─────────────────────────────────────────────────────────────────┐
+│  SHIFT AGENT (Claude CLI, full permissions)                     │
+│                                                                 │
+│  LOOP:                                                          │
+│    1. context = GET /projects/:id/shift-context                 │
+│    2. decision = LLM(context + constitution + last_handoff)     │
+│    3. execute(decision)                                         │
+│       ├── Kick run: POST /repos/:id/work-orders/:id/runs        │
+│       ├── Research: browser, web search                         │
+│       ├── Direct action: edit files, run commands               │
+│       └── Escalate: ask user directly                           │
+│    4. monitor until next decision needed                        │
+│                                                                 │
+│  ON EXIT:                                                       │
+│    POST /shifts/:id/complete with handoff                       │
+│    (auto-generated via WO-2026-076 or manual)                   │
+│                                                                 │
+│  CAPABILITIES:                                                  │
+│    • Full filesystem access                                     │
+│    • Chrome browser (via extension)                             │
+│    • Network access                                             │
+│    • Can see and talk to user                                   │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            │ triggers runs via API
+                            ▼
+VM (isolated)
+┌─────────────────────────────────────────────────────────────────┐
+│  RUN SYSTEM (sandboxed, no decisions)                           │
+│                                                                 │
+│  Setup → Builder → Test → Reviewer → Merge                      │
+│                                                                 │
+│  Reports status back via API                                    │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-## Trigger Modes
-
-### Manual
-```
-POST /projects/:id/shifts/start-autonomous
-```
-User explicitly requests an autonomous shift.
-
-### Scheduled
-```typescript
-interface ShiftSchedule {
-  project_id: string;
-  enabled: boolean;
-  cron: string;           // e.g., "0 */4 * * *" (every 4 hours)
-  max_duration_minutes: number;
-  pause_on_failure_count: number;
-}
-```
-
-### Event-Driven
-- When a WO transitions to `ready` status
-- When a run completes (success or failure)
-- When human reviews/approves something
-- Configurable per project
-
-## Decisions
-
-1. **Trigger mode**: Manual only for MVP. System ready for scheduled later.
-2. **Shift duration**: No hard limit initially. Observe actual durations first.
-3. **Constitution**: Need shift-specific constitution tailoring as we observe runs.
-
-## Research Complete: SDK Approach
-
-Use `@anthropic-ai/claude-agent-sdk` (see WO-2026-075):
+## Shift Agent Loop
 
 ```typescript
-import { query } from "@anthropic-ai/claude-agent-sdk";
+// Pseudocode for shift agent behavior
+async function runShift(projectId: string) {
+  // Start shift
+  const shift = await startShift(projectId);
 
-for await (const message of query({
-  prompt: shiftDecisionPrompt,
-  options: {
-    cwd: projectPath,
-    allowedTools: ["Read", "Edit", "Bash", "Glob", "Grep", "WebFetch", "WebSearch"],
-    permissionMode: "bypassPermissions",
-    mcpServers: { /* headless browser MCP if needed */ },
-    maxBudgetUsd: 10.00
+  while (!shift.timeout && !shift.done) {
+    // 1. Gather context
+    const context = await fetch(`/projects/${projectId}/shift-context`);
+
+    // 2. Decide
+    const decision = await llmDecide(context);
+
+    // 3. Execute
+    switch (decision.action) {
+      case 'run_wo':
+        await kickRun(decision.workOrderId);
+        await monitorRun(decision.runId);
+        break;
+      case 'research':
+        await browserResearch(decision.query);
+        break;
+      case 'direct_action':
+        await executeAction(decision.command);
+        break;
+      case 'escalate':
+        await askUser(decision.question);
+        break;
+      case 'done':
+        shift.done = true;
+        break;
+    }
   }
-})) {
-  // Handle streaming messages
+
+  // Complete with handoff
+  await completeShift(shift.id, generateHandoff());
 }
 ```
 
-## Deployment Constraint: VM Execution
+## Invocation
 
-**The orchestrator must run on the VM** for fully autonomous operation.
-
-### Chrome Extension Limitation
-- Claude in Chrome extension uses Native Messaging API
-- Requires local Chrome browser with GUI
-- NOT usable on headless VM
-- NOT configurable via Agent SDK mcpServers
-
-### VM-Compatible Browser Options
-1. **Playwright MCP** - Headless browser automation on VM
-2. **Puppeteer MCP** - Alternative headless option
-3. **No browser** - Use WebFetch/WebSearch only (simplest)
-
-### Recommended Architecture
-
-```
-VM (fully autonomous)
-├── Shift Orchestrator (Node.js)
-├── Claude Agent SDK
-├── Playwright MCP Server (optional, for browser tasks)
-├── WebFetch/WebSearch (built-in, no browser needed)
-└── WO Runner (already exists)
+```bash
+# Manual trigger - user runs this
+claude --project /path/to/project \
+  --prompt "You are the shift agent for this project. Run a shift." \
+  --allowedTools "Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch,mcp__chrome__*" \
+  --permission-mode full
 ```
 
-**MVP approach:** Start with WebFetch/WebSearch only. Add Playwright MCP later if browser automation needed.
+Or via a simple script:
+```bash
+./scripts/start-shift.sh project-control-center
+```
 
-## Open Questions
+## Decision Framework
 
-1. **Playwright MCP setup**: Install and configure on VM
-2. **Cost limits**: What's reasonable per-shift budget?
-3. **Failure handling**: Retry? Pause? Alert?
+The shift agent uses the decision prompt (WO-2026-064) which considers:
+- Ready WOs and their priorities
+- Active/recent runs and their outcomes
+- Blockers and dependencies
+- Time since last human interaction
+- Constitution guidelines
 
-## Implementation Phases
+## Monitoring Runs
 
-### Phase 1: Manual Trigger
-- API endpoint to start autonomous shift
-- Invoke Claude Code with context
-- Basic logging and timeout
+While a run executes on VM:
+1. Poll `/runs/:id` for status
+2. Check for escalations (waiting_for_input)
+3. Review logs when available (after phase completes)
+4. React to completion (success/failure)
 
-### Phase 2: Scheduled Shifts
-- Shift schedule table
-- Cron-like scheduler
-- Per-project policies
+## Files to Create
 
-### Phase 3: Event-Driven
-- Hooks on WO status changes
-- Hooks on run completion
-- Smart triggering logic
+1. `scripts/start-shift.sh` - Simple launcher
+2. `server/prompts/shift_agent.ts` - Full agent prompt with loop instructions
+3. Update `server/shift_context.ts` if needed for agent consumption
 
-## Files to Create/Modify
+## MVP Scope
 
-1. `server/shift_orchestrator.ts` (new) - Core orchestration logic
-2. `server/db.ts` - Shift schedule/policy tables
-3. `server/index.ts` - API endpoints
-4. `server/shift_invoker.ts` (new) - Claude Code invocation
+- Manual trigger only (user runs script)
+- Single project at a time
+- User monitors progress (sees Claude CLI output)
+- Handoff via WO-2026-076 auto-generation
+
+## Future (separate WOs)
+
+- Scheduled triggers
+- Event-driven triggers
+- VM deployment (WO-2026-089)
+- Multi-project orchestration (global agent)
