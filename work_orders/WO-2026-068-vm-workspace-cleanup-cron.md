@@ -24,7 +24,7 @@ tags:
   - infrastructure
   - vm
 estimate_hours: 0.5
-status: you_review
+status: done
 created_at: 2026-01-12
 updated_at: 2026-01-12
 depends_on: []
