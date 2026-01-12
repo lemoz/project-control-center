@@ -56,7 +56,7 @@ const NODE_HEIGHT = 80;
 const HORIZONTAL_GAP = 100;
 const VERTICAL_GAP = 30;
 
-export function TechTreeView({ repoId }: { repoId: string }) {
+export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: () => void }) {
   const [data, setData] = useState<TechTreeResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -232,58 +232,67 @@ export function TechTreeView({ repoId }: { repoId: string }) {
   if (!data) return null;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {/* Header */}
-      <section className="card" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <div style={{ fontWeight: 700 }}>Tech Tree</div>
-        <div className="muted" style={{ fontSize: 13 }}>
-          {data.nodes.length} work orders
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", width: "100%" }}>
+      {/* Floating header */}
+      <div
+        style={{
+          position: "absolute",
+          top: 16,
+          left: 16,
+          right: 16,
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          zIndex: 10,
+          pointerEvents: "none",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12, pointerEvents: "auto" }}>
+          {onClose && (
+            <button
+              className="btn"
+              onClick={onClose}
+              style={{ padding: "8px 16px", backgroundColor: "#ef4444" }}
+            >
+              ✕ Close
+            </button>
+          )}
+          <div style={{ fontWeight: 700, color: "#fff", textShadow: "0 2px 4px rgba(0,0,0,0.5)" }}>
+            Tech Tree
+          </div>
+          <div style={{ color: "#888", fontSize: 13 }}>
+            {data.nodes.length} work orders
+          </div>
+          {data.cycles.length > 0 && (
+            <div className="error" style={{ fontSize: 13 }}>
+              {data.cycles.length} cycle{data.cycles.length > 1 ? "s" : ""} detected
+            </div>
+          )}
         </div>
-        {data.cycles.length > 0 && (
-          <div className="error" style={{ fontSize: 13 }}>
-            {data.cycles.length} cycle{data.cycles.length > 1 ? "s" : ""} detected
-          </div>
-        )}
-        <button className="btn" onClick={() => void load()} style={{ marginLeft: "auto" }}>
-          Refresh
-        </button>
-      </section>
-
-      {/* Legend */}
-      <section className="card" style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-        <div style={{ fontSize: 13, fontWeight: 600 }}>Status:</div>
-        {Object.entries(STATUS_COLORS).map(([status, color]) => (
-          <div key={status} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <div style={{ width: 12, height: 12, backgroundColor: color, borderRadius: 2 }} />
-            <span style={{ fontSize: 12 }}>{STATUS_LABELS[status as WorkOrderStatus]}</span>
-          </div>
-        ))}
-        <div style={{ marginLeft: 16, display: "flex", gap: 12, alignItems: "center" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <div style={{ width: 20, height: 2, backgroundColor: "#22c55e" }} />
-            <span style={{ fontSize: 12 }}>Dependencies</span>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <div style={{ width: 20, height: 2, backgroundColor: "#3b82f6" }} />
-            <span style={{ fontSize: 12 }}>Dependents</span>
-          </div>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center", pointerEvents: "auto" }}>
+          {/* Legend */}
+          {Object.entries(STATUS_COLORS).map(([status, color]) => (
+            <div key={status} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <div style={{ width: 10, height: 10, backgroundColor: color, borderRadius: 2 }} />
+              <span style={{ fontSize: 11, color: "#aaa" }}>{STATUS_LABELS[status as WorkOrderStatus]}</span>
+            </div>
+          ))}
+          <button className="btnSecondary" onClick={() => void load()} style={{ marginLeft: 12 }}>
+            Refresh
+          </button>
         </div>
-      </section>
+      </div>
 
-      {/* Main view */}
-      <div style={{ display: "flex", gap: 12 }}>
-        {/* SVG Graph */}
-        <section
-          className="card"
-          style={{
-            flex: 1,
-            overflow: "auto",
-            backgroundColor: "#1a1a2e",
-            backgroundImage: "radial-gradient(circle, #2a2a4e 1px, transparent 1px)",
-            backgroundSize: "20px 20px",
-            minHeight: 400,
-          }}
-        >
+      {/* Full-screen SVG Graph */}
+      <div
+        style={{
+          flex: 1,
+          overflow: "auto",
+          backgroundColor: "#0a0a14",
+          backgroundImage: "radial-gradient(circle, #1a1a2e 1px, transparent 1px)",
+          backgroundSize: "20px 20px",
+        }}
+      >
           <svg width={svgWidth} height={svgHeight} style={{ display: "block" }}>
             {/* Edges */}
             {data.nodes.map((node) => {
@@ -418,11 +427,22 @@ export function TechTreeView({ repoId }: { repoId: string }) {
               );
             })}
           </svg>
-        </section>
+      </div>
 
-        {/* Detail Panel */}
+        {/* Detail Panel - Floating */}
         {selectedNode && (
-          <section className="card" style={{ width: 280, flexShrink: 0 }}>
+          <section
+            className="card"
+            style={{
+              position: "absolute",
+              top: 70,
+              right: 16,
+              width: 300,
+              maxHeight: "calc(100vh - 100px)",
+              overflow: "auto",
+              zIndex: 10,
+            }}
+          >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div>
                 <div className="muted" style={{ fontSize: 12 }}>{selectedNode.id}</div>
@@ -515,13 +535,13 @@ export function TechTreeView({ repoId }: { repoId: string }) {
                 href={`/projects/${encodeURIComponent(repoId)}/work-orders/${encodeURIComponent(selectedNode.id)}`}
                 className="btn"
                 style={{ width: "100%", textAlign: "center", display: "block" }}
+                onClick={onClose}
               >
                 Open Work Order
               </Link>
             </div>
           </section>
         )}
-      </div>
     </div>
   );
 }
