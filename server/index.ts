@@ -71,6 +71,7 @@ import {
 } from "./runner_agent.js";
 import { RemoteExecError } from "./remote_exec.js";
 import { readControlMetadata } from "./sidecar.js";
+import { buildShiftContext } from "./shift_context.js";
 import {
   enqueueChatTurn,
   enqueueChatTurnForThread,
@@ -424,6 +425,12 @@ app.get("/repos/:id", (req, res) => {
       success_metrics: successMetrics,
     },
   });
+});
+
+app.get("/projects/:id/shift-context", (req, res) => {
+  const context = buildShiftContext(req.params.id);
+  if (!context) return res.status(404).json({ error: "project not found" });
+  return res.json(context);
 });
 
 app.patch("/repos/:id/star", (req, res) => {
