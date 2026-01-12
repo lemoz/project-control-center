@@ -137,7 +137,7 @@ export type WorkOrderDepRow = {
   created_at: string;
 };
 
-export type ShiftStatus = "active" | "completed" | "expired" | "failed";
+export type ShiftStatus = "active" | "completed" | "auto_completed" | "expired" | "failed";
 
 export type ShiftRow = {
   id: string;

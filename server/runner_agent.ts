@@ -24,6 +24,7 @@ import {
   readWorkOrderMarkdown,
   type WorkOrder,
 } from "./work_orders.js";
+import { generateAndStoreHandoff, type RunOutcome } from "./handoff_generator.js";
 import { resolveRunnerSettingsForRepo } from "./settings.js";
 import {
   formatConstitutionBlock,
@@ -4049,6 +4050,37 @@ export async function runRun(runId: string) {
       finished_at: nowIso(),
     });
   } finally {
+    const finalRun = getRunById(runId);
+    if (
+      finalRun &&
+      (finalRun.status === "failed" ||
+        finalRun.status === "you_review" ||
+        finalRun.status === "baseline_failed" ||
+        finalRun.status === "merge_conflict" ||
+        finalRun.status === "merged")
+    ) {
+      const outcome: RunOutcome =
+        finalRun.status === "you_review"
+          ? finalRun.merge_status === "merged"
+            ? "merged"
+            : "approved"
+          : finalRun.status === "merged"
+            ? "merged"
+            : "failed";
+      const handoffLog = (line: string) => {
+        if (runLog) {
+          log(`[handoff] ${line}`);
+        } else {
+          appendLog(finalRun.log_path, `[handoff] ${line}`);
+        }
+      };
+      await generateAndStoreHandoff({
+        runId,
+        projectId: finalRun.project_id,
+        outcome,
+        log: handoffLog,
+      });
+    }
     if (remoteConfig) {
       try {
         await cleanupRemoteRun(remoteConfig, log);
