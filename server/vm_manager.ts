@@ -85,6 +85,8 @@ const MACHINE_TYPES: Record<ProjectVmSize, string> = {
 const GCLOUD_COMMAND = process.env.CONTROL_CENTER_GCLOUD_PATH || "gcloud";
 const SSH_COMMAND = process.env.CONTROL_CENTER_SSH_PATH || "ssh";
 const DEFAULT_VM_REPO_ROOT = "/home/project/repo";
+const WORKSPACE_CLEANUP_CRON_PATH = "/etc/cron.hourly/pcc-cleanup-workspaces";
+const WORKSPACE_CLEANUP_MAX_AGE_MINUTES = 360;
 const VM_PROVIDER: ProjectVmProvider = "gcp";
 const PROVISIONING_ALLOWED_VM_STATUSES: ProjectVmStatus[] = [
   "provisioning",
@@ -336,6 +338,53 @@ function buildPrereqInstallScript(): string {
     "  sudo -n npm install -g @anthropic-ai/codex-cli",
     "fi",
   ].join("\n");
+}
+
+function buildWorkspaceCleanupCronScript(repoRoot: string): string {
+  return [
+    "#!/bin/bash",
+    `REPO_ROOT="${repoRoot}"`,
+    `MAX_AGE_MINUTES=${WORKSPACE_CLEANUP_MAX_AGE_MINUTES}`,
+    "",
+    'logger -t pcc-cleanup "Starting workspace cleanup (max age: ${MAX_AGE_MINUTES}m)"',
+    "",
+    "count=0",
+    'for dir in "$REPO_ROOT/.system/run-workspaces"/* "$REPO_ROOT/.system/run-artifacts"/*; do',
+    '  if [[ -d "$dir" ]] && [[ $(find "$dir" -maxdepth 0 -mmin +$MAX_AGE_MINUTES 2>/dev/null) ]]; then',
+    '    if rm -rf "$dir" 2>/dev/null; then',
+    '      logger -t pcc-cleanup "Deleted: $dir"',
+    "      ((count++))",
+    "    else",
+    '      logger -t pcc-cleanup "Failed to delete (permission?): $dir"',
+    "    fi",
+    "  fi",
+    "done",
+    "",
+    'logger -t pcc-cleanup "Cleanup complete: $count directories removed"',
+  ].join("\n");
+}
+
+async function ensureWorkspaceCleanupCron(projectId: string): Promise<void> {
+  const repoRoot = resolveVmRepoRoot();
+  const cronScript = buildWorkspaceCleanupCronScript(repoRoot);
+  const installScript = [
+    "set -e",
+    `cat <<'PCC_EOF' | sudo -n tee ${WORKSPACE_CLEANUP_CRON_PATH} >/dev/null`,
+    cronScript,
+    "PCC_EOF",
+    `sudo -n chmod +x ${WORKSPACE_CLEANUP_CRON_PATH}`,
+  ].join("\n");
+
+  try {
+    await remoteExec(projectId, `bash -lc ${shellEscape(installScript)}`, {
+      allowVmStatuses: PROVISIONING_ALLOWED_VM_STATUSES,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[vm_manager] Warning: Failed to install workspace cleanup cron: ${message}`
+    );
+  }
 }
 
 async function ensureVmPrereqs(projectId: string): Promise<void> {
@@ -911,6 +960,7 @@ export async function provisionVM(config: VMConfig): Promise<ProjectVmRow> {
     });
 
     await ensureVmPrereqs(config.projectId);
+    await ensureWorkspaceCleanupCron(config.projectId);
     await syncCodexAuth(config.projectId);
     updateVm(config.projectId, {
       status: "syncing",
@@ -985,6 +1035,7 @@ export async function startVM(projectId: string): Promise<ProjectVmRow> {
         gcp_project: gcp.project,
         gcp_zone: gcp.zone,
       });
+      await ensureWorkspaceCleanupCron(projectId);
       return getProjectVm(projectId) ?? defaultVmRow(projectId);
     }
 
@@ -1056,6 +1107,7 @@ export async function startVM(projectId: string): Promise<ProjectVmRow> {
       gcp_project: gcp.project,
       gcp_zone: gcp.zone,
     });
+    await ensureWorkspaceCleanupCron(projectId);
 
     return getProjectVm(projectId) ?? defaultVmRow(projectId);
   });
