@@ -899,6 +899,11 @@ function sleep(ms: number): Promise<void> {
 const SYNC_RETRY_BACKOFF_MS = [1000, 3000, 10000];
 const SYNC_MAX_RETRIES = 3;
 
+function formatRetryError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.replace(/\s+/g, " ").trim();
+}
+
 async function withRetry<T>(
   operation: () => Promise<T>,
   name: string,
@@ -908,12 +913,14 @@ async function withRetry<T>(
     try {
       return await operation();
     } catch (err) {
+      const detail = formatRetryError(err);
+      const suffix = detail ? `: ${detail}` : "";
+      const backoffMs = SYNC_RETRY_BACKOFF_MS[Math.min(attempt - 1, SYNC_RETRY_BACKOFF_MS.length - 1)];
       if (attempt === SYNC_MAX_RETRIES) {
-        log(`${name} failed after ${SYNC_MAX_RETRIES} attempts, giving up`);
+        log(`${name} failed after ${SYNC_MAX_RETRIES} attempts${suffix}`);
         throw err;
       }
-      const backoffMs = SYNC_RETRY_BACKOFF_MS[attempt - 1];
-      log(`${name} failed (attempt ${attempt}/${SYNC_MAX_RETRIES}), retrying in ${backoffMs}ms...`);
+      log(`${name} failed (attempt ${attempt}/${SYNC_MAX_RETRIES})${suffix}, retrying in ${backoffMs}ms...`);
       await sleep(backoffMs);
     }
   }
