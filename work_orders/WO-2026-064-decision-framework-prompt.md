@@ -29,14 +29,15 @@ tags:
   - prompt
   - intelligence
 estimate_hours: 3
-status: you_review
+status: ready
 created_at: 2026-01-11
-updated_at: 2026-01-12
+updated_at: 2026-01-11
 depends_on:
   - WO-2026-060
   - WO-2026-061
 era: v2
 ---
+
 ## Implementation
 
 ### Prompt Template Location
