@@ -5,11 +5,14 @@ import path from "path";
 import YAML from "yaml";
 import {
   createRun,
+  createRunPhaseMetric,
   findProjectById,
   getProjectVm,
   getRunById,
   listRunsByProject,
   type ProjectVmRow,
+  type RunPhaseMetricOutcome,
+  type RunPhaseMetricPhase,
   type RunRow,
   updateProjectVm,
   updateRun,
@@ -119,6 +122,47 @@ const DENY_EXTS = new Set([".pem", ".key", ".p12", ".pfx"]);
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+type RunPhaseMetricMetadata = Record<string, unknown>;
+
+function recordPhaseMetric(params: {
+  runId: string;
+  phase: RunPhaseMetricPhase;
+  iteration: number;
+  outcome: RunPhaseMetricOutcome;
+  startedAt: Date;
+  endedAt?: Date;
+  metadata?: RunPhaseMetricMetadata;
+  log?: (line: string) => void;
+}): void {
+  const endedAt = params.endedAt ?? new Date();
+  const durationSeconds = Math.max(
+    0,
+    Math.round((endedAt.getTime() - params.startedAt.getTime()) / 1000)
+  );
+  let metadata: string | null = null;
+  if (params.metadata && Object.keys(params.metadata).length) {
+    try {
+      metadata = JSON.stringify(params.metadata);
+    } catch {
+      metadata = null;
+    }
+  }
+  try {
+    createRunPhaseMetric({
+      run_id: params.runId,
+      phase: params.phase,
+      iteration: params.iteration,
+      started_at: params.startedAt.toISOString(),
+      ended_at: endedAt.toISOString(),
+      duration_seconds: durationSeconds,
+      outcome: params.outcome,
+      metadata,
+    });
+  } catch (err) {
+    params.log?.(`Phase metric write failed (${params.phase}): ${String(err)}`);
+  }
 }
 
 function parseNumberEnv(value: string | undefined, fallback: number): number {
@@ -2631,6 +2675,22 @@ export async function runRun(runId: string) {
       recorded_at: nowIso(),
     });
 
+    const setupStartedAt = new Date();
+    const recordSetupOutcome = (
+      outcome: RunPhaseMetricOutcome,
+      metadata?: RunPhaseMetricMetadata
+    ) => {
+      recordPhaseMetric({
+        runId,
+        phase: "setup",
+        iteration: 1,
+        outcome,
+        startedAt: setupStartedAt,
+        metadata,
+        log,
+      });
+    };
+
     if (requiresRemote && !remoteConfig) {
       const message = `VM isolation required but unavailable: ${remoteFallbackReason || "unknown error"}`;
       updateRun(runId, {
@@ -2638,6 +2698,7 @@ export async function runRun(runId: string) {
         error: message,
         finished_at: nowIso(),
       });
+      recordSetupOutcome("failed");
       log(message);
       return;
     }
@@ -2654,6 +2715,7 @@ export async function runRun(runId: string) {
           error: message,
           finished_at: nowIso(),
         });
+        recordSetupOutcome("failed");
         return;
       }
     }
@@ -2662,6 +2724,9 @@ export async function runRun(runId: string) {
     const baselineLogPath = path.join(runDir, "tests", "baseline-npm-test.log");
     let baselineTests =
       readJsonIfExists<Array<{ command: string; passed: boolean; output?: string }>>(baselineResultsPath);
+    const setupMetadataBase: RunPhaseMetricMetadata = {
+      cached: Boolean(baselineTests),
+    };
     if (!baselineTests) {
       log("Running baseline health check...");
       if (remoteConfig) {
@@ -2675,6 +2740,7 @@ export async function runRun(runId: string) {
             error: message,
             finished_at: nowIso(),
           });
+          recordSetupOutcome("failed", setupMetadataBase);
           return;
         }
       }
@@ -2711,6 +2777,7 @@ export async function runRun(runId: string) {
             error: message,
             finished_at: nowIso(),
           });
+          recordSetupOutcome("failed", setupMetadataBase);
           return;
         }
       } else {
@@ -2727,6 +2794,7 @@ export async function runRun(runId: string) {
         error: message,
         finished_at: nowIso(),
       });
+      recordSetupOutcome("failed", setupMetadataBase);
       log(message);
       return;
     }
@@ -2740,10 +2808,15 @@ export async function runRun(runId: string) {
         error: message,
         finished_at: nowIso(),
       });
+      recordSetupOutcome("failed", {
+        ...setupMetadataBase,
+        failed_tests: failedTests,
+      });
       log(message);
       return;
     }
 
+    recordSetupOutcome("success", setupMetadataBase);
     log("Baseline healthy, starting builder...");
 
     // Move Work Order into building inside the run branch.
@@ -2788,7 +2861,10 @@ export async function runRun(runId: string) {
       writeJson(iterationHistoryPath, iterationHistory);
     };
 
+    let finalIteration = 1;
+
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
+      finalIteration = iteration;
       updateRun(runId, {
         status: "building",
         iteration,
@@ -2797,6 +2873,7 @@ export async function runRun(runId: string) {
         reviewer_notes: null,
       });
       log(`Builder iteration ${iteration} starting`);
+      const builderStartedAt = new Date();
 
       const builderDir = path.join(runDir, "builder", `iter-${iteration}`);
       const reviewerDir = path.join(runDir, "reviewer", `iter-${iteration}`);
@@ -2873,6 +2950,14 @@ export async function runRun(runId: string) {
             } catch (err) {
               const message = `remote workspace sync failed: ${String(err)}`;
               log(message);
+              recordPhaseMetric({
+                runId,
+                phase: "builder",
+                iteration,
+                outcome: "failed",
+                startedAt: builderStartedAt,
+                log,
+              });
               updateRun(runId, {
                 status: "failed",
                 error: message,
@@ -2917,6 +3002,14 @@ export async function runRun(runId: string) {
               } catch (err) {
                 const message = `remote workspace download failed: ${String(err)}`;
                 log(message);
+                recordPhaseMetric({
+                  runId,
+                  phase: "builder",
+                  iteration,
+                  outcome: "failed",
+                  startedAt: builderStartedAt,
+                  log,
+                });
                 updateRun(runId, {
                   status: "failed",
                   error: message,
@@ -2930,6 +3023,14 @@ export async function runRun(runId: string) {
           }
         } catch (err) {
           log(`Builder failed: ${String(err)}`);
+          recordPhaseMetric({
+            runId,
+            phase: "builder",
+            iteration,
+            outcome: "failed",
+            startedAt: builderStartedAt,
+            log,
+          });
           updateRun(runId, {
             status: "failed",
             error: `builder failed: ${String(err)}`,
@@ -3002,6 +3103,15 @@ export async function runRun(runId: string) {
         break;
       }
 
+      recordPhaseMetric({
+        runId,
+        phase: "builder",
+        iteration,
+        outcome: "success",
+        startedAt: builderStartedAt,
+        log,
+      });
+
       const changedFiles = computeChangedFiles(baselineRoot, worktreePath);
       const diffPatch = buildPatchForChangedFiles(
         runDir,
@@ -3031,6 +3141,18 @@ export async function runRun(runId: string) {
         reviewer_notes: null,
       };
 
+      const testStartedAt = new Date();
+      const recordTestOutcome = (outcome: RunPhaseMetricOutcome) => {
+        recordPhaseMetric({
+          runId,
+          phase: "test",
+          iteration,
+          outcome,
+          startedAt: testStartedAt,
+          log,
+        });
+      };
+
       updateRun(runId, { status: "testing" });
       log(`Running tests (iter ${iteration})`);
       let tests: Array<{ command: string; passed: boolean; output?: string }> = [];
@@ -3045,6 +3167,7 @@ export async function runRun(runId: string) {
             error: message,
             finished_at: nowIso(),
           });
+          recordTestOutcome("failed");
           return;
         }
       }
@@ -3076,6 +3199,7 @@ export async function runRun(runId: string) {
             error: message,
             finished_at: nowIso(),
           });
+          recordTestOutcome("failed");
           return;
         }
       } else {
@@ -3090,6 +3214,7 @@ export async function runRun(runId: string) {
 
       const anyFailed = tests.some((t) => !t.passed);
       if (anyFailed) {
+        recordTestOutcome("failed");
         testFailureOutput = buildTestFailureOutput(tests);
         iterationHistory.push(historyEntry);
         writeIterationHistory();
@@ -3109,7 +3234,20 @@ export async function runRun(runId: string) {
         continue;
       }
 
+      recordTestOutcome("success");
       testFailureOutput = null;
+
+      const reviewerStartedAt = new Date();
+      const recordReviewerOutcome = (outcome: RunPhaseMetricOutcome) => {
+        recordPhaseMetric({
+          runId,
+          phase: "reviewer",
+          iteration,
+          outcome,
+          startedAt: reviewerStartedAt,
+          log,
+        });
+      };
 
       updateRun(runId, { status: "ai_review" });
       log(`Reviewer iteration ${iteration} starting`);
@@ -3186,6 +3324,7 @@ export async function runRun(runId: string) {
           } catch (err) {
             const message = `remote reviewer sync failed: ${String(err)}`;
             log(message);
+            recordReviewerOutcome("failed");
             updateRun(runId, {
               status: "failed",
               error: message,
@@ -3224,6 +3363,7 @@ export async function runRun(runId: string) {
         }
       } catch (err) {
         log(`Reviewer failed: ${String(err)}`);
+        recordReviewerOutcome("failed");
         updateRun(runId, {
           status: "failed",
           error: `reviewer failed: ${String(err)}`,
@@ -3247,6 +3387,7 @@ export async function runRun(runId: string) {
         };
       }
 
+      recordReviewerOutcome(verdict.status);
       reviewerVerdict = verdict.status;
       reviewerNotes = verdict.notes || [];
       updateRun(runId, {
@@ -3282,6 +3423,24 @@ export async function runRun(runId: string) {
 
     updateRun(runId, { merge_status: "pending" });
     log("Preparing merge to main");
+    const mergeStartedAt = new Date();
+    let mergeRecorded = false;
+    const recordMergeOutcome = (
+      outcome: RunPhaseMetricOutcome,
+      metadata?: RunPhaseMetricMetadata
+    ) => {
+      if (mergeRecorded) return;
+      mergeRecorded = true;
+      recordPhaseMetric({
+        runId,
+        phase: "merge",
+        iteration: finalIteration,
+        outcome,
+        startedAt: mergeStartedAt,
+        metadata,
+        log,
+      });
+    };
 
     try {
       patchWorkOrder(worktreePath, run.work_order_id, { status: "you_review" });
@@ -3305,6 +3464,7 @@ export async function runRun(runId: string) {
         reviewer_notes: JSON.stringify(reviewerNotes),
         summary: approvedSummary,
       });
+      recordMergeOutcome("failed", { reason: "merge_conflict" });
       log(`Merge conflict: ${message}`);
       if (conflictFiles.length) {
         writeJson(path.join(runDir, "conflict_files.json"), conflictFiles);
@@ -3336,6 +3496,7 @@ export async function runRun(runId: string) {
         conflict_with_run_id: null,
       });
 
+      recordMergeOutcome("skipped", { reason: "no_changes" });
       log("Run completed and approved");
       return;
     }
@@ -3356,6 +3517,7 @@ export async function runRun(runId: string) {
       { cwd: worktreePath, allowFailure: true, log }
     );
     if (commitResult.status !== 0) {
+      recordMergeOutcome("failed", { reason: "commit_failed" });
       updateRun(runId, {
         status: "failed",
         error: `git commit failed: ${commitResult.stderr || commitResult.stdout}`,
@@ -3395,6 +3557,7 @@ export async function runRun(runId: string) {
       const conflictFiles = listUnmergedFiles(worktreePath);
       if (!conflictFiles.length) {
         runGit(["merge", "--abort"], { cwd: worktreePath, allowFailure: true, log });
+        recordMergeOutcome("failed", { reason: "merge_into_branch_failed" });
         updateRun(runId, {
           status: "failed",
           error: `merge into branch failed: ${mergeIntoBranch.stderr || mergeIntoBranch.stdout}`,
@@ -3729,6 +3892,7 @@ export async function runRun(runId: string) {
 
     const mergeResult = await mergeBaseIntoBranch();
     if (!mergeResult.ok) {
+      recordMergeOutcome("failed", { reason: "merge_failed" });
       return;
     }
     if (mergeResult.conflictRunId) conflictRunId = mergeResult.conflictRunId;
@@ -3762,6 +3926,7 @@ export async function runRun(runId: string) {
     try {
       runGit(["checkout", baseBranch], { cwd: repoPath, log });
     } catch (err) {
+      recordMergeOutcome("failed", { reason: "checkout_failed" });
       updateRun(runId, {
         status: "failed",
         error: `git checkout failed: ${String(err)}`,
@@ -3796,6 +3961,7 @@ export async function runRun(runId: string) {
 
       const retryResult = await mergeBaseIntoBranch();
       if (!retryResult.ok) {
+        recordMergeOutcome("failed", { reason: "merge_retry_failed" });
         return;
       }
       if (retryResult.conflictRunId) conflictRunId = retryResult.conflictRunId;
@@ -3872,6 +4038,7 @@ export async function runRun(runId: string) {
       conflict_with_run_id: null,
     });
 
+    recordMergeOutcome("success");
     log("Run completed and approved");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

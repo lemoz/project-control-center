@@ -94,6 +94,36 @@ export type RunRow = {
   escalation: string | null;
 };
 
+export type RunPhaseMetricPhase = "setup" | "builder" | "test" | "reviewer" | "merge";
+
+export type RunPhaseMetricOutcome =
+  | "success"
+  | "failed"
+  | "changes_requested"
+  | "approved"
+  | "skipped";
+
+export type RunPhaseMetricRow = {
+  id: string;
+  run_id: string;
+  phase: RunPhaseMetricPhase;
+  iteration: number;
+  started_at: string;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  outcome: RunPhaseMetricOutcome | null;
+  metadata: string | null;
+};
+
+export type RunPhaseMetricsSummary = {
+  avg_setup_seconds: number;
+  avg_builder_seconds: number;
+  avg_reviewer_seconds: number;
+  avg_iterations: number;
+  total_runs: number;
+  recent_runs: Array<{ wo_id: string; iterations: number; total_seconds: number }>;
+};
+
 export type SettingRow = {
   key: string;
   value: string; // JSON payload
@@ -265,6 +295,21 @@ function initSchema(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_runs_project_id_created_at ON runs(project_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_runs_status_created_at ON runs(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS run_phase_metrics (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      phase TEXT NOT NULL,
+      iteration INTEGER NOT NULL DEFAULT 1,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      duration_seconds INTEGER,
+      outcome TEXT,
+      metadata TEXT,
+      FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_run_phase_metrics_run ON run_phase_metrics(run_id);
 
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -1004,6 +1049,127 @@ export function listRunsByProject(projectId: string, limit = 50): RunRow[] {
       "SELECT * FROM runs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?"
     )
     .all(projectId, limit) as RunRow[];
+}
+
+export function createRunPhaseMetric(input: {
+  run_id: string;
+  phase: RunPhaseMetricPhase;
+  iteration?: number;
+  started_at: string;
+  ended_at?: string | null;
+  duration_seconds?: number | null;
+  outcome?: RunPhaseMetricOutcome | null;
+  metadata?: string | null;
+}): RunPhaseMetricRow {
+  const database = getDb();
+  const iteration =
+    typeof input.iteration === "number" && Number.isFinite(input.iteration)
+      ? Math.max(1, Math.trunc(input.iteration))
+      : 1;
+  const durationSeconds =
+    typeof input.duration_seconds === "number" &&
+    Number.isFinite(input.duration_seconds)
+      ? Math.trunc(input.duration_seconds)
+      : null;
+  const row: RunPhaseMetricRow = {
+    id: crypto.randomUUID(),
+    run_id: input.run_id,
+    phase: input.phase,
+    iteration,
+    started_at: input.started_at,
+    ended_at: input.ended_at ?? null,
+    duration_seconds: durationSeconds,
+    outcome: input.outcome ?? null,
+    metadata: input.metadata ?? null,
+  };
+  database
+    .prepare(
+      `INSERT INTO run_phase_metrics
+        (id, run_id, phase, iteration, started_at, ended_at, duration_seconds, outcome, metadata)
+       VALUES
+        (@id, @run_id, @phase, @iteration, @started_at, @ended_at, @duration_seconds, @outcome, @metadata)`
+    )
+    .run(row);
+  return row;
+}
+
+export function listRunPhaseMetrics(runId: string): RunPhaseMetricRow[] {
+  const database = getDb();
+  return database
+    .prepare(
+      "SELECT * FROM run_phase_metrics WHERE run_id = ? ORDER BY started_at ASC, phase ASC"
+    )
+    .all(runId) as RunPhaseMetricRow[];
+}
+
+export function getRunPhaseMetricsSummary(
+  projectId: string,
+  recentLimit = 10
+): RunPhaseMetricsSummary {
+  const database = getDb();
+  const totalRunsRow = database
+    .prepare("SELECT COUNT(1) AS total_runs FROM runs WHERE project_id = ?")
+    .get(projectId) as { total_runs: number } | undefined;
+  const avgIterationsRow = database
+    .prepare("SELECT AVG(iteration) AS avg_iterations FROM runs WHERE project_id = ?")
+    .get(projectId) as { avg_iterations: number | null } | undefined;
+  const phaseRows = database
+    .prepare(
+      `SELECT m.phase AS phase, AVG(m.duration_seconds) AS avg_seconds
+       FROM run_phase_metrics m
+       JOIN runs r ON r.id = m.run_id
+       WHERE r.project_id = ? AND m.duration_seconds IS NOT NULL
+       GROUP BY m.phase`
+    )
+    .all(projectId) as Array<{ phase: RunPhaseMetricPhase; avg_seconds: number | null }>;
+
+  const phaseAverages = new Map<RunPhaseMetricPhase, number>();
+  for (const row of phaseRows) {
+    if (typeof row.avg_seconds === "number" && Number.isFinite(row.avg_seconds)) {
+      phaseAverages.set(row.phase, row.avg_seconds);
+    }
+  }
+
+  const recentRows = database
+    .prepare(
+      `SELECT r.work_order_id AS wo_id,
+              r.iteration AS iterations,
+              COALESCE(SUM(m.duration_seconds), 0) AS total_seconds
+       FROM runs r
+       LEFT JOIN run_phase_metrics m ON m.run_id = r.id
+       WHERE r.project_id = ?
+       GROUP BY r.id
+       ORDER BY r.created_at DESC
+       LIMIT ?`
+    )
+    .all(projectId, recentLimit) as Array<{
+    wo_id: string;
+    iterations: number;
+    total_seconds: number;
+  }>;
+
+  const normalizeAverage = (value: unknown): number => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+    return value;
+  };
+
+  const normalizeCount = (value: unknown): number => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+    return Math.trunc(value);
+  };
+
+  return {
+    avg_setup_seconds: normalizeAverage(phaseAverages.get("setup")),
+    avg_builder_seconds: normalizeAverage(phaseAverages.get("builder")),
+    avg_reviewer_seconds: normalizeAverage(phaseAverages.get("reviewer")),
+    avg_iterations: normalizeAverage(avgIterationsRow?.avg_iterations ?? null),
+    total_runs: normalizeCount(totalRunsRow?.total_runs ?? null),
+    recent_runs: recentRows.map((row) => ({
+      wo_id: row.wo_id,
+      iterations: normalizeCount(row.iterations),
+      total_seconds: normalizeCount(row.total_seconds),
+    })),
+  };
 }
 
 export function markWorkOrderRunsMerged(projectId: string, workOrderId: string): number {

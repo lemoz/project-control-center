@@ -8,7 +8,10 @@ import {
   findProjectById,
   getActiveShift,
   getProjectVm,
+  getRunById,
+  getRunPhaseMetricsSummary,
   getShiftByProjectId,
+  listRunPhaseMetrics,
   listShifts,
   markInProgressRunsFailed,
   markWorkOrderRunsMerged,
@@ -1272,6 +1275,13 @@ app.get("/repos/:id/runs", (req, res) => {
   return res.json({ runs: getRunsForProject(project.id, limit) });
 });
 
+app.get("/repos/:id/run-metrics/summary", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  return res.json(getRunPhaseMetricsSummary(project.id));
+});
+
 app.post("/repos/:id/runs/cleanup-merged", (req, res) => {
   const { id } = req.params;
   const project = findProjectById(id);
@@ -1308,6 +1318,13 @@ app.get("/runs/:runId", (req, res) => {
   const run = getRun(req.params.runId);
   if (!run) return res.status(404).json({ error: "run not found" });
   return res.json(run);
+});
+
+app.get("/runs/:runId/metrics", (req, res) => {
+  const runId = req.params.runId;
+  const run = getRunById(runId);
+  if (!run) return res.status(404).json({ error: "run not found" });
+  return res.json(listRunPhaseMetrics(runId));
 });
 
 app.post("/runs/:runId/cancel", async (req, res) => {
