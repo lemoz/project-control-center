@@ -26,102 +26,166 @@ tags:
   - concept
   - canvas
 estimate_hours: 3
-status: backlog
+status: done
 created_at: 2026-01-11
-updated_at: 2026-01-11
+updated_at: 2026-01-12
 depends_on: []
 era: v2
 ---
 
-## Core Concept
+## Canvas City - Full Concept
 
-A spatial canvas where PCC projects come to life and interact with users.
+A spatial, visual frontend where AI projects exist as living entities on a shared planet. Users don't build - they watch their AI projects grow cities around themselves based on real activity.
 
-### The Metaphor
-
-- **Global canvas** = shared space where all agents/projects exist
-- **Your square** = your monthly token budget, visualized as real estate
-- **Projects** = buildings/zones that occupy space proportional to token usage
-- **Growth** = successful projects (make money) can buy adjacent squares and expand
-- **City** = organic growth pattern, like a city builder
-
-### How It Works
+### Zoom Hierarchy
 
 ```
-User buys subscription → Gets a square on the global canvas
-                                    ↓
-              PCC projects deploy to your square
-                                    ↓
-         Projects consume tokens → expand spatially
-                                    ↓
-         Project makes money → can buy adjacent square
-                                    ↓
-              Organic city-like growth over time
+SPACE → PLANET → REGION → PLOT → PROJECT
 ```
 
-### What Projects Get
+| Level | View | Interaction |
+|-------|------|-------------|
+| **Space** | Planet in bottom-right corner, stars, void | Cinematic entry point, looking out from orbit |
+| **Planet** | Globe rotating, hotspots glowing with activity | Click region to dive in |
+| **Region** | Top-down view, bordered plots visible | Browse, find interesting activity |
+| **Plot** | Your AI nodes + auto-grown cities | Explore, click CTAs to try projects |
+| **Project** | Actual project interface | Use the app (iframe/modal) |
 
-Each project's space is where it can:
-- Present UI/interface to users
-- Accept uploads, input, feedback
-- Iterate based on real user interaction
-- Grow as it succeeds
+### Plot Anatomy
 
-### Visual Language Ideas
+```
+┌──────────────────────────────────────┐
+│                                      │
+│   ⚡ (activity sprite)               │
+│   ║                                  │
+│ ┌─╨─┐                                │
+│ │🔮 │ AI Node (the project)          │
+│ └─┬─┘                                │
+│ ┌─┴──┬───┬───┐                       │
+│ │🏠  │🏠 │🏠 │ City (token burn)     │
+│ └────┴───┴───┘                       │
+│                                      │
+│ [Generate Art] ← CTA (opens project) │
+│                                      │
+│ ═══════════════ connection to        │
+│                 other nodes          │
+└──────────────────────────────────────┘
+```
 
-- Active projects pulse/glow
-- Blocked/stuck projects look distressed (red, dimmed)
-- Token burn rate = visual size/activity
-- Zoom in = project's internal UI
-- Zoom out = portfolio view → global view
+| Element | What it represents |
+|---------|-------------------|
+| **AI Node** | The project itself - custom glyph, always visible, center of the city |
+| **City growth** | Grows automatically based on token consumption (IsoCity style buildings) |
+| **Activity sprite** | Floating above node when processing/active |
+| **CTA bubble** | AI-designed call-to-action that opens project interface |
+| **Connections** | Lines between related/dependent projects |
 
-### Inspiration to Research
+### Key Behaviors
 
-1. **IsoCity by amilich** (https://github.com/amilich/isometric-city)
-   - Full-featured: Next.js + TypeScript + Canvas API
-   - Has vehicles, pedestrians, trains, economy simulation
-   - Good reference for rendering architecture (depth sorting, layers)
-   - Live demo: iso-city.com
+**Passive Growth:**
+- User does nothing - no city building gameplay
+- As project burns tokens, city tiles auto-spawn around the AI node
+- More successful project = denser/larger city
 
-2. **IsoCity by victorqribeiro** (https://github.com/victorqribeiro/isocity)
-   - Simpler pure JavaScript implementation
-   - No simulation, just placement
-   - Good for understanding isometric basics
+**Activity Visualization:**
+- Node glows/pulses when processing
+- Sprite emits above node when completing tasks
+- Particles could flow along connection lines
 
-3. **Pogicity Demo** (https://github.com/twofactor/pogicity-demo)
-   - MIT licensed foundation for isometric games
-   - Could be a starting point
-
-4. Reddit Place - shared canvas, user-owned pixels
-5. SimCity/city builders - organic growth, zoning
-
-### Technical Questions
-
-- Rendering approach: WebGL? Canvas 2D? CSS? Three.js?
-- Isometric vs top-down vs 3D?
-- How do projects actually render into their space? iframe? Web components? Custom SDK?
-- Real-time updates (WebSocket) for activity visualization?
-- Performance at scale (thousands of projects on canvas)?
+**Discovery:**
+- Wander the map, see other users' plots
+- Click CTAs to try interesting projects
+- Big thriving cities = successful AI projects (status symbol)
 
 ### Business Model Mapping
 
-- Subscription tier = canvas size (square footage)
-- Token usage = how much of your space is "active"
-- Revenue from projects = ability to expand (buy adjacent plots)
-- Could have "prime real estate" near high-traffic areas?
+| Real Thing | Canvas Representation |
+|------------|----------------------|
+| Subscription tier | Plot size (square footage) |
+| Token budget | Maximum city capacity |
+| Token burn rate | City density/growth speed |
+| Project revenue | Can buy adjacent plots, expand |
+| Project health | Node glow intensity, city vitality |
+| Idle/dead project | Dim node, decaying/overgrown city |
 
-### Open Questions
+### What Makes It Cool
 
-1. What's the minimum viable "building"? A card? A full app frame?
-2. How do neighboring projects interact (if at all)?
-3. Is the global canvas one shared world, or sharded?
-4. How does discovery work? Search? Wandering? Recommendations?
-5. What does a "dead" or abandoned project look like?
+1. **Passive visualization** - You don't play, you watch your AI work manifest spatially
+2. **Shared world** - Everyone's on the same planet, can explore others' plots
+3. **Organic growth** - Cities emerge from real activity, not manual placement
+4. **Discovery** - Wander the map, find interesting projects via CTAs
+5. **Status symbol** - Big thriving city = successful AI project
+
+---
+
+## Technical Research
+
+### IsoCity Reference Projects
+
+**1. amilich/isometric-city** (https://github.com/amilich/isometric-city)
+- **Tech:** Next.js + TypeScript + HTML5 Canvas API
+- **Stars:** ~1.4k
+- **Key insight:** Custom `CanvasIsometricGrid` engine with depth sorting, no game engine dependency
+- **Features:** Vehicles, pedestrians, trains, economy simulation, zoning
+- **Rendering:** Tile-based grid, sprite layering, real-time updates
+- **Relevance:** Shows how to build performant isometric rendering in React/Next.js
+
+**2. victorqribeiro/isocity** (https://github.com/victorqribeiro/isocity)
+- **Tech:** Vanilla JS, CSS, HTML (no frameworks)
+- **Key insight:** Simple placement-only, no simulation ("no budget, no goals, just build")
+- **Assets:** Kenney.nl isometric sprites
+- **Relevance:** Good for understanding basic isometric rendering
+
+### Recommended Technical Approach
+
+```
+Canvas 2D + Custom Depth Sorting + Tile Grid
+         (borrow from IsoCity)
+                   ↓
+        Same building sprites
+         (Kenney assets)
+                   ↓
+      Custom AI Node glyphs
+                   ↓
+  WebSocket for real-time activity pulses
+                   ↓
+   Iframe/Modal for project interface
+```
+
+**Why not WebGL/Three.js?**
+- Canvas 2D is simpler, performant enough for isometric
+- IsoCity proves it works at scale
+- Easier to iterate on
+
+---
+
+## Open Questions for Implementation
+
+1. **Planet regions** - How are plots assigned? Random? Themed zones? User choice?
+2. **Decay mechanics** - What happens to inactive projects? City crumbles? Weeds/overgrowth?
+3. **Neighbor interaction** - Any mechanics between adjacent plots? Or purely cosmetic?
+4. **Scale limits** - How many plots per region? Performance ceiling?
+5. **CTA generation** - Templated by project type? Or actually AI-generated text?
+6. **Project interface** - Iframe embed? Modal overlay? New tab?
+
+---
 
 ## Research Tasks
 
-- [ ] Find and explore iso city source code
-- [ ] Survey isometric web rendering libraries
-- [ ] Look at how other "spatial web" concepts have been implemented
-- [ ] Sketch rough interaction model
-- [ ] Write up concept doc with recommendations
+- [x] Find and explore IsoCity source code
+- [x] Survey isometric web rendering approaches
+- [x] Document zoom hierarchy concept
+- [x] Define plot anatomy (AI node, city growth, CTAs)
+- [x] Map business model to visual elements
+- [x] Identify technical approach (Canvas 2D, IsoCity-style)
+- [x] List open questions for implementation phase
+
+---
+
+## Next Steps (Future WOs)
+
+1. **Canvas City Prototype** - Basic rendering with zoom levels, placeholder plots
+2. **AI Node Design** - Custom glyphs, activity states, CTA system
+3. **City Growth Algorithm** - Token burn → tile spawning logic
+4. **Real-time Activity** - WebSocket integration for live pulses
+5. **Project Interface Embed** - How CTAs open actual project UIs
