@@ -22,9 +22,10 @@ tags:
   - reliability
   - bug
 estimate_hours: 1
-status: ready
+status: done
 created_at: 2026-01-12
 updated_at: 2026-01-12
+completed_at: 2026-01-12
 depends_on: []
 era: v2
 ---
