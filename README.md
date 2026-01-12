@@ -2,7 +2,7 @@
 
 Local-first, mobile-friendly control center for managing all your repos, specs, work orders, and long-running AI agent runs.
 
-This repo will become one of the projects it manages (“dogfooding”): we’ll build the UI, then use it to track and complete its own work orders.
+This repo will become one of the projects it manages ("dogfooding"): we'll build the UI, then use it to track and complete its own work orders.
 
 ## Goals
 - Scan and index local git repos; classify as prototype vs long-term; surface stage/status/priority/next work orders.
@@ -13,6 +13,7 @@ This repo will become one of the projects it manages (“dogfooding”): we’ll
 - Chat system with scoped threads (global, per-project, per-work-order) and worktree isolation.
 - Tech tree visualization showing work order dependencies and era progression.
 - VM-based project isolation for safe, sandboxed agent execution.
+- **Autonomous shift agents** that run work order loops with minimal human intervention.
 
 ## Non-goals (v0)
 - Cloud hosting or cross-device sync.
@@ -20,28 +21,67 @@ This repo will become one of the projects it manages (“dogfooding”): we’ll
 - Full diff/merge UI (summary-first; diffs on-demand via local tools).
 - Built-in SMS/email notifications (in-app only; notifier plugins later).
 
-## Architecture (v0)
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  SHIFT AGENT (local, Claude CLI, full permissions)              │
+│  - Gathers context, decides what to work on                     │
+│  - Kicks off runs, monitors, handles escalations                │
+│  - Completes shifts with handoffs                               │
+└───────────────────────────────┬─────────────────────────────────┘
+                                │ triggers runs via API
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  PCC SERVER (localhost:4010)                                    │
+│  - Work Order CRUD, Run orchestration, Shift lifecycle          │
+│  - SQLite state, Git worktree management                        │
+└───────────────────────────────┬─────────────────────────────────┘
+                                │ executes on
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  VM (GCP, isolated execution)                                   │
+│  - Builder → Test → Reviewer → Merge loop                       │
+│  - Sandboxed, no decisions, just executes WOs                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 - **UI:** Next.js (TypeScript) app, configured as a PWA and tuned for mobile.
 - **Local API/Runner:** Node/TS server for filesystem scanning, git metadata, Work Order CRUD, and executing agent runs.
 - **State:** SQLite for global indexed state/history; per-repo sidecar `.control.yml` for human-maintained metadata.
 - **Work Orders:** Markdown files in `work_orders/` with YAML frontmatter contract (see `docs/work_orders.md`).
 - **Providers:** Pluggable provider interface supporting `codex` / `claude_code` / `gemini_cli`. Only Codex implemented in v0.
-  - Repo discovery and sidecar schema: `docs/repo_discovery.md`.
+- **Shifts:** Bounded work sessions with context gathering, decision making, and handoffs.
 
 ## Security
 - Runs on your laptop; access from anywhere through ngrok reserved domain + basic auth.
 - No secrets committed. Use a local `.env` (gitignored) for API keys/provider settings.
+- VM execution is sandboxed; shift agent runs locally with your permissions.
 
-## Repo layout (planned)
-- `app/` or `src/` – Next.js UI.
+## Repo layout
+- `app/` – Next.js UI.
 - `server/` – local API + runner.
 - `docs/` – contracts, decisions, architecture notes.
 - `work_orders/` – Work Order cards/specs.
+- `prompts/` – Agent prompts (shift agent, etc.).
+- `scripts/` – Utility scripts (start-shift, ngrok, etc.).
 
 ## Getting started
 
-### Prereqs
-- Node.js 18+ and npm.
+### Prerequisites
+- Node.js 18+ and npm
+- `OPENAI_API_KEY` for LLM/Codex calls
+
+### Environment Setup
+```bash
+# Copy example env and fill in your values
+cp .env.example .env
+
+# Required: Add your OpenAI API key
+# Edit .env and set OPENAI_API_KEY=your-key-here
+```
+
+See `.env.example` for all available configuration options.
 
 ### Install
 ```bash
@@ -52,47 +92,89 @@ npm install
 ```bash
 npm run server:dev
 ```
-Defaults to `http://localhost:4010`.  
-API endpoints (v0):
-- `GET /health`
-- `GET /repos`
-- `POST /repos/scan` (forces a rescan; returns discovered repo paths)
-
-Optional env vars:
-- `CONTROL_CENTER_PORT=4010`
-- `CONTROL_CENTER_HOST=127.0.0.1` (bind host; defaults to loopback for private-by-default)
-- `CONTROL_CENTER_ALLOW_LAN=1` (required to accept non-loopback clients; v0 has no auth and can leak local repo paths if exposed on your LAN)
-- `CONTROL_CENTER_DB_PATH=/absolute/path/control-center.db`
-- `CONTROL_CENTER_SCAN_ROOTS=/path/to/repos,/another/path` (comma-separated; defaults to `$HOME`)
-- `CONTROL_CENTER_ALLOWED_ORIGINS=http://localhost:3010` (comma-separated CORS allowlist for browser calls; defaults include `http://localhost:3000` and `http://localhost:3010-3013` plus `127.0.0.1` equivalents)
-- `CONTROL_CENTER_CORS_ALLOW_ALL=1` (dev-only + loopback-only: disables the allowlist when `NODE_ENV != "production"` and `CONTROL_CENTER_HOST` is loopback)
-- `CONTROL_CENTER_MAX_BUILDER_ITERATIONS=10` (caps builder/test retries before failing a run)
-- `CONTROL_CENTER_CHAT_SUGGESTION_CONTEXT_MESSAGES=10` (how many recent thread messages + run metadata to include when generating Access+Context suggestions)
-- `CONTROL_CENTER_CHAT_TRUSTED_HOSTS=github.com,raw.githubusercontent.com` (comma- or newline-separated host list for the chat "trusted" network pack; overrides Chat Settings)
-- `CONTROL_CENTER_SSH_SKIP_HOST_KEY_CHECKING=1` (disables SSH host key verification; not recommended)
-
-Database notes:
-- Schema (including `projects` and `work_orders`) is auto-created on server start (see `server/db.ts`), with lightweight startup migrations for existing DBs.
-- To reset local state, stop the server and delete the DB file (default `control-center.db`).
+Defaults to `http://localhost:4010`.
 
 ### Run UI (Next.js PWA dev)
 ```bash
 npm run dev
 ```
-UI runs on `http://localhost:3010` by default and expects the server at `NEXT_PUBLIC_API_BASE_URL` (default `http://localhost:4010`).
-Dev note: `npm run dev` sets `NEXT_DIST_DIR=.next-dev` via `scripts/with-env.mjs` (cross-platform; see `next.config.js`) so dev artifacts don’t pollute the production build output (`.next/`).
+UI runs on `http://localhost:3010` by default.
 
 ### Recommended: run API + UI in tmux
 ```bash
-tmux new-session -d -s pcc -c /Users/cdossman/project-control-center -n dev
+tmux new-session -d -s pcc -c /path/to/project-control-center -n dev
 tmux send-keys -t pcc:dev.0 "npm run server:dev" C-m
-tmux split-window -h -t pcc:dev -c /Users/cdossman/project-control-center
+tmux split-window -h -t pcc:dev -c /path/to/project-control-center
 tmux send-keys -t pcc:dev.1 "npm run dev" C-m
 tmux attach -t pcc
 ```
 Detach anytime with `Ctrl+b` then `d`.
 
-### Expose UI via ngrok (reserved domain + basic auth)
+## VM Setup (Remote Execution)
+
+For sandboxed execution, PCC can run builds on a GCP VM.
+
+### Prerequisites
+- GCP account with a project
+- `gcloud` CLI installed and authenticated
+- VM image with Node.js, Docker, and dependencies
+
+### Configuration
+Add to your `.env`:
+```bash
+CONTROL_CENTER_GCLOUD_PATH=/usr/local/bin/gcloud
+CONTROL_CENTER_SSH_PATH=/usr/bin/ssh
+CONTROL_CENTER_RSYNC_PATH=/usr/bin/rsync
+CONTROL_CENTER_GCP_IMAGE_PROJECT=your-gcp-project
+CONTROL_CENTER_GCP_IMAGE_FAMILY=pcc-runner
+CONTROL_CENTER_GCP_SSH_USER=runner
+CONTROL_CENTER_VM_REPO_ROOT=/home/runner/repos
+```
+
+### Provisioning
+VMs are provisioned on-demand via the UI or API:
+```bash
+POST /repos/:id/vm/provision
+```
+
+## Autonomous Shift Agent
+
+The shift agent runs autonomous work sessions on a project.
+
+### How it works
+1. **Start shift** - Creates a bounded work session
+2. **Gather context** - Fetches project state (WOs, runs, git, constitution)
+3. **Decide** - LLM picks what to work on based on priorities
+4. **Execute** - Kicks off runs, monitors, handles issues
+5. **Loop** - Repeats until timeout or nothing left to do
+6. **Handoff** - Documents what happened for the next shift
+
+### Running the shift agent
+```bash
+# Start an autonomous shift on a project
+./scripts/start-shift.sh project-control-center
+```
+
+This invokes Claude CLI with full permissions to run the shift loop. The agent will:
+- Call the PCC API to get context
+- Decide which WO to work on
+- Kick off runs on the VM
+- Monitor until complete
+- Generate a handoff when done
+
+### Shift Context API
+```bash
+# Get full project context for shift decisions
+GET /projects/:id/shift-context
+
+# Start a shift
+POST /projects/:id/shifts
+
+# Complete with handoff
+POST /projects/:id/shifts/:shiftId/complete
+```
+
+## Expose UI via ngrok (reserved domain + basic auth)
 1. Install ngrok (for example, `brew install ngrok/ngrok/ngrok` or https://ngrok.com/download), then add your authtoken:
    ```bash
    ngrok config add-authtoken <token>
@@ -108,24 +190,19 @@ Detach anytime with `Ctrl+b` then `d`.
    set -a; source .env; set +a
    bash scripts/ngrok.sh
    ```
-   Or inline:
-   ```bash
-   NGROK_DOMAIN=your-name.ngrok.app NGROK_BASIC_AUTH=youruser:strongpassword bash scripts/ngrok.sh
-   ```
 
-### Build
+## Build
 ```bash
 npm run build
 npm run server:build
 ```
 
-### E2E smoke tests (Playwright)
+## E2E smoke tests (Playwright)
 ```bash
 npm test
 ```
-By default, tests run the API on `http://127.0.0.1:4011` and the built UI on `http://127.0.0.1:3012` (+ an offline-mode UI on `:3013`).  
+By default, tests run the API on `http://127.0.0.1:4011` and the built UI on `http://127.0.0.1:3012`.
 Override with `E2E_API_PORT`, `E2E_WEB_PORT`, and `E2E_OFFLINE_WEB_PORT` if those ports are in use.
-Isolation patterns and fixtures are documented in `docs/e2e_testing.md`.
 
 ## Roadmap
 
@@ -136,24 +213,35 @@ Isolation patterns and fixtures are documented in `docs/e2e_testing.md`.
 - ✅ Codex builder + reviewer loop with handoff summaries.
 - ✅ Settings page for provider/model.
 
-**v1 (Current)**
+**v1 (Done)**
 - ✅ Chat system with scoped threads and attention notifications.
 - ✅ Starred projects in portfolio.
 - ✅ E2E testing with Playwright (desktop + mobile).
 - ✅ ngrok exposure with basic auth.
 - ✅ Git worktree isolation for runner and chat.
 - ✅ Tech tree visualization for WO dependencies.
-- ⏳ Claude Code + Gemini CLI providers.
-- ⏳ iMessage notifier plugin.
 
-**v2 (In Progress)**
-- ✅ VM isolation scaffolding (DB, API, UI).
-- ✅ VM provisioning + lifecycle (GCP/SSH/IP).
-- ⏳ Remote exec + repo sync with safety guardrails.
-- ⏳ Runner integration with VM artifact egress.
-- ⏳ Constitution system (schema, generation, injection).
-- ⏳ Autonomous run policy + scheduler.
-- ⏳ Cost metering (VM runtime, tokens, APIs).
+**v2 (Current)**
+- ✅ VM isolation (DB, API, UI, provisioning, lifecycle).
+- ✅ Remote exec + repo sync with safety guardrails.
+- ✅ Runner integration with VM artifact egress.
+- ✅ Constitution system (schema, generation, injection).
+- ✅ Shift system (context, lifecycle, handoffs).
+- ✅ Auto-handoff generation from run logs.
+- ⏳ Shift agent (local Claude CLI).
+- ⏳ Run time estimation.
 
-## Runner smoke test
-- Codex runner smoke test ran (WO-2025-010, 2025-12-12).
+**v3 (Planned)**
+- ⏳ Global agent (cross-project orchestration).
+- ⏳ Escalation routing system.
+- ⏳ Project health monitoring.
+- ⏳ Shift agent VM deployment (24/7 autonomous).
+- ⏳ External integrations (GitHub, Slack).
+- ⏳ Strategic planning & roadmaps.
+
+## Documentation
+- `docs/work_orders.md` - Work Order contract and lifecycle
+- `docs/repo_discovery.md` - Repo discovery and sidecar schema
+- `docs/e2e_testing.md` - E2E testing patterns
+- `docs/agent_shift_protocol.md` - Shift agent protocol
+- `docs/system-architecture.md` - System architecture diagram
