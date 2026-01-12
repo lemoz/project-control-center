@@ -1207,6 +1207,31 @@ export async function resizeVM(projectId: string, newSize: ProjectVmSize): Promi
       projectOverride: vm.gcp_project ?? undefined,
     });
 
+    // Stop the VM first (set-machine-type requires instance to be stopped)
+    const stopArgs = [
+      "compute",
+      "instances",
+      "stop",
+      instanceName,
+      "--project",
+      gcp.project,
+      "--zone",
+      gcp.zone,
+      "--quiet",
+    ];
+    const stopResult = await runCommand(GCLOUD_COMMAND, stopArgs, { timeoutMs: 180000 });
+    if (stopResult.exitCode !== 0) {
+      const output = commandOutput(stopResult);
+      if (isNotFoundOutput(output)) {
+        throw new VmManagerError("not_found", "VM instance not found.");
+      }
+      throw new VmManagerError(
+        "command_failed",
+        `Failed to stop instance for resize. ${output || buildCommandLabel(GCLOUD_COMMAND, stopArgs)}`
+      );
+    }
+
+    // Resize the machine type
     const args = [
       "compute",
       "instances",
@@ -1218,18 +1243,35 @@ export async function resizeVM(projectId: string, newSize: ProjectVmSize): Promi
       gcp.zone,
       "--machine-type",
       MACHINE_TYPES[newSize],
-      "--allow-stopping-for-update",
       "--quiet",
     ];
-    const result = await runCommand(GCLOUD_COMMAND, args, { timeoutMs: 180000 });
+    const result = await runCommand(GCLOUD_COMMAND, args, { timeoutMs: 60000 });
     if (result.exitCode !== 0) {
       const output = commandOutput(result);
-      if (isNotFoundOutput(output)) {
-        throw new VmManagerError("not_found", "VM instance not found.");
-      }
       throw new VmManagerError(
         "command_failed",
         `Failed to resize instance. ${output || buildCommandLabel(GCLOUD_COMMAND, args)}`
+      );
+    }
+
+    // Start the VM back up
+    const startArgs = [
+      "compute",
+      "instances",
+      "start",
+      instanceName,
+      "--project",
+      gcp.project,
+      "--zone",
+      gcp.zone,
+      "--quiet",
+    ];
+    const startResult = await runCommand(GCLOUD_COMMAND, startArgs, { timeoutMs: 180000 });
+    if (startResult.exitCode !== 0) {
+      const output = commandOutput(startResult);
+      throw new VmManagerError(
+        "command_failed",
+        `Failed to start instance after resize. ${output || buildCommandLabel(GCLOUD_COMMAND, startArgs)}`
       );
     }
 

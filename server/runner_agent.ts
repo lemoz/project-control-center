@@ -896,6 +896,37 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const SYNC_RETRY_BACKOFF_MS = [1000, 3000, 10000];
+const SYNC_MAX_RETRIES = 3;
+
+function formatRetryError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.replace(/\s+/g, " ").trim();
+}
+
+async function withRetry<T>(
+  operation: () => Promise<T>,
+  name: string,
+  log: (line: string) => void
+): Promise<T> {
+  for (let attempt = 1; attempt <= SYNC_MAX_RETRIES; attempt++) {
+    try {
+      return await operation();
+    } catch (err) {
+      const detail = formatRetryError(err);
+      const suffix = detail ? `: ${detail}` : "";
+      const backoffMs = SYNC_RETRY_BACKOFF_MS[Math.min(attempt - 1, SYNC_RETRY_BACKOFF_MS.length - 1)];
+      if (attempt === SYNC_MAX_RETRIES) {
+        log(`${name} failed after ${SYNC_MAX_RETRIES} attempts${suffix}`);
+        throw err;
+      }
+      log(`${name} failed (attempt ${attempt}/${SYNC_MAX_RETRIES})${suffix}, retrying in ${backoffMs}ms...`);
+      await sleep(backoffMs);
+    }
+  }
+  throw new Error(`${name} failed after ${SYNC_MAX_RETRIES} attempts`);
+}
+
 type EscalationInput = { key: string; label: string };
 type EscalationRequest = {
   what_i_tried: string;
@@ -1355,16 +1386,22 @@ async function runCodexExecInContainer(params: {
   const sshUser = process.env.CONTROL_CENTER_GCP_SSH_USER?.trim() || "cdossman";
   const codexAuthPath = `/home/${sshUser}/.codex`;
 
+  // When running as non-root user, use /workspace as HOME (always exists and writable)
+  const containerHome = "/workspace";
   const mountFlags = [
     `-v ${shellEscape(`${workspaceHostPath}:/workspace`)}`,
     `-v ${shellEscape(`${artifactsHostPath}:/artifacts`)}`,
-    // Mount codex auth directory (not read-only - codex needs to write session data)
-    `-v ${shellEscape(`${codexAuthPath}:/root/.codex`)}`,
+    // Mount codex auth directory to workspace (writable by non-root user)
+    `-v ${shellEscape(`${codexAuthPath}:${containerHome}/.codex`)}`,
   ];
 
-  const envFlags = Object.entries(params.env)
-    .filter(([key]) => ENV_KEY_PATTERN.test(key))
-    .map(([key, value]) => `-e ${key}=${shellEscape(value)}`);
+  // Set HOME so codex finds its config in the writable location
+  const envFlags = [
+    `-e HOME=${containerHome}`,
+    ...Object.entries(params.env)
+      .filter(([key]) => ENV_KEY_PATTERN.test(key))
+      .map(([key, value]) => `-e ${key}=${shellEscape(value)}`),
+  ];
 
   const resourceFlags: string[] = [];
   if (params.resources.cpus > 0) resourceFlags.push(`--cpus=${params.resources.cpus}`);
@@ -2173,9 +2210,13 @@ async function syncRemoteWorkspaceFiles(
   log: (line: string) => void
 ) {
   log(`Syncing worktree to VM workspace ${config.workspacePath}`);
-  await remoteUpload(config.projectId, localPath, config.workspacePath, {
-    allowDelete: true,
-  });
+  await withRetry(
+    () => remoteUpload(config.projectId, localPath, config.workspacePath, {
+      allowDelete: true,
+    }),
+    "remote upload",
+    log
+  );
 }
 
 async function syncRemoteWorkspaceToLocal(
@@ -2184,9 +2225,13 @@ async function syncRemoteWorkspaceToLocal(
   log: (line: string) => void
 ) {
   log(`Syncing VM workspace ${config.workspacePath} back to worktree`);
-  await remoteDownload(config.projectId, config.workspacePath, localPath, {
-    allowDelete: true,
-  });
+  await withRetry(
+    () => remoteDownload(config.projectId, config.workspacePath, localPath, {
+      allowDelete: true,
+    }),
+    "remote download",
+    log
+  );
 }
 
 async function cleanupRemoteRun(config: RemoteRunConfig, log: (line: string) => void) {
