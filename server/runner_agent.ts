@@ -1375,6 +1375,7 @@ async function runCodexExecInContainer(params: {
     "docker run --rm",
     `--name ${shellEscape(params.containerName)}`,
     "--network host",
+    "--user $(id -u):$(id -g)",  // Run as host user to avoid root-owned files
     ...resourceFlags,
     ...mountFlags,
     ...envFlags,
