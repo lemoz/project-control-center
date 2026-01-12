@@ -1379,16 +1379,22 @@ async function runCodexExecInContainer(params: {
   const sshUser = process.env.CONTROL_CENTER_GCP_SSH_USER?.trim() || "cdossman";
   const codexAuthPath = `/home/${sshUser}/.codex`;
 
+  // When running as non-root user, mount codex auth to a user-writable location
+  const containerHome = "/home/runner";
   const mountFlags = [
     `-v ${shellEscape(`${workspaceHostPath}:/workspace`)}`,
     `-v ${shellEscape(`${artifactsHostPath}:/artifacts`)}`,
-    // Mount codex auth directory (not read-only - codex needs to write session data)
-    `-v ${shellEscape(`${codexAuthPath}:/root/.codex`)}`,
+    // Mount codex auth directory to container home (writable by non-root user)
+    `-v ${shellEscape(`${codexAuthPath}:${containerHome}/.codex`)}`,
   ];
 
-  const envFlags = Object.entries(params.env)
-    .filter(([key]) => ENV_KEY_PATTERN.test(key))
-    .map(([key, value]) => `-e ${key}=${shellEscape(value)}`);
+  // Set HOME so codex finds its config in the writable location
+  const envFlags = [
+    `-e HOME=${containerHome}`,
+    ...Object.entries(params.env)
+      .filter(([key]) => ENV_KEY_PATTERN.test(key))
+      .map(([key, value]) => `-e ${key}=${shellEscape(value)}`),
+  ];
 
   const resourceFlags: string[] = [];
   if (params.resources.cpus > 0) resourceFlags.push(`--cpus=${params.resources.cpus}`);
