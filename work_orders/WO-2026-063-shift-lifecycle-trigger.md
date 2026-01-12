@@ -26,7 +26,7 @@ tags:
   - lifecycle
   - api
 estimate_hours: 3
-status: you_review
+status: done
 created_at: 2026-01-11
 updated_at: 2026-01-12
 depends_on:
