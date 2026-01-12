@@ -25,14 +25,13 @@ tags:
   - storage
   - continuity
 estimate_hours: 2
-status: backlog
+status: you_review
 created_at: 2026-01-11
-updated_at: 2026-01-11
+updated_at: 2026-01-12
 depends_on:
   - WO-2026-060
 era: v2
 ---
-
 ## Implementation
 
 ### Database Schema

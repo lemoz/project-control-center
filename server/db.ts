@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import Database from "better-sqlite3";
 import path from "path";
 
@@ -104,6 +105,52 @@ export type WorkOrderDepRow = {
   work_order_id: string;
   depends_on_id: string;
   created_at: string;
+};
+
+export type ShiftHandoffDecision = {
+  decision: string;
+  rationale: string;
+};
+
+export type ShiftHandoffRow = {
+  id: string;
+  project_id: string;
+  shift_id: string | null;
+  summary: string;
+  work_completed: string | null;
+  recommendations: string | null;
+  blockers: string | null;
+  next_priorities: string | null;
+  decisions_made: string | null;
+  agent_id: string | null;
+  duration_minutes: number | null;
+  created_at: string;
+};
+
+export type ShiftHandoff = {
+  id: string;
+  project_id: string;
+  shift_id: string | null;
+  summary: string;
+  work_completed: string[];
+  recommendations: string[];
+  blockers: string[];
+  next_priorities: string[];
+  decisions_made: ShiftHandoffDecision[];
+  agent_id: string | null;
+  duration_minutes: number | null;
+  created_at: string;
+};
+
+export type CreateShiftHandoffInput = {
+  summary: string;
+  work_completed?: string[];
+  recommendations?: string[];
+  blockers?: string[];
+  next_priorities?: string[];
+  decisions_made?: ShiftHandoffDecision[];
+  agent_id?: string;
+  duration_minutes?: number;
 };
 
 let db: Database.Database | null = null;
@@ -219,6 +266,25 @@ function initSchema(database: Database.Database) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_work_order_deps_depends_on ON work_order_deps(project_id, depends_on_id);
+
+    CREATE TABLE IF NOT EXISTS shift_handoffs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      shift_id TEXT,
+      summary TEXT NOT NULL,
+      work_completed TEXT,
+      recommendations TEXT,
+      blockers TEXT,
+      next_priorities TEXT,
+      decisions_made TEXT,
+      agent_id TEXT,
+      duration_minutes INTEGER,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_shift_handoffs_project_created
+      ON shift_handoffs(project_id, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS chat_threads (
       id TEXT PRIMARY KEY,
@@ -1010,4 +1076,148 @@ export function listAllWorkOrderDeps(projectId: string): WorkOrderDepRow[] {
   return database
     .prepare("SELECT * FROM work_order_deps WHERE project_id = ?")
     .all(projectId) as WorkOrderDepRow[];
+}
+
+function normalizeStringArrayInput(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter(Boolean);
+}
+
+function normalizeDecisionArrayInput(value: unknown): ShiftHandoffDecision[] {
+  if (!Array.isArray(value)) return [];
+  const decisions: ShiftHandoffDecision[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const decision = typeof record.decision === "string" ? record.decision.trim() : "";
+    const rationale = typeof record.rationale === "string" ? record.rationale.trim() : "";
+    if (!decision || !rationale) continue;
+    decisions.push({ decision, rationale });
+  }
+  return decisions;
+}
+
+function parseJsonStringArray(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    return normalizeStringArrayInput(JSON.parse(value));
+  } catch {
+    return [];
+  }
+}
+
+function parseJsonDecisionArray(value: string | null): ShiftHandoffDecision[] {
+  if (!value) return [];
+  try {
+    return normalizeDecisionArrayInput(JSON.parse(value));
+  } catch {
+    return [];
+  }
+}
+
+function normalizeShiftId(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function toShiftHandoff(row: ShiftHandoffRow): ShiftHandoff {
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    shift_id: row.shift_id,
+    summary: row.summary,
+    work_completed: parseJsonStringArray(row.work_completed),
+    recommendations: parseJsonStringArray(row.recommendations),
+    blockers: parseJsonStringArray(row.blockers),
+    next_priorities: parseJsonStringArray(row.next_priorities),
+    decisions_made: parseJsonDecisionArray(row.decisions_made),
+    agent_id: row.agent_id,
+    duration_minutes: row.duration_minutes ?? null,
+    created_at: row.created_at,
+  };
+}
+
+export function createShiftHandoff(params: {
+  projectId: string;
+  shiftId?: string | null;
+  input: CreateShiftHandoffInput;
+}): ShiftHandoff {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  const summary = params.input.summary.trim();
+  const workCompleted = normalizeStringArrayInput(params.input.work_completed);
+  const recommendations = normalizeStringArrayInput(params.input.recommendations);
+  const blockers = normalizeStringArrayInput(params.input.blockers);
+  const nextPriorities = normalizeStringArrayInput(params.input.next_priorities);
+  const decisionsMade = normalizeDecisionArrayInput(params.input.decisions_made);
+  const agentId =
+    typeof params.input.agent_id === "string" && params.input.agent_id.trim()
+      ? params.input.agent_id.trim()
+      : null;
+  const durationMinutes =
+    typeof params.input.duration_minutes === "number" &&
+    Number.isFinite(params.input.duration_minutes)
+      ? Math.trunc(params.input.duration_minutes)
+      : null;
+  const shiftId = normalizeShiftId(params.shiftId);
+
+  const row: ShiftHandoffRow = {
+    id,
+    project_id: params.projectId,
+    shift_id: shiftId,
+    summary,
+    work_completed: JSON.stringify(workCompleted),
+    recommendations: JSON.stringify(recommendations),
+    blockers: JSON.stringify(blockers),
+    next_priorities: JSON.stringify(nextPriorities),
+    decisions_made: JSON.stringify(decisionsMade),
+    agent_id: agentId,
+    duration_minutes: durationMinutes,
+    created_at: now,
+  };
+
+  database
+    .prepare(
+      `INSERT INTO shift_handoffs
+        (id, project_id, shift_id, summary, work_completed, recommendations, blockers, next_priorities, decisions_made, agent_id, duration_minutes, created_at)
+       VALUES
+        (@id, @project_id, @shift_id, @summary, @work_completed, @recommendations, @blockers, @next_priorities, @decisions_made, @agent_id, @duration_minutes, @created_at)`
+    )
+    .run(row);
+
+  return toShiftHandoff(row);
+}
+
+export function listShiftHandoffs(projectId: string, limit = 10): ShiftHandoff[] {
+  const database = getDb();
+  const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+  const rows = database
+    .prepare(
+      `SELECT *
+       FROM shift_handoffs
+       WHERE project_id = ?
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .all(projectId, safeLimit) as ShiftHandoffRow[];
+  return rows.map((row) => toShiftHandoff(row));
+}
+
+export function getLatestShiftHandoff(projectId: string): ShiftHandoff | null {
+  const database = getDb();
+  const row = database
+    .prepare(
+      `SELECT *
+       FROM shift_handoffs
+       WHERE project_id = ?
+       ORDER BY created_at DESC
+       LIMIT 1`
+    )
+    .get(projectId) as ShiftHandoffRow | undefined;
+  if (!row) return null;
+  return toShiftHandoff(row);
 }

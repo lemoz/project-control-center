@@ -3,6 +3,7 @@ import fs from "fs";
 import express, { type Response } from "express";
 import cors from "cors";
 import {
+  createShiftHandoff,
   findProjectById,
   getProjectVm,
   markInProgressRunsFailed,
@@ -12,10 +13,12 @@ import {
   syncWorkOrderDeps,
   listAllWorkOrderDeps,
   getWorkOrderDependents,
+  type CreateShiftHandoffInput,
   type ProjectIsolationMode,
   type ProjectRow,
   type ProjectVmRow,
   type ProjectVmSize,
+  type ShiftHandoffDecision,
 } from "./db.js";
 import {
   deleteVM,
@@ -427,10 +430,98 @@ app.get("/repos/:id", (req, res) => {
   });
 });
 
+function normalizeStringArrayField(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  const entries = Array.isArray(value) ? value : [value];
+  return entries
+    .map((entry) => {
+      if (typeof entry === "string") return entry.trim();
+      if (typeof entry === "number" || typeof entry === "boolean") return String(entry);
+      return "";
+    })
+    .filter(Boolean);
+}
+
+function normalizeDecisionArrayField(value: unknown): ShiftHandoffDecision[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return [];
+  const decisions: ShiftHandoffDecision[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const decision = typeof record.decision === "string" ? record.decision.trim() : "";
+    const rationale = typeof record.rationale === "string" ? record.rationale.trim() : "";
+    if (!decision || !rationale) continue;
+    decisions.push({ decision, rationale });
+  }
+  return decisions;
+}
+
+function parseCreateShiftHandoffInput(
+  payload: unknown
+):
+  | { ok: true; input: CreateShiftHandoffInput }
+  | { ok: false; error: string } {
+  if (!payload || typeof payload !== "object") {
+    return { ok: false, error: "request body required" };
+  }
+  const record = payload as Record<string, unknown>;
+  const summaryRaw = record.summary;
+  if (typeof summaryRaw !== "string" || !summaryRaw.trim()) {
+    return { ok: false, error: "`summary` must be a non-empty string" };
+  }
+
+  const input: CreateShiftHandoffInput = {
+    summary: summaryRaw.trim(),
+  };
+  const work_completed = normalizeStringArrayField(record.work_completed);
+  const recommendations = normalizeStringArrayField(record.recommendations);
+  const blockers = normalizeStringArrayField(record.blockers);
+  const next_priorities = normalizeStringArrayField(record.next_priorities);
+  const decisions_made = normalizeDecisionArrayField(record.decisions_made);
+
+  if (work_completed !== undefined) input.work_completed = work_completed;
+  if (recommendations !== undefined) input.recommendations = recommendations;
+  if (blockers !== undefined) input.blockers = blockers;
+  if (next_priorities !== undefined) input.next_priorities = next_priorities;
+  if (decisions_made !== undefined) input.decisions_made = decisions_made;
+  if (typeof record.agent_id === "string" && record.agent_id.trim()) {
+    input.agent_id = record.agent_id.trim();
+  }
+  if (typeof record.duration_minutes === "number" && Number.isFinite(record.duration_minutes)) {
+    input.duration_minutes = record.duration_minutes;
+  }
+
+  return { ok: true, input };
+}
+
 app.get("/projects/:id/shift-context", (req, res) => {
   const context = buildShiftContext(req.params.id);
   if (!context) return res.status(404).json({ error: "project not found" });
   return res.json(context);
+});
+
+app.post("/projects/:id/shifts/:shiftId/handoff", (req, res) => {
+  const { id, shiftId } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  if (!shiftId || !shiftId.trim()) {
+    return res.status(400).json({ error: "`shiftId` must be provided" });
+  }
+  const parsed = parseCreateShiftHandoffInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  try {
+    const handoff = createShiftHandoff({
+      projectId: project.id,
+      shiftId,
+      input: parsed.input,
+    });
+    return res.status(201).json(handoff);
+  } catch (err) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : "failed to create handoff",
+    });
+  }
 });
 
 app.patch("/repos/:id/star", (req, res) => {
