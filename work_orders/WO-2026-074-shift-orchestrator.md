@@ -124,7 +124,7 @@ for await (const message of query({
     cwd: projectPath,
     allowedTools: ["Read", "Edit", "Bash", "Glob", "Grep", "WebFetch", "WebSearch"],
     permissionMode: "bypassPermissions",
-    mcpServers: { "claude-in-chrome": { /* config */ } },
+    mcpServers: { /* headless browser MCP if needed */ },
     maxBudgetUsd: 10.00
   }
 })) {
@@ -132,9 +132,37 @@ for await (const message of query({
 }
 ```
 
+## Deployment Constraint: VM Execution
+
+**The orchestrator must run on the VM** for fully autonomous operation.
+
+### Chrome Extension Limitation
+- Claude in Chrome extension uses Native Messaging API
+- Requires local Chrome browser with GUI
+- NOT usable on headless VM
+- NOT configurable via Agent SDK mcpServers
+
+### VM-Compatible Browser Options
+1. **Playwright MCP** - Headless browser automation on VM
+2. **Puppeteer MCP** - Alternative headless option
+3. **No browser** - Use WebFetch/WebSearch only (simplest)
+
+### Recommended Architecture
+
+```
+VM (fully autonomous)
+├── Shift Orchestrator (Node.js)
+├── Claude Agent SDK
+├── Playwright MCP Server (optional, for browser tasks)
+├── WebFetch/WebSearch (built-in, no browser needed)
+└── WO Runner (already exists)
+```
+
+**MVP approach:** Start with WebFetch/WebSearch only. Add Playwright MCP later if browser automation needed.
+
 ## Open Questions
 
-1. **Chrome extension MCP config**: Exact MCP server configuration for browser tools
+1. **Playwright MCP setup**: Install and configure on VM
 2. **Cost limits**: What's reasonable per-shift budget?
 3. **Failure handling**: Retry? Pause? Alert?
 

@@ -156,9 +156,22 @@ export async function runShift(projectId: string, shiftId: string) {
 }
 ```
 
+## Chrome Extension Limitation (Important!)
+
+**Claude in Chrome extension CANNOT be used on VM:**
+- Uses Chrome Native Messaging API (requires local GUI)
+- NOT a traditional MCP server
+- NOT configurable via Agent SDK mcpServers option
+- Only works with `claude --chrome` flag locally
+
+**VM-compatible alternatives:**
+- Playwright MCP server (headless browser)
+- Puppeteer MCP server
+- WebFetch/WebSearch (no browser, simpler)
+
 ## Open Questions
 
-1. **Chrome extension MCP config**: Need to determine exact MCP server configuration
+1. **Playwright MCP setup**: How to install and configure on VM
 2. **Session resumption**: Should shifts be able to resume?
 3. **Cost limits**: What's a reasonable per-shift budget?
 
