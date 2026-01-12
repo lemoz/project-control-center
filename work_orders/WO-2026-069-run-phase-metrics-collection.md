@@ -24,7 +24,7 @@ tags:
   - metrics
   - infrastructure
 estimate_hours: 2
-status: draft
+status: ready
 created_at: 2026-01-12
 updated_at: 2026-01-12
 depends_on: []
