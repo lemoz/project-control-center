@@ -12,6 +12,7 @@ build/
 # Local env / secrets
 .env
 .env.*
+!.env.example
 
 # Local-only seed data
 scripts/seed_descriptions.local.json
