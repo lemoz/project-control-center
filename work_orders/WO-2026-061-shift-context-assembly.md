@@ -33,7 +33,7 @@ tags:
   - api
   - context
 estimate_hours: 3
-status: backlog
+status: ready
 created_at: 2026-01-11
 updated_at: 2026-01-11
 depends_on:
