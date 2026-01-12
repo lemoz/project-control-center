@@ -1379,12 +1379,12 @@ async function runCodexExecInContainer(params: {
   const sshUser = process.env.CONTROL_CENTER_GCP_SSH_USER?.trim() || "cdossman";
   const codexAuthPath = `/home/${sshUser}/.codex`;
 
-  // When running as non-root user, mount codex auth to a user-writable location
-  const containerHome = "/home/runner";
+  // When running as non-root user, use /workspace as HOME (always exists and writable)
+  const containerHome = "/workspace";
   const mountFlags = [
     `-v ${shellEscape(`${workspaceHostPath}:/workspace`)}`,
     `-v ${shellEscape(`${artifactsHostPath}:/artifacts`)}`,
-    // Mount codex auth directory to container home (writable by non-root user)
+    // Mount codex auth directory to workspace (writable by non-root user)
     `-v ${shellEscape(`${codexAuthPath}:${containerHome}/.codex`)}`,
   ];
 
