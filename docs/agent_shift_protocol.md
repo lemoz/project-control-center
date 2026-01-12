@@ -61,6 +61,10 @@ Decision heuristics:
 - Is there missing work that should be captured as a new WO?
 - Do I need brief research before acting?
 
+Decision prompt template:
+Use `server/prompts/shift_decision.ts` to render ShiftContext + Constitution into the
+decision prompt with the instruction hierarchy and required output format.
+
 ### Execute
 Pick the tool that fits the work:
 - WO + Runner: substantial changes, multi-file work, or when isolation helps.
