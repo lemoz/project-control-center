@@ -4,12 +4,18 @@ import express, { type Response } from "express";
 import cors from "cors";
 import {
   createShiftHandoff,
+  expireStaleShifts,
   findProjectById,
+  getActiveShift,
   getProjectVm,
+  getShiftByProjectId,
+  listShifts,
   markInProgressRunsFailed,
   markWorkOrderRunsMerged,
   setProjectStar,
+  startShift,
   updateProjectIsolationSettings,
+  updateShift,
   syncWorkOrderDeps,
   listAllWorkOrderDeps,
   getWorkOrderDependents,
@@ -457,6 +463,49 @@ function normalizeDecisionArrayField(value: unknown): ShiftHandoffDecision[] | u
   return decisions;
 }
 
+function parseStartShiftInput(
+  payload: unknown
+):
+  | { ok: true; input: { agentType?: string; agentId?: string; timeoutMinutes?: number } }
+  | { ok: false; error: string } {
+  if (payload === undefined || payload === null) {
+    return { ok: true, input: {} };
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, error: "request body must be an object" };
+  }
+
+  const record = payload as Record<string, unknown>;
+  const input: { agentType?: string; agentId?: string; timeoutMinutes?: number } = {};
+
+  if ("agent_type" in record) {
+    if (typeof record.agent_type !== "string" || !record.agent_type.trim()) {
+      return { ok: false, error: "`agent_type` must be a non-empty string" };
+    }
+    input.agentType = record.agent_type.trim();
+  }
+
+  if ("agent_id" in record) {
+    if (typeof record.agent_id !== "string" || !record.agent_id.trim()) {
+      return { ok: false, error: "`agent_id` must be a non-empty string" };
+    }
+    input.agentId = record.agent_id.trim();
+  }
+
+  if ("timeout_minutes" in record) {
+    if (
+      typeof record.timeout_minutes !== "number" ||
+      !Number.isFinite(record.timeout_minutes) ||
+      record.timeout_minutes <= 0
+    ) {
+      return { ok: false, error: "`timeout_minutes` must be a positive number" };
+    }
+    input.timeoutMinutes = record.timeout_minutes;
+  }
+
+  return { ok: true, input };
+}
+
 function parseCreateShiftHandoffInput(
   payload: unknown
 ):
@@ -495,10 +544,168 @@ function parseCreateShiftHandoffInput(
   return { ok: true, input };
 }
 
+function parseAbandonShiftInput(
+  payload: unknown
+):
+  | { ok: true; reason: string | null }
+  | { ok: false; error: string } {
+  if (payload === undefined || payload === null) {
+    return { ok: true, reason: null };
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, error: "request body must be an object" };
+  }
+  const record = payload as Record<string, unknown>;
+  if (!("reason" in record)) {
+    return { ok: true, reason: null };
+  }
+  if (typeof record.reason !== "string") {
+    return { ok: false, error: "`reason` must be a string" };
+  }
+  const trimmed = record.reason.trim();
+  return { ok: true, reason: trimmed ? trimmed : null };
+}
+
 app.get("/projects/:id/shift-context", (req, res) => {
   const context = buildShiftContext(req.params.id);
   if (!context) return res.status(404).json({ error: "project not found" });
   return res.json(context);
+});
+
+app.post("/projects/:id/shifts", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const parsed = parseStartShiftInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+  const result = startShift({
+    projectId: project.id,
+    agentType: parsed.input.agentType,
+    agentId: parsed.input.agentId,
+    timeoutMinutes: parsed.input.timeoutMinutes,
+  });
+
+  if (!result.ok) {
+    return res.status(409).json({
+      error: "shift already active",
+      active_shift: result.activeShift,
+    });
+  }
+
+  const context = buildShiftContext(project.id);
+  if (!context) return res.status(500).json({ error: "failed to build shift context" });
+  return res.status(201).json({ shift: result.shift, context });
+});
+
+app.get("/projects/:id/shifts/active", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const shift = getActiveShift(project.id);
+  return res.json(shift ?? null);
+});
+
+app.get("/projects/:id/shifts", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit = Number.isFinite(limitRaw) ? Math.trunc(limitRaw) : 10;
+  const shifts = listShifts(project.id, limit);
+  return res.json(shifts);
+});
+
+app.post("/projects/:id/shifts/:shiftId/complete", (req, res) => {
+  const { id, shiftId } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  if (!shiftId || !shiftId.trim()) {
+    return res.status(400).json({ error: "`shiftId` must be provided" });
+  }
+
+  const parsed = parseCreateShiftHandoffInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+  expireStaleShifts(project.id);
+  const shift = getShiftByProjectId(project.id, shiftId);
+  if (!shift) return res.status(404).json({ error: "shift not found" });
+  if (shift.status !== "active") {
+    return res.status(409).json({ error: "shift not active", status: shift.status });
+  }
+
+  try {
+    const handoff = createShiftHandoff({
+      projectId: project.id,
+      shiftId,
+      input: parsed.input,
+    });
+    const completedAt = new Date().toISOString();
+    const updatedOk = updateShift(shift.id, {
+      status: "completed",
+      completed_at: completedAt,
+      handoff_id: handoff.id,
+      error: null,
+    });
+    if (!updatedOk) {
+      return res.status(500).json({ error: "failed to update shift" });
+    }
+    const updatedShift =
+      getShiftByProjectId(project.id, shiftId) ??
+      ({
+        ...shift,
+        status: "completed",
+        completed_at: completedAt,
+        handoff_id: handoff.id,
+        error: null,
+      } as const);
+    return res.json({ shift: updatedShift, handoff });
+  } catch (err) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : "failed to complete shift",
+    });
+  }
+});
+
+app.post("/projects/:id/shifts/:shiftId/abandon", (req, res) => {
+  const { id, shiftId } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  if (!shiftId || !shiftId.trim()) {
+    return res.status(400).json({ error: "`shiftId` must be provided" });
+  }
+
+  const parsed = parseAbandonShiftInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+  expireStaleShifts(project.id);
+  const shift = getShiftByProjectId(project.id, shiftId);
+  if (!shift) return res.status(404).json({ error: "shift not found" });
+  if (shift.status !== "active") {
+    return res.status(409).json({ error: "shift not active", status: shift.status });
+  }
+
+  const completedAt = new Date().toISOString();
+  const reason = parsed.reason ?? "Shift abandoned";
+  const updatedOk = updateShift(shift.id, {
+    status: "failed",
+    completed_at: completedAt,
+    error: reason,
+  });
+  if (!updatedOk) {
+    return res.status(500).json({ error: "failed to update shift" });
+  }
+
+  const updatedShift =
+    getShiftByProjectId(project.id, shiftId) ??
+    ({
+      ...shift,
+      status: "failed",
+      completed_at: completedAt,
+      error: reason,
+    } as const);
+  return res.json(updatedShift);
 });
 
 app.post("/projects/:id/shifts/:shiftId/handoff", (req, res) => {

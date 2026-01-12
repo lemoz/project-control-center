@@ -26,15 +26,14 @@ tags:
   - lifecycle
   - api
 estimate_hours: 3
-status: backlog
+status: you_review
 created_at: 2026-01-11
-updated_at: 2026-01-11
+updated_at: 2026-01-12
 depends_on:
   - WO-2026-061
   - WO-2026-062
 era: v2
 ---
-
 ## Implementation
 
 ### Database Schema
