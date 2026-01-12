@@ -26,7 +26,7 @@ tags:
   - orchestrator
   - prompt
 estimate_hours: 2
-status: ready
+status: done
 created_at: 2026-01-12
 updated_at: 2026-01-12
 depends_on:

@@ -7,8 +7,9 @@ PROJECT_PATH="${2:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 
 PROMPT_CONTENT="$(sed "s|{project_id}|${PROJECT_ID}|g" "${PROJECT_PATH}/prompts/shift_agent.md")"
 
+cd "${PROJECT_PATH}"
+
 exec claude \
-  --project "${PROJECT_PATH}" \
-  --prompt "${PROMPT_CONTENT}" \
   --dangerously-skip-permissions \
-  --allowedTools "Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch"
+  --allowedTools "Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch" \
+  -p "${PROMPT_CONTENT}"
