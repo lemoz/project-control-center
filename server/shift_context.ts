@@ -29,6 +29,11 @@ export type WorkOrderSummary = {
   deps_satisfied: boolean;
 };
 
+type HandoffDecision = {
+  decision: string;
+  rationale: string;
+};
+
 type LastHumanInteractionType =
   | "manual_run"
   | "review"
@@ -83,8 +88,11 @@ export type ShiftContext = {
   last_handoff: {
     created_at: string;
     summary: string;
+    work_completed: string[];
     recommendations: string[];
     blockers: string[];
+    next_priorities: string[];
+    decisions_made: HandoffDecision[];
   } | null;
   git: {
     branch: string;
@@ -313,21 +321,32 @@ function readLastHandoff(projectId: string): ShiftContext["last_handoff"] {
     if (!table) return null;
     const row = db
       .prepare(
-        `SELECT created_at, summary, recommendations, blockers
+        `SELECT created_at, summary, work_completed, recommendations, blockers, next_priorities, decisions_made
          FROM shift_handoffs
          WHERE project_id = ?
          ORDER BY created_at DESC
          LIMIT 1`
       )
       .get(projectId) as
-      | { created_at: string; summary: string; recommendations: string | null; blockers: string | null }
+      | {
+          created_at: string;
+          summary: string;
+          work_completed: string | null;
+          recommendations: string | null;
+          blockers: string | null;
+          next_priorities: string | null;
+          decisions_made: string | null;
+        }
       | undefined;
     if (!row) return null;
     return {
       created_at: row.created_at,
       summary: row.summary,
+      work_completed: parseJsonStringArray(row.work_completed),
       recommendations: parseJsonStringArray(row.recommendations),
       blockers: parseJsonStringArray(row.blockers),
+      next_priorities: parseJsonStringArray(row.next_priorities),
+      decisions_made: parseJsonDecisionArray(row.decisions_made),
     };
   } catch {
     return null;
@@ -340,6 +359,26 @@ function parseJsonStringArray(value: string | null): string[] {
     const parsed = JSON.parse(value);
     if (!Array.isArray(parsed)) return [];
     return parsed.map((entry) => String(entry)).filter((entry) => entry.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function parseJsonDecisionArray(value: string | null): HandoffDecision[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    const decisions: HandoffDecision[] = [];
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== "object") continue;
+      const record = entry as Record<string, unknown>;
+      const decision = typeof record.decision === "string" ? record.decision.trim() : "";
+      const rationale = typeof record.rationale === "string" ? record.rationale.trim() : "";
+      if (!decision || !rationale) continue;
+      decisions.push({ decision, rationale });
+    }
+    return decisions;
   } catch {
     return [];
   }
