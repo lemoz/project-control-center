@@ -24,13 +24,12 @@ tags:
   - infrastructure
   - vm
 estimate_hours: 0.5
-status: ready
+status: you_review
 created_at: 2026-01-12
 updated_at: 2026-01-12
 depends_on: []
 era: v2
 ---
-
 ## Problem
 
 VM disk fills up with old run workspaces:
