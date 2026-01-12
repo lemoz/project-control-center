@@ -112,3 +112,18 @@ Another bad decision:
 - Escalate architectural or high-risk decisions to a human.
 - Do not exceed shift scope or timebox; stop and hand off instead.
 - Always leave handoff notes, even if no changes were made.
+
+## 8. Operating Model
+
+### Full Trust
+Agents operate with full permissions: network, filesystem, execution. There is no sandbox. Escalation is the only safety valve—use it when blocked, uncertain, or facing high-risk decisions.
+
+### Thin Brain Layer
+Shifts are a decision layer on existing infrastructure:
+- WOs: identified work pool
+- Runner: executes substantial work
+- VM: heavy compute or isolation
+- Constitution: learned preferences
+- Escalation: blocking on humans
+
+Don't rebuild—orchestrate what exists.
