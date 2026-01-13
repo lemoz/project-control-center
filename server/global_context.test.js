@@ -245,5 +245,15 @@ test("buildGlobalContextResponse aggregates and sorts projects", () => {
   assert.equal(response.resources.vms_running, 1);
   assert.equal(response.resources.vms_available, 1);
   assert.equal(response.resources.budget_used_today, 12.5);
+  assert.ok(response.economy);
+  assert.ok(Number.isFinite(response.economy.monthly_budget_usd));
+  assert.ok(Number.isFinite(response.economy.total_remaining_usd));
+  assert.ok(Number.isFinite(response.economy.portfolio_burn_rate_daily_usd));
+  const statusTotal =
+    response.economy.projects_healthy +
+    response.economy.projects_warning +
+    response.economy.projects_critical +
+    response.economy.projects_exhausted;
+  assert.equal(statusTotal, response.projects.length);
   assert.ok(Number.isFinite(Date.parse(response.assembled_at)));
 });

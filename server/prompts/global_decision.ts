@@ -96,6 +96,47 @@ function formatRecentActivity(context: GlobalContextResponse, limit: number): st
   return lines.join("\n");
 }
 
+function formatUsd(value: number): string {
+  if (!Number.isFinite(value)) return "$0.00";
+  const sign = value < 0 ? "-" : "";
+  return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
+function formatPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "n/a";
+  return `${value.toFixed(0)}%`;
+}
+
+function formatDays(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  return value.toFixed(1);
+}
+
+function formatPortfolioEconomy(context: GlobalContextResponse): string {
+  const economy = context.economy;
+  const remainingPct =
+    economy.monthly_budget_usd > 0
+      ? (economy.total_remaining_usd / economy.monthly_budget_usd) * 100
+      : null;
+  const lines: string[] = [];
+  lines.push(`Monthly budget: ${formatUsd(economy.monthly_budget_usd)}`);
+  lines.push(`Allocated: ${formatUsd(economy.total_allocated_usd)}`);
+  lines.push(`Spent: ${formatUsd(economy.total_spent_usd)}`);
+  lines.push(
+    `Remaining: ${formatUsd(economy.total_remaining_usd)} (${formatPercent(remainingPct)})`
+  );
+  lines.push(
+    `Portfolio burn rate: ${formatUsd(economy.portfolio_burn_rate_daily_usd)}/day average (7d)`
+  );
+  lines.push(
+    `Portfolio runway: ${formatDays(economy.portfolio_runway_days)} days at current rate`
+  );
+  lines.push(
+    `Project budgets: ${economy.projects_healthy} healthy, ${economy.projects_warning} warning, ${economy.projects_critical} critical, ${economy.projects_exhausted} exhausted`
+  );
+  return lines.join("\n");
+}
+
 export function buildGlobalDecisionPrompt(
   context: GlobalContextResponse,
   options: DecisionPromptOptions = {}
@@ -118,6 +159,9 @@ export function buildGlobalDecisionPrompt(
   lines.push("");
   lines.push("## Projects Overview");
   lines.push(formatProjectsOverview({ projects: selected.selected, omitted: selected.omitted }));
+  lines.push("");
+  lines.push("## Portfolio Economy");
+  lines.push(formatPortfolioEconomy(context));
   lines.push("");
   lines.push("## Pending Escalations");
   lines.push(formatEscalations(context));

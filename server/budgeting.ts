@@ -214,8 +214,8 @@ function getBudgetStatus(remaining: number, allocation: number): BudgetStatus {
   }
   const pct = remaining / allocation;
   if (pct <= 0) return "exhausted";
-  if (pct < 0.1) return "critical";
-  if (pct < 0.25) return "warning";
+  if (pct < 0.25) return "critical";
+  if (pct <= 0.5) return "warning";
   return "healthy";
 }
 
