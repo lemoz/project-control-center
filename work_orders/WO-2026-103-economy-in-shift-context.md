@@ -6,7 +6,7 @@ context:
   - WO-2026-102 (budget allocation system)
   - Agents should know their runway and budget status
   - Enables cost-aware decision making
-  - "Part of the context would be where are they at with their budget, how much runway do they have"
+  - Part of the context would be where are they at with their budget, how much runway do they have
 acceptance_criteria:
   - Add economy field to ShiftContext type
   - Include budget remaining, burn rate, runway days
@@ -26,7 +26,7 @@ tags:
   - shift
   - context
 estimate_hours: 3
-status: backlog
+status: ready
 created_at: 2026-01-13
 updated_at: 2026-01-13
 depends_on:
