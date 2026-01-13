@@ -428,6 +428,21 @@ function initSchema(database: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_cost_records_project_created
       ON cost_records(project_id, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS budget_settings (
+      id TEXT PRIMARY KEY DEFAULT 'global',
+      monthly_budget_usd REAL NOT NULL DEFAULT 0,
+      period_start TEXT NOT NULL,
+      period_end TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS project_budgets (
+      project_id TEXT PRIMARY KEY,
+      monthly_allocation_usd REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS escalations (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
