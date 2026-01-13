@@ -11,6 +11,16 @@ function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
+function formatTokens(value: number): string {
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(1)}M`;
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(1)}K`;
+  }
+  return value.toLocaleString();
+}
+
 export function ProjectPopup({ node }: { node: ProjectNode }) {
   const successPercent = Math.round(node.successProgress * 100);
 
@@ -69,7 +79,7 @@ export function ProjectPopup({ node }: { node: ProjectNode }) {
           Last activity: {formatTimestamp(node.lastActivity)}
         </div>
         <div className="muted" style={{ fontSize: 12 }}>
-          Consumption: {node.consumptionRate} tokens/day
+          Tokens today: {formatTokens(node.consumptionRate)}
         </div>
       </div>
 

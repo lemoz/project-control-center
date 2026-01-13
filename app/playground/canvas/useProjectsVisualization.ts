@@ -89,6 +89,16 @@ type ShiftContextWorkOrderSummary = {
   in_progress: number;
 };
 
+type ProjectCostSummary = {
+  project_id: string;
+  period: string;
+  total_cost_usd: number;
+  token_totals: {
+    input: number;
+    output: number;
+  };
+};
+
 type ShiftContext = {
   project: {
     id: string;
@@ -356,6 +366,16 @@ async function fetchShiftContext(projectId: string): Promise<ShiftContext | null
   return json;
 }
 
+async function fetchProjectCosts(projectId: string): Promise<ProjectCostSummary | null> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/costs?period=day`, {
+    cache: "no-store",
+  });
+  const json = (await res.json().catch(() => null)) as unknown;
+  if (!res.ok) return null;
+  if (!json || typeof json !== "object") return null;
+  return json as ProjectCostSummary;
+}
+
 export function useProjectsVisualization(): {
   data: VisualizationData;
   loading: boolean;
@@ -368,6 +388,7 @@ export function useProjectsVisualization(): {
   const [runsByProject, setRunsByProject] = useState<Record<string, RunSummary[]>>({});
   const [globalContext, setGlobalContext] = useState<GlobalContextResponse | null>(null);
   const [shiftContexts, setShiftContexts] = useState<Record<string, ShiftContext>>({});
+  const [costsByProject, setCostsByProject] = useState<Record<string, ProjectCostSummary>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -380,7 +401,7 @@ export function useProjectsVisualization(): {
       const nextProjects = await fetchRepos();
       setProjects(nextProjects);
 
-      const [workOrderResults, runResults, contextResult, shiftResults] = await Promise.all([
+      const [workOrderResults, runResults, contextResult, shiftResults, costResults] = await Promise.all([
         Promise.allSettled(
           nextProjects.map(async (project) => {
             const workOrders = await fetchWorkOrders(project.id);
@@ -398,6 +419,12 @@ export function useProjectsVisualization(): {
           nextProjects.map(async (project) => {
             const context = await fetchShiftContext(project.id);
             return { projectId: project.id, context };
+          })
+        ),
+        Promise.allSettled(
+          nextProjects.map(async (project) => {
+            const costs = await fetchProjectCosts(project.id);
+            return { projectId: project.id, costs };
           })
         ),
       ]);
@@ -429,6 +456,14 @@ export function useProjectsVisualization(): {
         }
       }
       setShiftContexts(shiftMap);
+
+      const costsMap: Record<string, ProjectCostSummary> = {};
+      for (const result of costResults) {
+        if (result.status === "fulfilled" && result.value.costs) {
+          costsMap[result.value.projectId] = result.value.costs;
+        }
+      }
+      setCostsByProject(costsMap);
 
       setLastUpdated(new Date());
     } catch (err) {
@@ -544,12 +579,16 @@ export function useProjectsVisualization(): {
         : workOrders.length
           ? computeSuccessProgress(workOrders)
           : 0;
-      const consumptionRate = estimateConsumptionRate({
-        activeRuns: activeRunsCount,
-        workOrders: summary,
-        lastActivity,
-        hasActiveShift,
-      });
+      // Use real cost data if available, otherwise fall back to heuristic
+      const projectCosts = costsByProject[project.id];
+      const consumptionRate = projectCosts
+        ? projectCosts.token_totals.input + projectCosts.token_totals.output
+        : estimateConsumptionRate({
+            activeRuns: activeRunsCount,
+            workOrders: summary,
+            lastActivity,
+            hasActiveShift,
+          });
 
       nodes.push({
         id: project.id,
@@ -586,7 +625,7 @@ export function useProjectsVisualization(): {
       edges,
       timestamp: lastUpdated ?? new Date(),
     };
-  }, [projects, workOrdersByProject, runsByProject, globalContext, shiftContexts, lastUpdated]);
+  }, [projects, workOrdersByProject, runsByProject, globalContext, shiftContexts, costsByProject, lastUpdated]);
 
   return {
     data,
