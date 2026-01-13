@@ -1,5 +1,5 @@
 ---
-id: WO-2026-103
+id: WO-2026-106
 title: Research and Plan pnpm Workspace Support
 status: ready
 priority: 1
