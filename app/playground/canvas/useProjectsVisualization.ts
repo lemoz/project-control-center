@@ -60,6 +60,8 @@ type RunSummary = {
   escalation: string | null;
 };
 
+type ActivePhase = "building" | "testing" | "reviewing" | "waiting";
+
 type RunsResponse = {
   runs: RunSummary[];
   error?: string;
@@ -252,6 +254,16 @@ function computeActivityLevel(activeRunsCount: number, lastActivity: Date | null
   if (ageHours < 72) return 0.4;
   if (ageHours < 168) return 0.25;
   return 0.1;
+}
+
+function resolveActivePhase(activeRuns: RunSummary[]): ActivePhase | undefined {
+  if (!activeRuns.length) return undefined;
+  if (activeRuns.some((run) => run.status === "waiting_for_input")) return "waiting";
+  if (activeRuns.some((run) => run.status === "testing")) return "testing";
+  if (activeRuns.some((run) => run.status === "ai_review" || run.status === "you_review")) {
+    return "reviewing";
+  }
+  return "building";
 }
 
 function estimateConsumptionRate(params: {
@@ -588,6 +600,8 @@ export function useProjectsVisualization(): {
       const activeRuns = runs.filter((run) => !TERMINAL_RUN_STATUSES.has(run.status));
       const activeRunsCount = shiftContext ? shiftContext.active_runs.length : activeRuns.length;
       const hasActiveShift = Boolean(globalProject?.active_shift);
+      const activePhase =
+        resolveActivePhase(activeRuns) ?? (activeRunsCount > 0 ? "building" : undefined);
       const escalationCount = globalProject?.escalations.length ?? 0;
       const needsHuman = escalationCount > 0;
 
@@ -632,6 +646,7 @@ export function useProjectsVisualization(): {
         status: project.status,
         consumptionRate,
         isActive: activeRunsCount > 0 || hasActiveShift,
+        activePhase,
         activityLevel,
         lastActivity,
         needsHuman,
