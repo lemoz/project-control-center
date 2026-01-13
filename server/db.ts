@@ -217,6 +217,81 @@ export type CreateShiftHandoffInput = {
   duration_minutes?: number;
 };
 
+export type GlobalShiftRow = {
+  id: string;
+  status: ShiftStatus;
+  agent_type: string | null;
+  agent_id: string | null;
+  started_at: string;
+  completed_at: string | null;
+  expires_at: string | null;
+  handoff_id: string | null;
+  error: string | null;
+};
+
+export type GlobalShiftStateSnapshot = {
+  projects: Array<{
+    id: string;
+    name: string;
+    status: string;
+    health: string;
+    active_shift: { id: string; started_at: string; agent_id: string | null } | null;
+    escalations: Array<{ id: string; type: string; summary: string }>;
+    work_orders: { ready: number; building: number; blocked: number };
+    recent_runs: Array<{ id: string; wo_id: string; status: string; outcome: string | null }>;
+    last_activity: string | null;
+  }>;
+  escalation_queue: Array<{
+    project_id: string;
+    escalation_id: string;
+    type: string;
+    priority: number;
+    waiting_since: string;
+  }>;
+  resources: {
+    vms_running: number;
+    vms_available: number;
+    budget_used_today: number;
+  };
+  assembled_at: string;
+};
+
+export type GlobalShiftHandoffRow = {
+  id: string;
+  shift_id: string | null;
+  summary: string;
+  actions_taken: string | null;
+  pending_items: string | null;
+  project_state: string | null;
+  decisions_made: string | null;
+  agent_id: string | null;
+  duration_minutes: number | null;
+  created_at: string;
+};
+
+export type GlobalShiftHandoff = {
+  id: string;
+  shift_id: string | null;
+  summary: string;
+  actions_taken: string[];
+  pending_items: string[];
+  project_state: GlobalShiftStateSnapshot | null;
+  decisions_made: ShiftHandoffDecision[];
+  agent_id: string | null;
+  duration_minutes: number | null;
+  created_at: string;
+};
+
+export type CreateGlobalShiftHandoffInput = {
+  summary: string;
+  actions_taken?: string[];
+  pending_items?: string[];
+  project_state?: GlobalShiftStateSnapshot | null;
+  decisions_made?: ShiftHandoffDecision[];
+  agent_id?: string;
+  duration_minutes?: number;
+};
+
 let db: Database.Database | null = null;
 
 export function getDb() {
@@ -401,6 +476,38 @@ function initSchema(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_shifts_project_status
       ON shifts(project_id, status);
+
+    CREATE TABLE IF NOT EXISTS global_shift_handoffs (
+      id TEXT PRIMARY KEY,
+      shift_id TEXT,
+      summary TEXT NOT NULL,
+      actions_taken TEXT,
+      pending_items TEXT,
+      project_state TEXT,
+      decisions_made TEXT,
+      agent_id TEXT,
+      duration_minutes INTEGER,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_global_shift_handoffs_created
+      ON global_shift_handoffs(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS global_shifts (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'active',
+      agent_type TEXT,
+      agent_id TEXT,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      expires_at TEXT,
+      handoff_id TEXT,
+      error TEXT,
+      FOREIGN KEY (handoff_id) REFERENCES global_shift_handoffs(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_global_shifts_status
+      ON global_shifts(status);
 
     CREATE TABLE IF NOT EXISTS chat_threads (
       id TEXT PRIMARY KEY,
@@ -1724,4 +1831,242 @@ export function getLatestShiftHandoff(projectId: string): ShiftHandoff | null {
     .get(projectId) as ShiftHandoffRow | undefined;
   if (!row) return null;
   return toShiftHandoff(row);
+}
+
+type StartGlobalShiftResult =
+  | { ok: true; shift: GlobalShiftRow }
+  | { ok: false; activeShift: GlobalShiftRow };
+
+function expireStaleGlobalShiftsWithDatabase(
+  database: Database.Database,
+  options: { now: Date }
+): number {
+  const nowIso = options.now.toISOString();
+  const result = database
+    .prepare(
+      `UPDATE global_shifts
+       SET status = 'expired',
+           completed_at = COALESCE(completed_at, ?),
+           error = COALESCE(error, 'Shift expired')
+       WHERE status = 'active'
+         AND expires_at IS NOT NULL
+         AND expires_at < ?`
+    )
+    .run(nowIso, nowIso);
+  return result.changes;
+}
+
+export function expireStaleGlobalShifts(): number {
+  const database = getDb();
+  return expireStaleGlobalShiftsWithDatabase(database, { now: new Date() });
+}
+
+export function startGlobalShift(params: {
+  agentType?: string | null;
+  agentId?: string | null;
+  timeoutMinutes?: number | null;
+}): StartGlobalShiftResult {
+  const database = getDb();
+  const now = new Date();
+  const agentType = normalizeOptionalString(params.agentType);
+  const agentId = normalizeOptionalString(params.agentId);
+  const timeoutMinutes = normalizeTimeoutMinutes(params.timeoutMinutes);
+  const startedAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + timeoutMinutes * 60_000).toISOString();
+
+  const tx = database.transaction(() => {
+    expireStaleGlobalShiftsWithDatabase(database, { now });
+    const active = database
+      .prepare(
+        "SELECT * FROM global_shifts WHERE status = 'active' ORDER BY started_at DESC LIMIT 1"
+      )
+      .get() as GlobalShiftRow | undefined;
+    if (active) return { ok: false, activeShift: active } as const;
+
+    const id = crypto.randomUUID();
+    const row: GlobalShiftRow = {
+      id,
+      status: "active",
+      agent_type: agentType,
+      agent_id: agentId,
+      started_at: startedAt,
+      completed_at: null,
+      expires_at: expiresAt,
+      handoff_id: null,
+      error: null,
+    };
+
+    database
+      .prepare(
+        `INSERT INTO global_shifts
+          (id, status, agent_type, agent_id, started_at, completed_at, expires_at, handoff_id, error)
+         VALUES
+          (@id, @status, @agent_type, @agent_id, @started_at, @completed_at, @expires_at, @handoff_id, @error)`
+      )
+      .run(row);
+    return { ok: true, shift: row } as const;
+  });
+
+  return tx();
+}
+
+export function getActiveGlobalShift(): GlobalShiftRow | null {
+  const database = getDb();
+  expireStaleGlobalShiftsWithDatabase(database, { now: new Date() });
+  const row = database
+    .prepare(
+      "SELECT * FROM global_shifts WHERE status = 'active' ORDER BY started_at DESC LIMIT 1"
+    )
+    .get() as GlobalShiftRow | undefined;
+  return row || null;
+}
+
+export function listGlobalShifts(limit = 10): GlobalShiftRow[] {
+  const database = getDb();
+  expireStaleGlobalShiftsWithDatabase(database, { now: new Date() });
+  const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+  return database
+    .prepare("SELECT * FROM global_shifts ORDER BY started_at DESC LIMIT ?")
+    .all(safeLimit) as GlobalShiftRow[];
+}
+
+export function getGlobalShiftById(shiftId: string): GlobalShiftRow | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM global_shifts WHERE id = ? LIMIT 1")
+    .get(shiftId) as GlobalShiftRow | undefined;
+  return row || null;
+}
+
+export function updateGlobalShift(
+  id: string,
+  patch: Partial<
+    Pick<GlobalShiftRow, "status" | "completed_at" | "expires_at" | "handoff_id" | "error">
+  >
+): boolean {
+  const database = getDb();
+  const fields: Array<{ key: keyof typeof patch; column: string }> = [
+    { key: "status", column: "status" },
+    { key: "completed_at", column: "completed_at" },
+    { key: "expires_at", column: "expires_at" },
+    { key: "handoff_id", column: "handoff_id" },
+    { key: "error", column: "error" },
+  ];
+  const sets = fields
+    .filter((field) => patch[field.key] !== undefined)
+    .map((field) => `${field.column} = @${field.key}`);
+  if (!sets.length) return false;
+  const result = database
+    .prepare(`UPDATE global_shifts SET ${sets.join(", ")} WHERE id = @id`)
+    .run({ id, ...patch });
+  return result.changes > 0;
+}
+
+function parseProjectState(value: string | null): GlobalShiftStateSnapshot | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as GlobalShiftStateSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+function toGlobalShiftHandoff(row: GlobalShiftHandoffRow): GlobalShiftHandoff {
+  return {
+    id: row.id,
+    shift_id: row.shift_id,
+    summary: row.summary,
+    actions_taken: parseJsonStringArray(row.actions_taken),
+    pending_items: parseJsonStringArray(row.pending_items),
+    project_state: parseProjectState(row.project_state),
+    decisions_made: parseJsonDecisionArray(row.decisions_made),
+    agent_id: row.agent_id,
+    duration_minutes: row.duration_minutes ?? null,
+    created_at: row.created_at,
+  };
+}
+
+export function createGlobalShiftHandoff(params: {
+  shiftId?: string | null;
+  input: CreateGlobalShiftHandoffInput;
+}): GlobalShiftHandoff {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  const summary = params.input.summary.trim();
+  const actionsTaken = normalizeStringArrayInput(params.input.actions_taken);
+  const pendingItems = normalizeStringArrayInput(params.input.pending_items);
+  const decisionsMade = normalizeDecisionArrayInput(params.input.decisions_made);
+  const agentId =
+    typeof params.input.agent_id === "string" && params.input.agent_id.trim()
+      ? params.input.agent_id.trim()
+      : null;
+  const durationMinutes =
+    typeof params.input.duration_minutes === "number" &&
+    Number.isFinite(params.input.duration_minutes)
+      ? Math.trunc(params.input.duration_minutes)
+      : null;
+  const shiftId = normalizeShiftId(params.shiftId);
+  let projectState: string | null = null;
+  if (params.input.project_state !== undefined) {
+    try {
+      projectState = params.input.project_state
+        ? JSON.stringify(params.input.project_state)
+        : null;
+    } catch {
+      throw new Error("project_state must be JSON-serializable");
+    }
+  }
+
+  const row: GlobalShiftHandoffRow = {
+    id,
+    shift_id: shiftId,
+    summary,
+    actions_taken: JSON.stringify(actionsTaken),
+    pending_items: JSON.stringify(pendingItems),
+    project_state: projectState,
+    decisions_made: JSON.stringify(decisionsMade),
+    agent_id: agentId,
+    duration_minutes: durationMinutes,
+    created_at: now,
+  };
+
+  database
+    .prepare(
+      `INSERT INTO global_shift_handoffs
+        (id, shift_id, summary, actions_taken, pending_items, project_state, decisions_made, agent_id, duration_minutes, created_at)
+       VALUES
+        (@id, @shift_id, @summary, @actions_taken, @pending_items, @project_state, @decisions_made, @agent_id, @duration_minutes, @created_at)`
+    )
+    .run(row);
+
+  return toGlobalShiftHandoff(row);
+}
+
+export function listGlobalShiftHandoffs(limit = 10): GlobalShiftHandoff[] {
+  const database = getDb();
+  const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+  const rows = database
+    .prepare(
+      `SELECT *
+       FROM global_shift_handoffs
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .all(safeLimit) as GlobalShiftHandoffRow[];
+  return rows.map((row) => toGlobalShiftHandoff(row));
+}
+
+export function getLatestGlobalShiftHandoff(): GlobalShiftHandoff | null {
+  const database = getDb();
+  const row = database
+    .prepare(
+      `SELECT *
+       FROM global_shift_handoffs
+       ORDER BY created_at DESC
+       LIMIT 1`
+    )
+    .get() as GlobalShiftHandoffRow | undefined;
+  if (!row) return null;
+  return toGlobalShiftHandoff(row);
 }

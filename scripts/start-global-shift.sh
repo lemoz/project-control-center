@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_PATH="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+cd "${PROJECT_PATH}"
+
+exec node --import tsx/esm server/global_agent_worker.ts
