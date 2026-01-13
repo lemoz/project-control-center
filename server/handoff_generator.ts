@@ -10,6 +10,7 @@ import {
   updateShift,
   type ShiftHandoffDecision,
 } from "./db.js";
+import { extractTokenUsageFromClaudeResponse, recordCostEntry } from "./cost_tracking.js";
 import { listWorkOrders } from "./work_orders.js";
 
 const execFileAsync = promisify(execFile);
@@ -329,7 +330,7 @@ function normalizeHandoffContent(
 async function generateHandoff(params: {
   prompt: string;
   projectPath: string;
-}): Promise<unknown> {
+}): Promise<{ content: unknown; usage: { inputTokens: number; outputTokens: number } | null }> {
   const result = await execFileAsync(
     "claude",
     ["-p", params.prompt, "--model", CLAUDE_HANDOFF_MODEL, "--output-format", "json"],
@@ -343,7 +344,8 @@ async function generateHandoff(params: {
   if (!stdout) {
     throw new Error("Claude CLI returned empty output");
   }
-  return JSON.parse(stdout) as unknown;
+  const parsed = JSON.parse(stdout) as unknown;
+  return { content: parsed, usage: extractTokenUsageFromClaudeResponse(parsed) };
 }
 
 export async function generateAndStoreHandoff(params: {
@@ -370,15 +372,25 @@ export async function generateAndStoreHandoff(params: {
 
     const fallback = fallbackHandoff(artifacts);
     let handoffContent = fallback;
+    let handoffUsage: { inputTokens: number; outputTokens: number } | null = null;
 
     try {
       const prompt = buildHandoffPrompt(artifacts);
-      const raw = await generateHandoff({ prompt, projectPath: project.path });
-      handoffContent = normalizeHandoffContent(raw, fallback);
+      const result = await generateHandoff({ prompt, projectPath: project.path });
+      handoffUsage = result.usage;
+      handoffContent = normalizeHandoffContent(result.content, fallback);
     } catch (err) {
       log(`handoff: Claude CLI failed, using fallback: ${String(err)}`);
       handoffContent = fallback;
     }
+    recordCostEntry({
+      projectId: params.projectId,
+      runId: params.runId,
+      category: "handoff",
+      model: CLAUDE_HANDOFF_MODEL,
+      usage: handoffUsage,
+      description: "handoff generation",
+    });
 
     const activeShift = getActiveShift(params.projectId);
     const handoff = createShiftHandoff({

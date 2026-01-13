@@ -10,6 +10,7 @@ import {
   getProjectVm,
   getRunById,
   listRunsByProject,
+  type CostCategory,
   type ProjectVmRow,
   type RunPhaseMetricOutcome,
   type RunPhaseMetricPhase,
@@ -26,6 +27,7 @@ import {
 } from "./work_orders.js";
 import { generateAndStoreHandoff, type RunOutcome } from "./handoff_generator.js";
 import { resolveRunnerSettingsForRepo } from "./settings.js";
+import { parseCodexTokenUsageFromLog, recordCostEntry } from "./cost_tracking.js";
 import {
   formatConstitutionBlock,
   getConstitutionForProject,
@@ -123,6 +125,31 @@ const DENY_EXTS = new Set([".pem", ".key", ".p12", ".pfx"]);
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function recordCostFromCodexLog(params: {
+  projectId: string;
+  runId: string;
+  category: CostCategory;
+  model: string;
+  logPath: string;
+  description?: string;
+  log?: (line: string) => void;
+}): void {
+  const usage = parseCodexTokenUsageFromLog(params.logPath);
+  recordCostEntry({
+    projectId: params.projectId,
+    runId: params.runId,
+    category: params.category,
+    model: params.model,
+    usage,
+    description: params.description,
+  });
+  if (!usage && params.log) {
+    params.log(
+      `[cost] token usage missing for ${params.description ?? params.category}`
+    );
+  }
 }
 
 type RunPhaseMetricMetadata = Record<string, unknown>;
@@ -1158,7 +1185,7 @@ function buildCodexExecArgs(params: {
   model?: string;
   reasoningEffort?: string;
 }): string[] {
-  const args: string[] = ["--ask-for-approval", "never", "exec"];
+  const args: string[] = ["--ask-for-approval", "never", "exec", "--json"];
   const model = params.model?.trim() || "gpt-5.2-codex";
   args.push("--model", model);
 
@@ -2502,6 +2529,8 @@ export async function runRun(runId: string) {
 
     const repoPath = project.path;
     const runnerSettings = resolveRunnerSettingsForRepo(repoPath).effective;
+    const builderModel = runnerSettings.builder.model.trim() || "gpt-5.2-codex";
+    const reviewerModel = runnerSettings.reviewer.model.trim() || "gpt-5.2-codex";
     const runDir = run.run_dir;
     ensureDir(runDir);
     ensureDir(path.join(runDir, "builder"));
@@ -2908,40 +2937,53 @@ export async function runRun(runId: string) {
         });
         fs.writeFileSync(path.join(builderDir, "prompt.txt"), builderPrompt, "utf8");
 
-        const runLocalBuilder = async (): Promise<CodexExecResult> =>
-          runCodexExec({
-            cwd: worktreePath,
-            prompt: builderPrompt,
-            schemaPath: builderSchemaPath,
-            outputPath: builderOutputPath,
-            logPath: builderLogPath,
-            sandbox: "workspace-write",
-            model: runnerSettings.builder.model,
-            cliPath: runnerSettings.builder.cliPath,
-            onEscalation: async (request) => {
-              const escalationRecord: EscalationRecord = {
-                ...request,
-                created_at: nowIso(),
-              };
-              updateRun(runId, {
-                status: "waiting_for_input",
-                escalation: JSON.stringify(escalationRecord),
-              });
-              writeJson(path.join(runDir, "escalation.json"), escalationRecord);
-              log("Escalation requested; waiting for user input");
+        const runLocalBuilder = async (): Promise<CodexExecResult> => {
+          try {
+            return await runCodexExec({
+              cwd: worktreePath,
+              prompt: builderPrompt,
+              schemaPath: builderSchemaPath,
+              outputPath: builderOutputPath,
+              logPath: builderLogPath,
+              sandbox: "workspace-write",
+              model: builderModel,
+              cliPath: runnerSettings.builder.cliPath,
+              onEscalation: async (request) => {
+                const escalationRecord: EscalationRecord = {
+                  ...request,
+                  created_at: nowIso(),
+                };
+                updateRun(runId, {
+                  status: "waiting_for_input",
+                  escalation: JSON.stringify(escalationRecord),
+                });
+                writeJson(path.join(runDir, "escalation.json"), escalationRecord);
+                log("Escalation requested; waiting for user input");
 
-              const resolved = await waitForEscalationResolution(runId, log);
-              if (!resolved?.resolution) return null;
-              try {
-                writeEscalationResolution(runDir, resolved);
-              } catch (err) {
-                log(`Failed to persist escalation resolution: ${String(err)}`);
-                return null;
-              }
-              return resolved;
-            },
-            log,
-          });
+                const resolved = await waitForEscalationResolution(runId, log);
+                if (!resolved?.resolution) return null;
+                try {
+                  writeEscalationResolution(runDir, resolved);
+                } catch (err) {
+                  log(`Failed to persist escalation resolution: ${String(err)}`);
+                  return null;
+                }
+                return resolved;
+              },
+              log,
+            });
+          } finally {
+            recordCostFromCodexLog({
+              projectId: project.id,
+              runId,
+              category: "builder",
+              model: builderModel,
+              logPath: builderLogPath,
+              description: `builder iteration ${iteration}`,
+              log,
+            });
+          }
+        };
 
         let builderExecResult: CodexExecResult;
         try {
@@ -2968,26 +3010,38 @@ export async function runRun(runId: string) {
             }
             let ranRemote = false;
             try {
-              builderExecResult = await runCodexExecRemote({
-                projectId: remoteConfig.projectId,
-                runId,
-                workspacePath: remoteConfig.workspacePath,
-                artifactsDir: path.posix.join(
-                  remoteConfig.artifactsPath,
-                  "builder",
-                  `iter-${iteration}`
-                ),
-                localPromptPath: path.join(builderDir, "prompt.txt"),
-                localSchemaPath: builderSchemaPath,
-                localOutputPath: builderOutputPath,
-                localLogPath: builderLogPath,
-                sandbox: "workspace-write",
-                skipGitRepoCheck: true,
-                model: runnerSettings.builder.model,
-                containerConfig,
-                containerName: buildContainerName(runId, `builder-${iteration}`),
-                log,
-              });
+              try {
+                builderExecResult = await runCodexExecRemote({
+                  projectId: remoteConfig.projectId,
+                  runId,
+                  workspacePath: remoteConfig.workspacePath,
+                  artifactsDir: path.posix.join(
+                    remoteConfig.artifactsPath,
+                    "builder",
+                    `iter-${iteration}`
+                  ),
+                  localPromptPath: path.join(builderDir, "prompt.txt"),
+                  localSchemaPath: builderSchemaPath,
+                  localOutputPath: builderOutputPath,
+                  localLogPath: builderLogPath,
+                  sandbox: "workspace-write",
+                  skipGitRepoCheck: true,
+                  model: builderModel,
+                  containerConfig,
+                  containerName: buildContainerName(runId, `builder-${iteration}`),
+                  log,
+                });
+              } finally {
+                recordCostFromCodexLog({
+                  projectId: project.id,
+                  runId,
+                  category: "builder",
+                  model: builderModel,
+                  logPath: builderLogPath,
+                  description: `builder iteration ${iteration}`,
+                  log,
+                });
+              }
               ranRemote = true;
             } catch (err) {
               if (err instanceof ContainerFallbackError) {
@@ -3296,17 +3350,31 @@ export async function runRun(runId: string) {
       const reviewerOutputPath = path.join(reviewerDir, "verdict.json");
       const reviewerLogPath = path.join(reviewerDir, "codex.log");
       const runLocalReviewer = () =>
-        runCodexExec({
-          cwd: reviewerDir,
-          prompt: reviewerPrompt,
-          schemaPath: reviewerSchemaPath,
-          outputPath: reviewerOutputPath,
-          logPath: reviewerLogPath,
-          sandbox: "read-only",
-          skipGitRepoCheck: true,
-          model: runnerSettings.reviewer.model,
-          cliPath: runnerSettings.reviewer.cliPath,
-        });
+        (async () => {
+          try {
+            return await runCodexExec({
+              cwd: reviewerDir,
+              prompt: reviewerPrompt,
+              schemaPath: reviewerSchemaPath,
+              outputPath: reviewerOutputPath,
+              logPath: reviewerLogPath,
+              sandbox: "read-only",
+              skipGitRepoCheck: true,
+              model: reviewerModel,
+              cliPath: runnerSettings.reviewer.cliPath,
+            });
+          } finally {
+            recordCostFromCodexLog({
+              projectId: project.id,
+              runId,
+              category: "reviewer",
+              model: reviewerModel,
+              logPath: reviewerLogPath,
+              description: `reviewer iteration ${iteration}`,
+              log,
+            });
+          }
+        })();
 
       try {
         if (remoteConfig && containerConfig && containerEnabled) {
@@ -3334,23 +3402,35 @@ export async function runRun(runId: string) {
             return;
           }
           try {
-            await runCodexExecRemote({
-              projectId: remoteConfig.projectId,
-              runId,
-              workspacePath: remoteConfig.workspacePath,
-              artifactsDir: remoteReviewerDir,
-              localPromptPath: path.join(reviewerDir, "prompt.txt"),
-              localSchemaPath: reviewerSchemaPath,
-              localOutputPath: reviewerOutputPath,
-              localLogPath: reviewerLogPath,
-              sandbox: "read-only",
-              skipGitRepoCheck: true,
-              model: runnerSettings.reviewer.model,
-              containerConfig,
-              containerName: buildContainerName(runId, `reviewer-${iteration}`),
-              workingDir: "/artifacts",
-              log,
-            });
+            try {
+              await runCodexExecRemote({
+                projectId: remoteConfig.projectId,
+                runId,
+                workspacePath: remoteConfig.workspacePath,
+                artifactsDir: remoteReviewerDir,
+                localPromptPath: path.join(reviewerDir, "prompt.txt"),
+                localSchemaPath: reviewerSchemaPath,
+                localOutputPath: reviewerOutputPath,
+                localLogPath: reviewerLogPath,
+                sandbox: "read-only",
+                skipGitRepoCheck: true,
+                model: reviewerModel,
+                containerConfig,
+                containerName: buildContainerName(runId, `reviewer-${iteration}`),
+                workingDir: "/artifacts",
+                log,
+              });
+            } finally {
+              recordCostFromCodexLog({
+                projectId: project.id,
+                runId,
+                category: "reviewer",
+                model: reviewerModel,
+                logPath: reviewerLogPath,
+                description: `reviewer iteration ${iteration}`,
+                log,
+              });
+            }
           } catch (err) {
             if (err instanceof ContainerFallbackError) {
               recordContainerFallback(err.reason);
@@ -3606,16 +3686,30 @@ export async function runRun(runId: string) {
       const mergeBuilderOutputPath = path.join(mergeDir, "result.json");
       const mergeBuilderLogPath = path.join(mergeDir, "codex.log");
       const runLocalMergeBuilder = () =>
-        runCodexExec({
-          cwd: worktreePath,
-          prompt: conflictPrompt,
-          schemaPath: builderSchemaPath,
-          outputPath: mergeBuilderOutputPath,
-          logPath: mergeBuilderLogPath,
-          sandbox: "workspace-write",
-          model: runnerSettings.builder.model,
-          cliPath: runnerSettings.builder.cliPath,
-        });
+        (async () => {
+          try {
+            return await runCodexExec({
+              cwd: worktreePath,
+              prompt: conflictPrompt,
+              schemaPath: builderSchemaPath,
+              outputPath: mergeBuilderOutputPath,
+              logPath: mergeBuilderLogPath,
+              sandbox: "workspace-write",
+              model: builderModel,
+              cliPath: runnerSettings.builder.cliPath,
+            });
+          } finally {
+            recordCostFromCodexLog({
+              projectId: project.id,
+              runId,
+              category: "builder",
+              model: builderModel,
+              logPath: mergeBuilderLogPath,
+              description: "merge conflict builder",
+              log,
+            });
+          }
+        })();
       try {
         if (remoteConfig && containerConfig && containerEnabled) {
           try {
@@ -3632,22 +3726,34 @@ export async function runRun(runId: string) {
           }
           let ranRemote = false;
           try {
-            await runCodexExecRemote({
-              projectId: remoteConfig.projectId,
-              runId,
-              workspacePath: remoteConfig.workspacePath,
-              artifactsDir: path.posix.join(remoteConfig.artifactsPath, "merge", "builder"),
-              localPromptPath: path.join(mergeDir, "prompt.txt"),
-              localSchemaPath: builderSchemaPath,
-              localOutputPath: mergeBuilderOutputPath,
-              localLogPath: mergeBuilderLogPath,
-              sandbox: "workspace-write",
-              skipGitRepoCheck: true,
-              model: runnerSettings.builder.model,
-              containerConfig,
-              containerName: buildContainerName(runId, "merge-builder"),
-              log,
-            });
+            try {
+              await runCodexExecRemote({
+                projectId: remoteConfig.projectId,
+                runId,
+                workspacePath: remoteConfig.workspacePath,
+                artifactsDir: path.posix.join(remoteConfig.artifactsPath, "merge", "builder"),
+                localPromptPath: path.join(mergeDir, "prompt.txt"),
+                localSchemaPath: builderSchemaPath,
+                localOutputPath: mergeBuilderOutputPath,
+                localLogPath: mergeBuilderLogPath,
+                sandbox: "workspace-write",
+                skipGitRepoCheck: true,
+                model: builderModel,
+                containerConfig,
+                containerName: buildContainerName(runId, "merge-builder"),
+                log,
+              });
+            } finally {
+              recordCostFromCodexLog({
+                projectId: project.id,
+                runId,
+                category: "builder",
+                model: builderModel,
+                logPath: mergeBuilderLogPath,
+                description: "merge conflict builder",
+                log,
+              });
+            }
             ranRemote = true;
           } catch (err) {
             if (err instanceof ContainerFallbackError) {
@@ -3781,17 +3887,31 @@ export async function runRun(runId: string) {
       const mergeReviewerOutputPath = path.join(mergeReviewerDir, "verdict.json");
       const mergeReviewerLogPath = path.join(mergeReviewerDir, "codex.log");
       const runLocalMergeReviewer = () =>
-        runCodexExec({
-          cwd: mergeReviewerDir,
-          prompt: mergeReviewerPrompt,
-          schemaPath: reviewerSchemaPath,
-          outputPath: mergeReviewerOutputPath,
-          logPath: mergeReviewerLogPath,
-          sandbox: "read-only",
-          skipGitRepoCheck: true,
-          model: runnerSettings.reviewer.model,
-          cliPath: runnerSettings.reviewer.cliPath,
-        });
+        (async () => {
+          try {
+            return await runCodexExec({
+              cwd: mergeReviewerDir,
+              prompt: mergeReviewerPrompt,
+              schemaPath: reviewerSchemaPath,
+              outputPath: mergeReviewerOutputPath,
+              logPath: mergeReviewerLogPath,
+              sandbox: "read-only",
+              skipGitRepoCheck: true,
+              model: reviewerModel,
+              cliPath: runnerSettings.reviewer.cliPath,
+            });
+          } finally {
+            recordCostFromCodexLog({
+              projectId: project.id,
+              runId,
+              category: "reviewer",
+              model: reviewerModel,
+              logPath: mergeReviewerLogPath,
+              description: "merge reviewer",
+              log,
+            });
+          }
+        })();
       try {
         if (remoteConfig && containerConfig && containerEnabled) {
           const remoteMergeReviewerDir = path.posix.join(
@@ -3817,23 +3937,35 @@ export async function runRun(runId: string) {
             };
           }
           try {
-            await runCodexExecRemote({
-              projectId: remoteConfig.projectId,
-              runId,
-              workspacePath: remoteConfig.workspacePath,
-              artifactsDir: remoteMergeReviewerDir,
-              localPromptPath: path.join(mergeReviewerDir, "prompt.txt"),
-              localSchemaPath: reviewerSchemaPath,
-              localOutputPath: mergeReviewerOutputPath,
-              localLogPath: mergeReviewerLogPath,
-              sandbox: "read-only",
-              skipGitRepoCheck: true,
-              model: runnerSettings.reviewer.model,
-              containerConfig,
-              containerName: buildContainerName(runId, "merge-reviewer"),
-              workingDir: "/artifacts",
-              log,
-            });
+            try {
+              await runCodexExecRemote({
+                projectId: remoteConfig.projectId,
+                runId,
+                workspacePath: remoteConfig.workspacePath,
+                artifactsDir: remoteMergeReviewerDir,
+                localPromptPath: path.join(mergeReviewerDir, "prompt.txt"),
+                localSchemaPath: reviewerSchemaPath,
+                localOutputPath: mergeReviewerOutputPath,
+                localLogPath: mergeReviewerLogPath,
+                sandbox: "read-only",
+                skipGitRepoCheck: true,
+                model: reviewerModel,
+                containerConfig,
+                containerName: buildContainerName(runId, "merge-reviewer"),
+                workingDir: "/artifacts",
+                log,
+              });
+            } finally {
+              recordCostFromCodexLog({
+                projectId: project.id,
+                runId,
+                category: "reviewer",
+                model: reviewerModel,
+                logPath: mergeReviewerLogPath,
+                description: "merge reviewer",
+                log,
+              });
+            }
           } catch (err) {
             if (err instanceof ContainerFallbackError) {
               recordContainerFallback(err.reason);

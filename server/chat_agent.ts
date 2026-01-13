@@ -3,6 +3,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { findProjectById, getDb } from "./db.js";
+import { parseCodexTokenUsageFromLog, recordCostEntry } from "./cost_tracking.js";
 import {
   countChatMessages,
   createChatMessage,
@@ -57,6 +58,25 @@ import {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function recordChatCost(params: {
+  projectId: string;
+  runId: string;
+  model: string;
+  logPath: string;
+  description?: string;
+}): void {
+  const model = params.model.trim() || "gpt-5.2-codex";
+  const usage = parseCodexTokenUsageFromLog(params.logPath);
+  recordCostEntry({
+    projectId: params.projectId,
+    runId: null,
+    category: "chat",
+    model,
+    usage,
+    description: params.description ?? `chat run ${params.runId}`,
+  });
 }
 
 export class PendingSendError extends Error {
@@ -2551,6 +2571,8 @@ export async function runChatRun(runId: string): Promise<void> {
     return status.hasPendingChanges;
   };
 
+  let costRecorded = false;
+
   try {
     await runCodexExecJson({
       cwd: runCwd,
@@ -2586,6 +2608,15 @@ export async function runChatRun(runId: string): Promise<void> {
         }
       },
     });
+    if (refreshedThread.project_id) {
+      recordChatCost({
+        projectId: refreshedThread.project_id,
+        runId,
+        model: run.model,
+        logPath: run.log_path,
+      });
+      costRecorded = true;
+    }
     rebuildCommandsFromLog();
 
     const raw = fs.readFileSync(outputPath, "utf8");
@@ -2643,6 +2674,16 @@ export async function runChatRun(runId: string): Promise<void> {
       error: null,
     });
   } catch (err) {
+    if (!costRecorded && refreshedThread.project_id) {
+      recordChatCost({
+        projectId: refreshedThread.project_id,
+        runId,
+        model: run.model,
+        logPath: run.log_path,
+        description: `chat run ${runId} failed`,
+      });
+      costRecorded = true;
+    }
     if (!commandsRebuilt) {
       try {
         rebuildCommandsFromLog();

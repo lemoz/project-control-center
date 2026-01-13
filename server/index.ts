@@ -111,6 +111,7 @@ import {
   suggestChatSettingsForThread,
   PendingSendError,
 } from "./chat_agent.js";
+import { getProjectCostHistory, getProjectCostSummary } from "./cost_tracking.js";
 import { applyChatAction, undoChatAction } from "./chat_actions.js";
 import { listChatAttention, listChatAttentionSummaries } from "./chat_attention.js";
 import { buildWorktreeDiff, cleanupChatWorktree, resolveChatWorktreeConfig } from "./chat_worktree.js";
@@ -151,6 +152,10 @@ const ESCALATION_STATUSES: EscalationStatus[] = [
 const ESCALATION_TYPE_SET = new Set<EscalationType>(ESCALATION_TYPES);
 const ESCALATION_STATUS_SET = new Set<EscalationStatus>(ESCALATION_STATUSES);
 const ESCALATION_CLAIMANT = "global_agent";
+const COST_PERIODS = ["day", "week", "month", "all_time"] as const;
+const COST_CATEGORIES = ["builder", "reviewer", "chat", "handoff", "other", "all"] as const;
+const COST_PERIOD_SET = new Set<string>(COST_PERIODS);
+const COST_CATEGORY_SET = new Set<string>(COST_CATEGORIES);
 
 function isLoopbackHost(value: string): boolean {
   const normalized = value.trim().toLowerCase();
@@ -469,6 +474,47 @@ app.get("/repos/:id", (req, res) => {
       success_metrics: successMetrics,
     },
   });
+});
+
+app.get("/projects/:id/costs", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const periodParam = typeof req.query.period === "string" ? req.query.period : null;
+  const categoryParam = typeof req.query.category === "string" ? req.query.category : null;
+  const period = periodParam ?? "month";
+  const category = categoryParam ?? "all";
+
+  if (!COST_PERIOD_SET.has(period)) {
+    return res.status(400).json({ error: "`period` must be day, week, month, or all_time" });
+  }
+  if (!COST_CATEGORY_SET.has(category)) {
+    return res.status(400).json({
+      error: "`category` must be builder, reviewer, chat, handoff, other, or all",
+    });
+  }
+
+  const summary = getProjectCostSummary({
+    projectId: project.id,
+    period: period as "day" | "week" | "month" | "all_time",
+    category: category as "all" | "builder" | "reviewer" | "chat" | "handoff" | "other",
+  });
+  return res.json(summary);
+});
+
+app.get("/projects/:id/costs/history", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const daysRaw = typeof req.query.days === "string" ? Number(req.query.days) : NaN;
+  const days = Number.isFinite(daysRaw) ? Math.trunc(daysRaw) : 30;
+  if (days <= 0) {
+    return res.status(400).json({ error: "`days` must be a positive number" });
+  }
+
+  return res.json(getProjectCostHistory(project.id, days));
 });
 
 function normalizeStringArrayField(value: unknown): string[] | undefined {

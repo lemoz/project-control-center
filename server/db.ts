@@ -94,6 +94,23 @@ export type RunRow = {
   escalation: string | null;
 };
 
+export type CostCategory = "builder" | "reviewer" | "chat" | "handoff" | "other";
+
+export type CostRecord = {
+  id: string;
+  project_id: string;
+  run_id: string | null;
+  category: CostCategory;
+  input_tokens: number;
+  output_tokens: number;
+  model: string;
+  input_cost_per_1k: number;
+  output_cost_per_1k: number;
+  total_cost_usd: number;
+  description: string | null;
+  created_at: string;
+};
+
 export type EscalationType = "need_input" | "blocked" | "decision_required" | "error";
 
 export type EscalationStatus = "pending" | "claimed" | "resolved" | "escalated_to_user";
@@ -389,6 +406,26 @@ function initSchema(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_runs_project_id_created_at ON runs(project_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_runs_status_created_at ON runs(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS cost_records (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      run_id TEXT,
+      category TEXT NOT NULL,
+      input_tokens INTEGER NOT NULL,
+      output_tokens INTEGER NOT NULL,
+      model TEXT NOT NULL,
+      input_cost_per_1k REAL NOT NULL,
+      output_cost_per_1k REAL NOT NULL,
+      total_cost_usd REAL NOT NULL,
+      description TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_cost_records_project_created
+      ON cost_records(project_id, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS escalations (
       id TEXT PRIMARY KEY,
@@ -1130,6 +1167,18 @@ export function createRun(run: RunRow): void {
         (@id, @project_id, @work_order_id, @provider, @status, @iteration, @builder_iteration, @reviewer_verdict, @reviewer_notes, @summary, @branch_name, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error, @escalation)`
     )
     .run(run);
+}
+
+export function createCostRecord(record: CostRecord): void {
+  const database = getDb();
+  database
+    .prepare(
+      `INSERT INTO cost_records
+        (id, project_id, run_id, category, input_tokens, output_tokens, model, input_cost_per_1k, output_cost_per_1k, total_cost_usd, description, created_at)
+       VALUES
+        (@id, @project_id, @run_id, @category, @input_tokens, @output_tokens, @model, @input_cost_per_1k, @output_cost_per_1k, @total_cost_usd, @description, @created_at)`
+    )
+    .run(record);
 }
 
 export function updateRun(
