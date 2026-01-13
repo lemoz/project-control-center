@@ -4,8 +4,8 @@ title: Budget Enforcement and Escalation
 goal: Implement what happens when a project's budget runs out - parking, escalation, and survival mode.
 context:
   - WO-2026-103 (economy in shift context)
-  - "When the budget runs out, they can't run anymore. They're parked. It escalates to me for feedback."
-  - "Even on minimal mode, you'll always get to do something every day"
+  - When the budget runs out, they can't run anymore. They're parked. It escalates to me for feedback.
+  - Even on minimal mode, you'll always get to do something every day
   - Balance between hard stops and keeping projects alive
 acceptance_criteria:
   - Block new runs when budget exhausted
@@ -28,7 +28,7 @@ tags:
   - enforcement
   - escalation
 estimate_hours: 3
-status: backlog
+status: ready
 created_at: 2026-01-13
 updated_at: 2026-01-13
 depends_on:
