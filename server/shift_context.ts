@@ -9,7 +9,9 @@ import {
   type ProjectVmRow,
   type RunRow,
 } from "./db.js";
+import { getGlobalBudget, getProjectBudget, type BudgetStatus } from "./budgeting.js";
 import { getConstitutionForProject, selectRelevantConstitutionSections } from "./constitution.js";
+import { getProjectCostHistory, getProjectCostSummary } from "./cost_tracking.js";
 import { resolveRunnerSettingsForRepo } from "./settings.js";
 import { readControlMetadata, type ControlSuccessMetric } from "./sidecar.js";
 import { listWorkOrders, type WorkOrder, type WorkOrderStatus } from "./work_orders.js";
@@ -116,6 +118,20 @@ export type ShiftContext = {
     env_vars_available: string[];
     runner_ready: boolean;
   };
+  economy: {
+    budget_allocation_usd: number;
+    budget_remaining_usd: number;
+    budget_status: BudgetStatus;
+    burn_rate_daily_usd: number;
+    runway_days: number;
+    period_days_remaining: number;
+    daily_drip_usd: number;
+    avg_cost_per_run_usd: number;
+    avg_cost_per_wo_completed_usd: number;
+    spent_this_period_usd: number;
+    runs_this_period: number;
+    wos_completed_this_period: number;
+  };
   assembled_at: string;
 };
 
@@ -126,6 +142,7 @@ type ShiftContextOptions = {
 
 const DEFAULT_RUN_HISTORY_LIMIT = 10;
 const DEFAULT_ACTIVE_RUN_SCAN_LIMIT = 100;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const TERMINAL_RUN_STATUSES = new Set<RunRow["status"]>([
   "merged",
   "failed",
@@ -177,6 +194,11 @@ export function buildShiftContext(
   );
   const gitState = buildGitState(project.path);
   const vmState = buildVmState(getProjectVm(project.id));
+  const economy = buildEconomyContext({
+    projectId: project.id,
+    workOrders,
+    now,
+  });
 
   return {
     project: {
@@ -203,6 +225,7 @@ export function buildShiftContext(
       env_vars_available: listEnvVarNames(),
       runner_ready: isRunnerReady(project.path),
     },
+    economy,
     assembled_at: now.toISOString(),
   };
 }
@@ -299,6 +322,110 @@ function buildWorkOrderState(workOrders: WorkOrder[]): ShiftContext["work_orders
 
 function isInProgressStatus(status: WorkOrderStatus): boolean {
   return status === "building" || status === "ai_review" || status === "you_review";
+}
+
+function buildEconomyContext(params: {
+  projectId: string;
+  workOrders: WorkOrder[];
+  now: Date;
+}): ShiftContext["economy"] {
+  const empty: ShiftContext["economy"] = {
+    budget_allocation_usd: 0,
+    budget_remaining_usd: 0,
+    budget_status: "exhausted",
+    burn_rate_daily_usd: 0,
+    runway_days: 0,
+    period_days_remaining: 1,
+    daily_drip_usd: 0,
+    avg_cost_per_run_usd: 0,
+    avg_cost_per_wo_completed_usd: 0,
+    spent_this_period_usd: 0,
+    runs_this_period: 0,
+    wos_completed_this_period: 0,
+  };
+
+  try {
+    const globalBudget = getGlobalBudget();
+    const projectBudget = getProjectBudget(params.projectId);
+    const periodEnd = new Date(globalBudget.current_period_end);
+    const periodStart = new Date(globalBudget.current_period_start);
+    const periodDaysRemaining = Number.isFinite(periodEnd.getTime())
+      ? Math.max(1, diffDaysInclusive(params.now, periodEnd))
+      : 1;
+
+    const costSummary = getProjectCostSummary({
+      projectId: params.projectId,
+      period: "month",
+    });
+    const costHistory = getProjectCostHistory(params.projectId, 7);
+    const burnRateDaily = averageDailyCost(costHistory.daily);
+    const remainingBudget = projectBudget.remaining_usd;
+    const remainingForRunway = Math.max(0, remainingBudget);
+    const runwayDays =
+      remainingForRunway <= 0
+        ? 0
+        : burnRateDaily > 0
+          ? remainingForRunway / burnRateDaily
+          : periodDaysRemaining;
+
+    const wosCompleted = countWosCompletedInPeriod(
+      params.workOrders,
+      periodStart,
+      periodEnd
+    );
+    const avgCostPerWo =
+      wosCompleted > 0 ? projectBudget.spent_usd / wosCompleted : 0;
+
+    return {
+      budget_allocation_usd: projectBudget.monthly_allocation_usd,
+      budget_remaining_usd: projectBudget.remaining_usd,
+      budget_status: projectBudget.budget_status,
+      burn_rate_daily_usd: burnRateDaily,
+      runway_days: runwayDays,
+      period_days_remaining: periodDaysRemaining,
+      daily_drip_usd: projectBudget.daily_drip_usd,
+      avg_cost_per_run_usd: costSummary.avg_cost_per_run,
+      avg_cost_per_wo_completed_usd: avgCostPerWo,
+      spent_this_period_usd: projectBudget.spent_usd,
+      runs_this_period: costSummary.run_count,
+      wos_completed_this_period: wosCompleted,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function startOfUtcDay(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function diffDaysInclusive(start: Date, end: Date): number {
+  const startDay = startOfUtcDay(start);
+  const endDay = startOfUtcDay(end);
+  const diff = Math.floor((endDay.getTime() - startDay.getTime()) / MS_PER_DAY);
+  return Math.max(0, diff + 1);
+}
+
+function averageDailyCost(daily: Array<{ total_cost_usd: number }>): number {
+  if (!daily.length) return 0;
+  const total = daily.reduce((sum, entry) => sum + (entry.total_cost_usd ?? 0), 0);
+  return total / daily.length;
+}
+
+function countWosCompletedInPeriod(
+  workOrders: WorkOrder[],
+  periodStart: Date,
+  periodEnd: Date
+): number {
+  const startMs = Date.parse(periodStart.toISOString());
+  const endMs = Date.parse(periodEnd.toISOString());
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return 0;
+  return workOrders.filter((wo) => {
+    if (wo.status !== "done") return false;
+    const updatedMs = Date.parse(wo.updated_at);
+    if (!Number.isFinite(updatedMs)) return false;
+    return updatedMs >= startMs && updatedMs <= endMs;
+  }).length;
 }
 
 function buildConstitutionContext(repoPath: string): ShiftContext["constitution"] {

@@ -126,6 +126,86 @@ function formatConstitutionSection(content?: string | null): string {
   return block.trimEnd();
 }
 
+function formatUsd(value: number): string {
+  if (!Number.isFinite(value)) return "$0.00";
+  const sign = value < 0 ? "-" : "";
+  return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
+function formatPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "n/a";
+  return `${value.toFixed(0)}%`;
+}
+
+function formatDays(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  return value.toFixed(1);
+}
+
+function buildBudgetStatusNote(
+  economy: ShiftContext["economy"],
+  remainingPct: number | null
+): string {
+  const days = economy.period_days_remaining;
+  const dayLabel = `${days} day${days === 1 ? "" : "s"} left in period`;
+  const pctLabel = remainingPct === null ? "n/a" : `${remainingPct.toFixed(0)}%`;
+  switch (economy.budget_status) {
+    case "healthy":
+      return `above warning threshold (${pctLabel}) with ${dayLabel}`;
+    case "warning":
+      return `below warning threshold (${pctLabel}) with ${dayLabel}`;
+    case "critical":
+      return `critical level (${pctLabel}) with ${dayLabel}`;
+    case "exhausted":
+      return `budget exhausted with ${dayLabel}`;
+  }
+}
+
+function economyGuidance(status: ShiftContext["economy"]["budget_status"]): string[] {
+  switch (status) {
+    case "healthy":
+      return ["Normal operations", "Can explore and experiment", "Full autonomy"];
+    case "warning":
+      return ["Prioritize high-impact work", "Reduce speculative runs", "Focus on efficiency"];
+    case "critical":
+      return ["Essential work only", "Flag blockers to user", "Conservative decisions"];
+    case "exhausted":
+      return ["Do not start new runs", "Escalate to user for budget", "Document what's blocked"];
+  }
+}
+
+function formatEconomyStatus(economy: ShiftContext["economy"]): string {
+  const allocation = economy.budget_allocation_usd;
+  const remaining = economy.budget_remaining_usd;
+  const remainingPct = allocation > 0 ? (remaining / allocation) * 100 : null;
+  const lines: string[] = [];
+  lines.push(
+    `Budget: ${formatUsd(remaining)} remaining of ${formatUsd(allocation)} (${formatPercent(
+      remainingPct
+    )})`
+  );
+  lines.push(
+    `Status: ${economy.budget_status.toUpperCase()} - ${buildBudgetStatusNote(
+      economy,
+      remainingPct
+    )}`
+  );
+  lines.push(`Burn rate: ${formatUsd(economy.burn_rate_daily_usd)}/day average (7d)`);
+  lines.push(`Runway: ${formatDays(economy.runway_days)} days at current rate`);
+  lines.push("");
+  lines.push(`Daily drip available: ${formatUsd(economy.daily_drip_usd)}`);
+  lines.push("");
+  lines.push("Cost efficiency:");
+  lines.push(`- Avg cost per run: ${formatUsd(economy.avg_cost_per_run_usd)}`);
+  lines.push(
+    `- Avg cost per WO completed: ${formatUsd(economy.avg_cost_per_wo_completed_usd)}`
+  );
+  lines.push("");
+  lines.push("Consider:");
+  lines.push(...economyGuidance(economy.budget_status).map((line) => `- ${line}`));
+  return lines.join("\n");
+}
+
 export function buildShiftDecisionPrompt(context: ShiftContext): string {
   const lines: string[] = [];
   lines.push("# Agent Shift: Decision Phase");
@@ -193,6 +273,10 @@ export function buildShiftDecisionPrompt(context: ShiftContext): string {
   lines.push("");
   lines.push("### Human Engagement");
   lines.push(formatHumanInteraction(context.last_human_interaction));
+  lines.push("");
+  lines.push("## Economy Status");
+  lines.push("");
+  lines.push(formatEconomyStatus(context.economy));
   lines.push("");
   lines.push("## Constitution (How This User Works)");
   lines.push(formatConstitutionSection(context.constitution?.content));

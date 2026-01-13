@@ -7,6 +7,7 @@ import {
   type ProjectRow,
   type RunRow,
 } from "./db.js";
+import { getGlobalBudget } from "./budgeting.js";
 import { syncAndListRepoSummaries } from "./projects_catalog.js";
 import { getRunsForProject } from "./runner_agent.js";
 import { buildShiftContext } from "./shift_context.js";
@@ -63,6 +64,18 @@ export type GlobalContextResponse = {
     vms_available: number;
     budget_used_today: number;
   };
+  economy: {
+    monthly_budget_usd: number;
+    total_allocated_usd: number;
+    total_spent_usd: number;
+    total_remaining_usd: number;
+    projects_healthy: number;
+    projects_warning: number;
+    projects_critical: number;
+    projects_exhausted: number;
+    portfolio_burn_rate_daily_usd: number;
+    portfolio_runway_days: number;
+  };
   assembled_at: string;
 };
 
@@ -77,6 +90,7 @@ const ROUTING_ESCALATION_STATUSES: EscalationStatus[] = [
   "claimed",
   "escalated_to_user",
 ];
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function parseEscalationRecord(raw: string | null): EscalationRecord | null {
   if (!raw) return null;
@@ -194,6 +208,8 @@ function parseBudgetUsedToday(): number {
 }
 
 export function buildGlobalContextResponse(): GlobalContextResponse {
+  const now = new Date();
+  const globalBudget = getGlobalBudget();
   const summaries = syncAndListRepoSummaries();
   const projects: Array<{
     summary: GlobalProjectSummary;
@@ -204,6 +220,13 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
 
   let vmsRunning = 0;
   let vmsAvailable = 0;
+  let portfolioBurnRateDaily = 0;
+  const budgetStatusCounts = {
+    healthy: 0,
+    warning: 0,
+    critical: 0,
+    exhausted: 0,
+  };
 
   for (const project of summaries) {
     const context = buildShiftContext(project.id, { runHistoryLimit: 5, activeRunScanLimit: 50 });
@@ -302,6 +325,10 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
       });
     }
 
+    const budgetStatus = context.economy.budget_status;
+    budgetStatusCounts[budgetStatus] += 1;
+    portfolioBurnRateDaily += context.economy.burn_rate_daily_usd;
+
     const vm = getProjectVm(project.id);
     if (vm?.status === "running") vmsRunning += 1;
     if (vm?.status === "stopped") vmsAvailable += 1;
@@ -322,6 +349,18 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
     return a.waiting_since.localeCompare(b.waiting_since);
   });
 
+  const periodEnd = new Date(globalBudget.current_period_end);
+  const periodDaysRemaining = Number.isFinite(periodEnd.getTime())
+    ? Math.max(1, diffDaysInclusive(now, periodEnd))
+    : 1;
+  const remainingBudget = globalBudget.remaining_usd;
+  const portfolioRunwayDays =
+    remainingBudget <= 0
+      ? 0
+      : portfolioBurnRateDaily > 0
+        ? remainingBudget / portfolioBurnRateDaily
+        : periodDaysRemaining;
+
   return {
     projects: projects.map((entry) => entry.summary),
     escalation_queue: escalationQueue,
@@ -330,6 +369,29 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
       vms_available: vmsAvailable,
       budget_used_today: parseBudgetUsedToday(),
     },
-    assembled_at: new Date().toISOString(),
+    economy: {
+      monthly_budget_usd: globalBudget.monthly_budget_usd,
+      total_allocated_usd: globalBudget.allocated_usd,
+      total_spent_usd: globalBudget.spent_usd,
+      total_remaining_usd: globalBudget.remaining_usd,
+      projects_healthy: budgetStatusCounts.healthy,
+      projects_warning: budgetStatusCounts.warning,
+      projects_critical: budgetStatusCounts.critical,
+      projects_exhausted: budgetStatusCounts.exhausted,
+      portfolio_burn_rate_daily_usd: portfolioBurnRateDaily,
+      portfolio_runway_days: portfolioRunwayDays,
+    },
+    assembled_at: now.toISOString(),
   };
+}
+
+function startOfUtcDay(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function diffDaysInclusive(start: Date, end: Date): number {
+  const startDay = startOfUtcDay(start);
+  const endDay = startOfUtcDay(end);
+  const diff = Math.floor((endDay.getTime() - startDay.getTime()) / MS_PER_DAY);
+  return Math.max(0, diff + 1);
 }

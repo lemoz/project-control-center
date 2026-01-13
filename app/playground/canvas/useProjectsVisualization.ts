@@ -77,8 +77,22 @@ type GlobalContextProject = {
   last_activity: string | null;
 };
 
+type GlobalEconomySummary = {
+  monthly_budget_usd: number;
+  total_allocated_usd: number;
+  total_spent_usd: number;
+  total_remaining_usd: number;
+  projects_healthy: number;
+  projects_warning: number;
+  projects_critical: number;
+  projects_exhausted: number;
+  portfolio_burn_rate_daily_usd: number;
+  portfolio_runway_days: number;
+};
+
 type GlobalContextResponse = {
   projects: GlobalContextProject[];
+  economy: GlobalEconomySummary;
   assembled_at: string;
 };
 
@@ -99,6 +113,21 @@ type ProjectCostSummary = {
   };
 };
 
+type ShiftEconomySummary = {
+  budget_allocation_usd: number;
+  budget_remaining_usd: number;
+  budget_status: "healthy" | "warning" | "critical" | "exhausted";
+  burn_rate_daily_usd: number;
+  runway_days: number;
+  period_days_remaining: number;
+  daily_drip_usd: number;
+  avg_cost_per_run_usd: number;
+  avg_cost_per_wo_completed_usd: number;
+  spent_this_period_usd: number;
+  runs_this_period: number;
+  wos_completed_this_period: number;
+};
+
 type ShiftContext = {
   project: {
     id: string;
@@ -114,6 +143,7 @@ type ShiftContext = {
   active_runs: Array<{ id: string; started_at: string }>;
   last_handoff: { created_at: string } | null;
   last_human_interaction: { timestamp: string } | null;
+  economy: ShiftEconomySummary;
   assembled_at: string;
 };
 
@@ -257,6 +287,7 @@ function hasGlobalContext(value: unknown): value is GlobalContextResponse {
     value &&
       typeof value === "object" &&
       "projects" in value &&
+      "economy" in value &&
       Array.isArray((value as { projects?: unknown }).projects)
   );
 }
@@ -268,11 +299,13 @@ function hasShiftContext(value: unknown): value is ShiftContext {
     work_orders?: unknown;
     active_runs?: unknown;
     recent_runs?: unknown;
+    economy?: unknown;
   };
   if (!record.project || typeof record.project !== "object") return false;
   if (!record.work_orders || typeof record.work_orders !== "object") return false;
   if (!Array.isArray(record.active_runs)) return false;
   if (!Array.isArray(record.recent_runs)) return false;
+  if (!record.economy || typeof record.economy !== "object") return false;
   return true;
 }
 
