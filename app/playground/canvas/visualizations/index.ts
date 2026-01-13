@@ -1,7 +1,14 @@
 import type { VisualizationDefinition } from "../types";
+import { ActivityPulseVisualization } from "./ActivityPulseViz";
 import { PlaceholderVisualization } from "./PlaceholderViz";
 
 export const visualizations: VisualizationDefinition[] = [
+  {
+    id: "activity_pulse",
+    name: "Activity Pulse",
+    description: "Activity-driven pulse rings with glow.",
+    create: () => new ActivityPulseVisualization(),
+  },
   {
     id: "placeholder",
     name: "Placeholder",
