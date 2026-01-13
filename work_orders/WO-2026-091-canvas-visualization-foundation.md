@@ -33,9 +33,9 @@ tags:
   - visualization
   - foundation
 estimate_hours: 4
-status: ready
+status: you_review
 created_at: 2026-01-12
-updated_at: 2026-01-12
+updated_at: 2026-01-13
 depends_on: []
 era: v2
 ---

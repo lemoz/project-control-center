@@ -23,7 +23,7 @@ tags:
   - global-agent
   - orchestration
 estimate_hours: 5
-status: you_review
+status: done
 created_at: 2026-01-12
 updated_at: 2026-01-13
 depends_on:
