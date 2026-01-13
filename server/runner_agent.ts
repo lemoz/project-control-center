@@ -4113,6 +4113,18 @@ export function enqueueCodexRun(projectId: string, workOrderId: string): RunRow 
     throw new Error("work order must be ready to run");
   }
 
+  // Check for existing active runs for this WO
+  const ACTIVE_RUN_STATUSES = new Set(["queued", "building", "testing", "ai_review", "you_review", "waiting_for_input"]);
+  const existingRuns = listRunsByProject(projectId, 100);
+  const activeRunForWO = existingRuns.find(
+    (r) => r.work_order_id === workOrderId && ACTIVE_RUN_STATUSES.has(r.status)
+  );
+  if (activeRunForWO) {
+    throw new Error(
+      `Run ${activeRunForWO.id.slice(0, 8)} is already ${activeRunForWO.status} for ${workOrderId}. Wait for it to complete or cancel it first.`
+    );
+  }
+
   const id = crypto.randomUUID();
   const createdAt = nowIso();
   const branchName = buildRunBranchName(workOrder.id, id);

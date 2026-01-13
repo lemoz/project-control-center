@@ -23,9 +23,9 @@ tags:
   - global-agent
   - planning
 estimate_hours: 4
-status: backlog
+status: ready
 created_at: 2026-01-12
-updated_at: 2026-01-12
+updated_at: 2026-01-13
 depends_on:
   - WO-2026-079
 era: v2

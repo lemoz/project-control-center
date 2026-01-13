@@ -5,7 +5,7 @@ goal: Enable global agent to identify and transfer successful patterns between p
 context:
   - Projects solve similar problems independently
   - Successful patterns should propagate
-  - "Project A solved auth well, Project B needs auth"
+  - Project A solved auth well, Project B needs auth
 acceptance_criteria:
   - Track successful patterns/solutions with tags
   - Query similar problems across projects
@@ -22,9 +22,9 @@ tags:
   - global-agent
   - knowledge
 estimate_hours: 3
-status: backlog
+status: ready
 created_at: 2026-01-12
-updated_at: 2026-01-12
+updated_at: 2026-01-13
 depends_on:
   - WO-2026-079
 era: v2
