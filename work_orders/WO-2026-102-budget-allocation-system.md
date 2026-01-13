@@ -7,7 +7,7 @@ context:
   - User sets global monthly budget
   - Allocates to projects
   - Daily drip ensures everyone gets baseline activity
-  - "Budget for the month is spread out evenly - always get to do something every day"
+  - Budget for the month is spread out evenly - always get to do something every day
 acceptance_criteria:
   - Global budget setting (monthly amount user is willing to spend)
   - Per-project budget allocation from global pool
@@ -29,7 +29,7 @@ tags:
   - infrastructure
   - budgeting
 estimate_hours: 4
-status: backlog
+status: ready
 created_at: 2026-01-13
 updated_at: 2026-01-13
 depends_on:
