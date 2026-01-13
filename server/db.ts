@@ -76,7 +76,8 @@ export type RunRow = {
     | "merged"
     | "merge_conflict"
     | "failed"
-    | "canceled";
+    | "canceled"
+    | "superseded";
   iteration: number;
   builder_iteration: number;
   reviewer_verdict: "approved" | "changes_requested" | null;
