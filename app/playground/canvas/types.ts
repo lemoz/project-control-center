@@ -17,6 +17,7 @@ export type ProjectNode = {
   status: ProjectStatus;
   consumptionRate: number;
   isActive: boolean;
+  activePhase?: "building" | "testing" | "reviewing" | "waiting";
   activityLevel: number;
   lastActivity: Date | null;
   needsHuman: boolean;

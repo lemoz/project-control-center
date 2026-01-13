@@ -28,7 +28,7 @@ tags:
   - visualization
   - exploration
 estimate_hours: 2
-status: ready
+status: you_review
 created_at: 2026-01-12
 updated_at: 2026-01-13
 depends_on:
