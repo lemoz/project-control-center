@@ -3,14 +3,18 @@ import fs from "fs";
 import express, { type Response } from "express";
 import cors from "cors";
 import {
+  createEscalation,
   createShiftHandoff,
   expireStaleShifts,
   findProjectById,
   getActiveShift,
+  getEscalationById,
+  getOpenEscalationForProject,
   getProjectVm,
   getRunById,
   getRunPhaseMetricsSummary,
   getShiftByProjectId,
+  listEscalations,
   listRunPhaseMetrics,
   listShifts,
   markInProgressRunsFailed,
@@ -18,11 +22,14 @@ import {
   setProjectStar,
   startShift,
   updateProjectIsolationSettings,
+  updateEscalation,
   updateShift,
   syncWorkOrderDeps,
   listAllWorkOrderDeps,
   getWorkOrderDependents,
   type CreateShiftHandoffInput,
+  type EscalationStatus,
+  type EscalationType,
   type ProjectIsolationMode,
   type ProjectRow,
   type ProjectVmRow,
@@ -120,6 +127,21 @@ const app = express();
 const port = Number(process.env.CONTROL_CENTER_PORT || 4010);
 const host = process.env.CONTROL_CENTER_HOST || "127.0.0.1";
 const allowLan = process.env.CONTROL_CENTER_ALLOW_LAN === "1";
+const ESCALATION_TYPES: EscalationType[] = [
+  "need_input",
+  "blocked",
+  "decision_required",
+  "error",
+];
+const ESCALATION_STATUSES: EscalationStatus[] = [
+  "pending",
+  "claimed",
+  "resolved",
+  "escalated_to_user",
+];
+const ESCALATION_TYPE_SET = new Set<EscalationType>(ESCALATION_TYPES);
+const ESCALATION_STATUS_SET = new Set<EscalationStatus>(ESCALATION_STATUSES);
+const ESCALATION_CLAIMANT = "global_agent";
 
 function isLoopbackHost(value: string): boolean {
   const normalized = value.trim().toLowerCase();
@@ -570,9 +592,258 @@ function parseAbandonShiftInput(
   return { ok: true, reason: trimmed ? trimmed : null };
 }
 
+type EscalationCreateInput = {
+  type: EscalationType;
+  summary: string;
+  payload: string | null;
+  run_id: string | null;
+  shift_id: string | null;
+};
+
+function serializeOptionalJson(
+  value: unknown,
+  fieldName: string
+): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (value === undefined || value === null) return { ok: true, value: null };
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return { ok: true, value: trimmed ? trimmed : null };
+  }
+  try {
+    return { ok: true, value: JSON.stringify(value) };
+  } catch {
+    return { ok: false, error: `\`${fieldName}\` must be JSON-serializable` };
+  }
+}
+
+function serializeRequiredJson(
+  value: unknown,
+  fieldName: string
+): { ok: true; value: string } | { ok: false; error: string } {
+  if (value === undefined) {
+    return { ok: false, error: `\`${fieldName}\` is required` };
+  }
+  if (value === null) {
+    return { ok: false, error: `\`${fieldName}\` must not be null` };
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return { ok: false, error: `\`${fieldName}\` must be a non-empty string` };
+    }
+    return { ok: true, value: trimmed };
+  }
+  try {
+    return { ok: true, value: JSON.stringify(value) };
+  } catch {
+    return { ok: false, error: `\`${fieldName}\` must be JSON-serializable` };
+  }
+}
+
+function parseEscalationCreateInput(
+  payload: unknown
+): { ok: true; input: EscalationCreateInput } | { ok: false; error: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, error: "request body must be an object" };
+  }
+  const record = payload as Record<string, unknown>;
+  const rawType = typeof record.type === "string" ? record.type.trim() : "";
+  if (!rawType || !ESCALATION_TYPE_SET.has(rawType as EscalationType)) {
+    return {
+      ok: false,
+      error: "`type` must be one of need_input, blocked, decision_required, error",
+    };
+  }
+  const summary = typeof record.summary === "string" ? record.summary.trim() : "";
+  if (!summary) {
+    return { ok: false, error: "`summary` must be a non-empty string" };
+  }
+
+  if ("run_id" in record) {
+    if (typeof record.run_id !== "string" || !record.run_id.trim()) {
+      return { ok: false, error: "`run_id` must be a non-empty string" };
+    }
+  }
+  if ("shift_id" in record) {
+    if (typeof record.shift_id !== "string" || !record.shift_id.trim()) {
+      return { ok: false, error: "`shift_id` must be a non-empty string" };
+    }
+  }
+
+  const payloadValue = serializeOptionalJson(record.payload, "payload");
+  if (!payloadValue.ok) return { ok: false, error: payloadValue.error };
+
+  return {
+    ok: true,
+    input: {
+      type: rawType as EscalationType,
+      summary,
+      payload: payloadValue.value,
+      run_id: typeof record.run_id === "string" ? record.run_id.trim() : null,
+      shift_id: typeof record.shift_id === "string" ? record.shift_id.trim() : null,
+    },
+  };
+}
+
+function parseEscalationResolutionInput(
+  payload: unknown
+): { ok: true; resolution: string } | { ok: false; error: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, error: "request body must be an object" };
+  }
+  const record = payload as Record<string, unknown>;
+  if (!("resolution" in record)) {
+    return { ok: false, error: "`resolution` is required" };
+  }
+  const resolved = serializeRequiredJson(record.resolution, "resolution");
+  if (!resolved.ok) return { ok: false, error: resolved.error };
+  return { ok: true, resolution: resolved.value };
+}
+
+function parseEscalationStatusQuery(
+  value: unknown
+): { ok: true; statuses: EscalationStatus[] } | { ok: false; error: string } {
+  if (value === undefined) {
+    return { ok: true, statuses: ["pending"] };
+  }
+  const entries = Array.isArray(value) ? value : [value];
+  const statuses: EscalationStatus[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== "string") {
+      return { ok: false, error: "`status` must be a comma-separated string" };
+    }
+    for (const part of entry.split(",")) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      if (!ESCALATION_STATUS_SET.has(trimmed as EscalationStatus)) {
+        return {
+          ok: false,
+          error:
+            "`status` must be one of pending, claimed, resolved, escalated_to_user",
+        };
+      }
+      statuses.push(trimmed as EscalationStatus);
+    }
+  }
+  if (!statuses.length) return { ok: true, statuses: ["pending"] };
+  return { ok: true, statuses: Array.from(new Set(statuses)) };
+}
+
 app.get("/global/context", (_req, res) => {
   const response = buildGlobalContextResponse();
   return res.json(response);
+});
+
+app.get("/global/escalations", (req, res) => {
+  const parsedStatus = parseEscalationStatusQuery(req.query.status);
+  if (!parsedStatus.ok) return res.status(400).json({ error: parsedStatus.error });
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit =
+    Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(200, Math.trunc(limitRaw)) : 100;
+  const escalations = listEscalations({
+    statuses: parsedStatus.statuses,
+    order: "asc",
+    limit,
+  });
+  return res.json({ escalations });
+});
+
+app.post("/projects/:id/escalations", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const parsed = parseEscalationCreateInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+  const escalation = createEscalation({
+    project_id: project.id,
+    type: parsed.input.type,
+    summary: parsed.input.summary,
+    payload: parsed.input.payload,
+    run_id: parsed.input.run_id,
+    shift_id: parsed.input.shift_id,
+  });
+
+  return res.status(201).json(escalation);
+});
+
+app.post("/escalations/:id/claim", (req, res) => {
+  const escalation = getEscalationById(req.params.id);
+  if (!escalation) return res.status(404).json({ error: "escalation not found" });
+  if (escalation.status !== "pending") {
+    return res.status(409).json({ error: "escalation not pending", status: escalation.status });
+  }
+  const updated = updateEscalation(escalation.id, {
+    status: "claimed",
+    claimed_by: ESCALATION_CLAIMANT,
+  });
+  if (!updated) return res.status(500).json({ error: "failed to claim escalation" });
+  const refreshed = getEscalationById(escalation.id);
+  return res.json(refreshed ?? escalation);
+});
+
+app.post("/escalations/:id/resolve", (req, res) => {
+  const parsed = parseEscalationResolutionInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const escalation = getEscalationById(req.params.id);
+  if (!escalation) return res.status(404).json({ error: "escalation not found" });
+  if (escalation.status === "resolved") {
+    return res.status(409).json({ error: "escalation already resolved" });
+  }
+  if (
+    escalation.status !== "pending" &&
+    escalation.status !== "claimed" &&
+    escalation.status !== "escalated_to_user"
+  ) {
+    return res.status(409).json({ error: "escalation not resolvable", status: escalation.status });
+  }
+  const resolvedAt = new Date().toISOString();
+  const updated = updateEscalation(escalation.id, {
+    status: "resolved",
+    resolution: parsed.resolution,
+    resolved_at: resolvedAt,
+  });
+  if (!updated) return res.status(500).json({ error: "failed to resolve escalation" });
+  const refreshed = getEscalationById(escalation.id);
+  return res.json(refreshed ?? { ...escalation, status: "resolved", resolved_at: resolvedAt });
+});
+
+app.post("/escalations/:id/escalate-to-user", (req, res) => {
+  const escalation = getEscalationById(req.params.id);
+  if (!escalation) return res.status(404).json({ error: "escalation not found" });
+  if (escalation.status === "resolved") {
+    return res.status(409).json({ error: "escalation already resolved" });
+  }
+  if (escalation.status === "escalated_to_user") {
+    return res.json(escalation);
+  }
+
+  const active = getOpenEscalationForProject(escalation.project_id);
+  if (active && active.id !== escalation.id) {
+    return res.status(409).json({
+      error: "escalation already active for project",
+      debounced: true,
+      active_escalation_id: active.id,
+    });
+  }
+
+  const updated = updateEscalation(escalation.id, {
+    status: "escalated_to_user",
+    claimed_by: escalation.claimed_by ?? ESCALATION_CLAIMANT,
+  });
+  if (!updated) {
+    return res.status(500).json({ error: "failed to escalate to user" });
+  }
+  const refreshed = getEscalationById(escalation.id);
+  return res.json(
+    refreshed ??
+      ({
+        ...escalation,
+        status: "escalated_to_user",
+        claimed_by: escalation.claimed_by ?? ESCALATION_CLAIMANT,
+      } as const)
+  );
 });
 
 app.get("/projects/:id/shift-context", (req, res) => {

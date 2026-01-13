@@ -94,6 +94,25 @@ export type RunRow = {
   escalation: string | null;
 };
 
+export type EscalationType = "need_input" | "blocked" | "decision_required" | "error";
+
+export type EscalationStatus = "pending" | "claimed" | "resolved" | "escalated_to_user";
+
+export type EscalationRow = {
+  id: string;
+  project_id: string;
+  run_id: string | null;
+  shift_id: string | null;
+  type: EscalationType;
+  summary: string;
+  payload: string | null;
+  status: EscalationStatus;
+  claimed_by: string | null;
+  resolution: string | null;
+  created_at: string;
+  resolved_at: string | null;
+};
+
 export type RunPhaseMetricPhase = "setup" | "builder" | "test" | "reviewer" | "merge";
 
 export type RunPhaseMetricOutcome =
@@ -295,6 +314,25 @@ function initSchema(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_runs_project_id_created_at ON runs(project_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_runs_status_created_at ON runs(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS escalations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      run_id TEXT,
+      shift_id TEXT,
+      type TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      payload TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      claimed_by TEXT,
+      resolution TEXT,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_escalations_project_status ON escalations(project_id, status);
+    CREATE INDEX IF NOT EXISTS idx_escalations_status_created_at ON escalations(status, created_at);
 
     CREATE TABLE IF NOT EXISTS run_phase_metrics (
       id TEXT PRIMARY KEY,
@@ -1049,6 +1087,122 @@ export function listRunsByProject(projectId: string, limit = 50): RunRow[] {
       "SELECT * FROM runs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?"
     )
     .all(projectId, limit) as RunRow[];
+}
+
+export type EscalationQuery = {
+  projectId?: string;
+  statuses?: EscalationStatus[];
+  limit?: number;
+  order?: "asc" | "desc";
+};
+
+export function createEscalation(input: {
+  project_id: string;
+  run_id?: string | null;
+  shift_id?: string | null;
+  type: EscalationType;
+  summary: string;
+  payload?: string | null;
+}): EscalationRow {
+  const database = getDb();
+  const row: EscalationRow = {
+    id: crypto.randomUUID(),
+    project_id: input.project_id,
+    run_id: input.run_id ?? null,
+    shift_id: input.shift_id ?? null,
+    type: input.type,
+    summary: input.summary,
+    payload: input.payload ?? null,
+    status: "pending",
+    claimed_by: null,
+    resolution: null,
+    created_at: new Date().toISOString(),
+    resolved_at: null,
+  };
+  database
+    .prepare(
+      `INSERT INTO escalations
+        (id, project_id, run_id, shift_id, type, summary, payload, status, claimed_by, resolution, created_at, resolved_at)
+       VALUES
+        (@id, @project_id, @run_id, @shift_id, @type, @summary, @payload, @status, @claimed_by, @resolution, @created_at, @resolved_at)`
+    )
+    .run(row);
+  return row;
+}
+
+export function getEscalationById(id: string): EscalationRow | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM escalations WHERE id = ? LIMIT 1")
+    .get(id) as EscalationRow | undefined;
+  return row || null;
+}
+
+export function listEscalations(query: EscalationQuery = {}): EscalationRow[] {
+  const database = getDb();
+  const clauses: string[] = [];
+  const params: Array<string | number> = [];
+
+  if (query.projectId) {
+    clauses.push("project_id = ?");
+    params.push(query.projectId);
+  }
+
+  if (query.statuses) {
+    if (!query.statuses.length) return [];
+    if (query.statuses.length === 1) {
+      clauses.push("status = ?");
+      params.push(query.statuses[0]);
+    } else {
+      const placeholders = query.statuses.map(() => "?").join(", ");
+      clauses.push(`status IN (${placeholders})`);
+      params.push(...query.statuses);
+    }
+  }
+
+  const whereClause = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const order = query.order === "desc" ? "DESC" : "ASC";
+  const limit =
+    typeof query.limit === "number" && Number.isFinite(query.limit)
+      ? Math.max(1, Math.min(200, Math.trunc(query.limit)))
+      : 100;
+  const rows = database
+    .prepare(
+      `SELECT * FROM escalations ${whereClause} ORDER BY created_at ${order} LIMIT ?`
+    )
+    .all(...params, limit) as EscalationRow[];
+  return rows;
+}
+
+export function updateEscalation(
+  id: string,
+  patch: Partial<Pick<EscalationRow, "status" | "claimed_by" | "resolution" | "resolved_at">>
+): boolean {
+  const database = getDb();
+  const fields: Array<{ key: keyof typeof patch; column: string }> = [
+    { key: "status", column: "status" },
+    { key: "claimed_by", column: "claimed_by" },
+    { key: "resolution", column: "resolution" },
+    { key: "resolved_at", column: "resolved_at" },
+  ];
+  const sets = fields
+    .filter((field) => patch[field.key] !== undefined)
+    .map((field) => `${field.column} = @${field.key}`);
+  if (!sets.length) return false;
+  const result = database
+    .prepare(`UPDATE escalations SET ${sets.join(", ")} WHERE id = @id`)
+    .run({ id, ...patch });
+  return result.changes > 0;
+}
+
+export function getOpenEscalationForProject(projectId: string): EscalationRow | null {
+  const database = getDb();
+  const row = database
+    .prepare(
+      "SELECT * FROM escalations WHERE project_id = ? AND status = 'escalated_to_user' ORDER BY created_at DESC LIMIT 1"
+    )
+    .get(projectId) as EscalationRow | undefined;
+  return row || null;
 }
 
 export function createRunPhaseMetric(input: {

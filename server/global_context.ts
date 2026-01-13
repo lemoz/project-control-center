@@ -1,4 +1,12 @@
-import { getActiveShift, getProjectVm, type ProjectRow, type RunRow } from "./db.js";
+import {
+  getActiveShift,
+  getProjectVm,
+  listEscalations,
+  type EscalationRow,
+  type EscalationStatus,
+  type ProjectRow,
+  type RunRow,
+} from "./db.js";
 import { syncAndListRepoSummaries } from "./projects_catalog.js";
 import { getRunsForProject } from "./runner_agent.js";
 import { buildShiftContext } from "./shift_context.js";
@@ -21,6 +29,10 @@ type EscalationSummary = {
   type: string;
   summary: string;
   waiting_since: string;
+};
+
+type RoutingEscalationSummary = EscalationSummary & {
+  status: EscalationStatus;
 };
 
 export type GlobalProjectSummary = {
@@ -60,6 +72,11 @@ const RUN_FAILURE_STATUSES = new Set<RunRow["status"]>([
   "merge_conflict",
   "canceled",
 ]);
+const ROUTING_ESCALATION_STATUSES: EscalationStatus[] = [
+  "pending",
+  "claimed",
+  "escalated_to_user",
+];
 
 function parseEscalationRecord(raw: string | null): EscalationRecord | null {
   if (!raw) return null;
@@ -144,7 +161,7 @@ function resolveHealth(params: {
   return "healthy";
 }
 
-function summarizeEscalation(run: RunRow): EscalationSummary | null {
+function summarizeRunEscalation(run: RunRow): EscalationSummary | null {
   const record = parseEscalationRecord(run.escalation);
   if (!record || record.resolved_at) return null;
   const summary = record.what_i_need || record.what_i_tried;
@@ -154,6 +171,18 @@ function summarizeEscalation(run: RunRow): EscalationSummary | null {
     type: "run_input",
     summary,
     waiting_since: record.created_at,
+  };
+}
+
+function summarizeRoutingEscalation(escalation: EscalationRow): RoutingEscalationSummary | null {
+  const summary = escalation.summary.trim();
+  if (!summary) return null;
+  return {
+    id: escalation.id,
+    type: escalation.type,
+    summary,
+    waiting_since: escalation.created_at,
+    status: escalation.status,
   };
 }
 
@@ -183,9 +212,21 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
     const runs = getRunsForProject(project.id, 50);
     const runsById = new Map(runs.map((run) => [run.id, run]));
     const activeShift = getActiveShift(project.id);
-    const escalations = runs
-      .map((run) => summarizeEscalation(run))
+    const runEscalations = runs
+      .map((run) => summarizeRunEscalation(run))
       .filter((entry): entry is EscalationSummary => Boolean(entry));
+    const routingEscalations = listEscalations({
+      projectId: project.id,
+      statuses: ROUTING_ESCALATION_STATUSES,
+      order: "asc",
+      limit: 200,
+    })
+      .map((entry) => summarizeRoutingEscalation(entry))
+      .filter((entry): entry is RoutingEscalationSummary => Boolean(entry));
+    const userRoutingEscalations = routingEscalations.filter(
+      (entry) => entry.status === "escalated_to_user"
+    );
+    const escalations = runEscalations.concat(routingEscalations);
     const hasEscalation = escalations.length > 0;
     const hasFailures = runs.some((run) => RUN_FAILURE_STATUSES.has(run.status));
     const hasActiveShiftOrRun = Boolean(activeShift) || context.active_runs.length > 0;
@@ -241,7 +282,17 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
       sortPriority: priority,
     });
 
-    for (const escalation of escalations) {
+    for (const escalation of runEscalations) {
+      escalationQueue.push({
+        project_id: context.project.id,
+        escalation_id: escalation.id,
+        type: escalation.type,
+        priority,
+        waiting_since: escalation.waiting_since,
+      });
+    }
+
+    for (const escalation of userRoutingEscalations) {
       escalationQueue.push({
         project_id: context.project.id,
         escalation_id: escalation.id,
