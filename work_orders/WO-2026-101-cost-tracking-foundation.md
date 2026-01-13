@@ -6,7 +6,7 @@ context:
   - Using Codex and Claude Code with known API pricing
   - Need real cost data before we can allocate budgets
   - Foundation for agent economy system
-  - "Currency is dollars - no abstraction, real money"
+  - Currency is dollars - no abstraction, real money
 acceptance_criteria:
   - Add cost_tracking table to track costs per operation (run, chat, etc.)
   - Calculate and store cost per run based on token usage
@@ -27,7 +27,7 @@ tags:
   - infrastructure
   - data
 estimate_hours: 4
-status: ready
+status: you_review
 created_at: 2026-01-13
 updated_at: 2026-01-13
 depends_on: []
