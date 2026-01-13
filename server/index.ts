@@ -102,6 +102,13 @@ import { buildShiftContext } from "./shift_context.js";
 import { buildGlobalContextResponse } from "./global_context.js";
 import { createProjectFromSpec, type CreateProjectInput } from "./global_agent.js";
 import {
+  getGlobalBudget,
+  getProjectBudget,
+  setGlobalMonthlyBudget,
+  setProjectBudget,
+  transferProjectBudget,
+} from "./budgeting.js";
+import {
   enqueueChatTurn,
   enqueueChatTurnForThread,
   getChatRunDetails,
@@ -515,6 +522,70 @@ app.get("/projects/:id/costs/history", (req, res) => {
   }
 
   return res.json(getProjectCostHistory(project.id, days));
+});
+
+app.get("/budget", (_req, res) => {
+  return res.json(getGlobalBudget());
+});
+
+app.put("/budget", (req, res) => {
+  const value = req.body?.monthly_budget_usd;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return res.status(400).json({ error: "`monthly_budget_usd` must be a non-negative number" });
+  }
+  return res.json(setGlobalMonthlyBudget(value));
+});
+
+app.get("/projects/:id/budget", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  return res.json(getProjectBudget(project.id));
+});
+
+app.put("/projects/:id/budget", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const value = req.body?.monthly_allocation_usd;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return res.status(400).json({ error: "`monthly_allocation_usd` must be a non-negative number" });
+  }
+  return res.json(setProjectBudget(project.id, value));
+});
+
+app.post("/projects/:id/budget/transfer", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const toProjectId =
+    typeof req.body?.to_project_id === "string" ? req.body.to_project_id.trim() : "";
+  const amount = req.body?.amount_usd;
+
+  if (!toProjectId) {
+    return res.status(400).json({ error: "`to_project_id` must be provided" });
+  }
+  if (toProjectId === project.id) {
+    return res.status(400).json({ error: "cannot transfer to the same project" });
+  }
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+    return res.status(400).json({ error: "`amount_usd` must be a positive number" });
+  }
+  const targetProject = findProjectById(toProjectId);
+  if (!targetProject) return res.status(404).json({ error: "target project not found" });
+
+  try {
+    const result = transferProjectBudget({
+      fromProjectId: project.id,
+      toProjectId: targetProject.id,
+      amountUsd: amount,
+    });
+    return res.json(result);
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "failed to transfer budget",
+    });
+  }
 });
 
 function normalizeStringArrayField(value: unknown): string[] | undefined {
