@@ -4,16 +4,20 @@ title: Canvas Visualization Foundation
 goal: Build shared infrastructure for exploring spatial project visualizations.
 context:
   - WO-2026-066 (Canvas City concept research)
-  - Need to test foundational concepts before full isometric city
-  - Multiple visualization approaches to explore (pulse, graph, timeline, etc.)
+  - Primary interaction is voice-first chat with global agent; canvas is ambient/glanceable
+  - Multiple visualization approaches to explore sequentially (pulse, graph, timeline, etc.)
   - Shared foundation reduces duplication across experiments
+  - "Key design decisions: Node = Project (not WOs), Size = token consumption rate, Escalation badges for 'needs human' state"
 acceptance_criteria:
   - React canvas component with render loop (requestAnimationFrame)
-  - useProjectsVisualization hook that fetches projects, WOs, active runs
-  - Real-time activity updates (poll /projects/:id/shift-context every 5s)
+  - useProjectsVisualization hook that fetches projects (as nodes), includes consumption rate and escalation status
+  - Real-time activity updates (poll /repos endpoint every 5s)
   - Basic interactions: click node to select, hover for tooltip, pan/zoom canvas
+  - ProjectPopup component showing quick glance info (status, escalations, WO summary, success metrics progress)
+  - Click-through from popup to full project view (existing Kanban/tech tree pages)
   - Playground page at /playground/canvas with visualization switcher
-  - TypeScript types for visualization node data
+  - TypeScript types for visualization node data (node = project, size = consumption)
+  - Escalation badge component (red indicator when project needs human attention)
   - At least one placeholder visualization to prove the shell works
 non_goals:
   - Any specific visualization style (those are separate WOs)
@@ -52,34 +56,46 @@ app/playground/canvas/
 ## Data Model
 
 ```typescript
-interface VisualizationNode {
+// Node = Project (not WOs or runs)
+interface ProjectNode {
   id: string;
-  type: 'project' | 'work_order' | 'run';
-  label: string;
-  status: string;
+  name: string;
+  path: string;
+  status: 'active' | 'blocked' | 'parked';
+
+  // Size driver
+  consumptionRate: number;  // Tokens/day - determines node size
 
   // Activity indicators
-  isActive: boolean;        // Has active run
+  isActive: boolean;        // Has active run/shift
   activityLevel: number;    // 0-1 intensity
   lastActivity: Date | null;
 
+  // Attention signals
+  needsHuman: boolean;      // Has pending escalation
+  escalationCount: number;  // Number of escalations waiting
+  escalationSummary?: string;
+
   // Metrics
   health: number;           // 0-1 overall health
-  progress: number;         // 0-1 completion
+  successProgress: number;  // 0-1 toward success criteria
 
-  // Relationships
-  parentId?: string;
-  dependsOn: string[];
+  // Work order summary
+  workOrders: {
+    ready: number;
+    building: number;
+    blocked: number;
+    done: number;
+  };
 
   // For rendering (set by visualization)
   x?: number;
   y?: number;
-  radius?: number;
+  radius?: number;          // Derived from consumptionRate
 }
 
 interface VisualizationData {
-  nodes: VisualizationNode[];
-  edges: { source: string; target: string; type: string }[];
+  nodes: ProjectNode[];
   timestamp: Date;
 }
 ```

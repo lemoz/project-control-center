@@ -3,9 +3,10 @@ id: WO-2026-094
 title: "Visualization: Timeline River"
 goal: Test if a flowing timeline metaphor helps understand progress and work moving through stages.
 context:
-  - WO-2026-091 (canvas foundation)
+  - WO-2026-093 (builds on Force Graph learnings)
   - Hypothesis: Time-as-horizontal-space makes progress intuitive
   - Inspired by: Git flow diagrams, conveyor belt games, river metaphors
+  - "Shared design: Node = Project, Size = consumption rate, Escalation badges, Click → popup → drill-through, Voice-primary/canvas-ambient"
 acceptance_criteria:
   - Horizontal "river" with time flowing left to right
   - Projects as lanes/channels in the river
@@ -32,7 +33,7 @@ status: backlog
 created_at: 2026-01-12
 updated_at: 2026-01-12
 depends_on:
-  - WO-2026-091
+  - WO-2026-093
 era: v2
 ---
 ## Hypothesis

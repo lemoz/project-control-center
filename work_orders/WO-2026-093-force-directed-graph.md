@@ -3,9 +3,10 @@ id: WO-2026-093
 title: "Visualization: Force-Directed Graph"
 goal: Test if physics-based layout reveals emergent structure and relationships between projects/WOs.
 context:
-  - WO-2026-091 (canvas foundation)
+  - WO-2026-092 (builds on Activity Pulse learnings)
   - Hypothesis: Related things will cluster naturally, revealing structure you miss in lists
   - Inspired by: d3-force, knowledge graphs, network visualizations
+  - "Shared design: Node = Project, Size = consumption rate, Escalation badges, Click → popup → drill-through, Voice-primary/canvas-ambient"
 acceptance_criteria:
   - Projects and WOs rendered as nodes
   - Dependencies rendered as edges (lines/arrows)
@@ -33,7 +34,7 @@ status: backlog
 created_at: 2026-01-12
 updated_at: 2026-01-12
 depends_on:
-  - WO-2026-091
+  - WO-2026-092
 era: v2
 ---
 ## Hypothesis
