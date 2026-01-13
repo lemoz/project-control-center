@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { KanbanBoard } from "./KanbanBoard";
 import { TechTreeView } from "./TechTreeView";
 import { ConstitutionPanel } from "./ConstitutionPanel";
@@ -12,7 +13,19 @@ type ViewMode = "kanban" | "tech-tree";
 
 export default function ProjectPage({ params }: { params: { id: string } }) {
   const { id } = params;
+  const searchParams = useSearchParams();
+  const viewParam = searchParams.get("view");
   const [view, setView] = useState<ViewMode>("kanban");
+
+  useEffect(() => {
+    if (viewParam === "tech-tree") {
+      setView("tech-tree");
+      return;
+    }
+    if (viewParam === "kanban") {
+      setView("kanban");
+    }
+  }, [viewParam]);
 
   return (
     <>
