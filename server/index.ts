@@ -4,29 +4,37 @@ import express, { type Response } from "express";
 import cors from "cors";
 import {
   createEscalation,
+  createGlobalShiftHandoff,
   createShiftHandoff,
+  expireStaleGlobalShifts,
   expireStaleShifts,
   findProjectById,
   getActiveShift,
+  getActiveGlobalShift,
   getEscalationById,
   getOpenEscalationForProject,
   getProjectVm,
   getRunById,
   getRunPhaseMetricsSummary,
+  getGlobalShiftById,
   getShiftByProjectId,
   listEscalations,
+  listGlobalShifts,
   listRunPhaseMetrics,
   listShifts,
   markInProgressRunsFailed,
   markWorkOrderRunsMerged,
   setProjectStar,
   startShift,
+  startGlobalShift,
   updateProjectIsolationSettings,
   updateEscalation,
   updateShift,
+  updateGlobalShift,
   syncWorkOrderDeps,
   listAllWorkOrderDeps,
   getWorkOrderDependents,
+  type CreateGlobalShiftHandoffInput,
   type CreateShiftHandoffInput,
   type EscalationStatus,
   type EscalationType,
@@ -92,6 +100,7 @@ import { RemoteExecError } from "./remote_exec.js";
 import { readControlMetadata } from "./sidecar.js";
 import { buildShiftContext } from "./shift_context.js";
 import { buildGlobalContextResponse } from "./global_context.js";
+import { createProjectFromSpec, type CreateProjectInput } from "./global_agent.js";
 import {
   enqueueChatTurn,
   enqueueChatTurnForThread,
@@ -570,6 +579,69 @@ function parseCreateShiftHandoffInput(
   return { ok: true, input };
 }
 
+function parseProjectStateField(
+  value: unknown
+):
+  | { ok: true; state: CreateGlobalShiftHandoffInput["project_state"] | undefined }
+  | { ok: false; error: string } {
+  if (value === undefined) return { ok: true, state: undefined };
+  if (value === null) return { ok: true, state: null };
+  if (typeof value === "string") {
+    try {
+      return {
+        ok: true,
+        state: JSON.parse(value) as CreateGlobalShiftHandoffInput["project_state"],
+      };
+    } catch {
+      return { ok: false, error: "`project_state` must be valid JSON" };
+    }
+  }
+  if (typeof value === "object") {
+    return {
+      ok: true,
+      state: value as CreateGlobalShiftHandoffInput["project_state"],
+    };
+  }
+  return { ok: false, error: "`project_state` must be an object or JSON string" };
+}
+
+function parseCreateGlobalShiftHandoffInput(
+  payload: unknown
+):
+  | { ok: true; input: CreateGlobalShiftHandoffInput }
+  | { ok: false; error: string } {
+  if (!payload || typeof payload !== "object") {
+    return { ok: false, error: "request body required" };
+  }
+  const record = payload as Record<string, unknown>;
+  const summaryRaw = record.summary;
+  if (typeof summaryRaw !== "string" || !summaryRaw.trim()) {
+    return { ok: false, error: "`summary` must be a non-empty string" };
+  }
+
+  const input: CreateGlobalShiftHandoffInput = {
+    summary: summaryRaw.trim(),
+  };
+  const actions_taken = normalizeStringArrayField(record.actions_taken);
+  const pending_items = normalizeStringArrayField(record.pending_items);
+  const decisions_made = normalizeDecisionArrayField(record.decisions_made);
+  const project_state = parseProjectStateField(record.project_state);
+  if (!project_state.ok) return { ok: false, error: project_state.error };
+
+  if (actions_taken !== undefined) input.actions_taken = actions_taken;
+  if (pending_items !== undefined) input.pending_items = pending_items;
+  if (decisions_made !== undefined) input.decisions_made = decisions_made;
+  if (project_state.state !== undefined) input.project_state = project_state.state;
+  if (typeof record.agent_id === "string" && record.agent_id.trim()) {
+    input.agent_id = record.agent_id.trim();
+  }
+  if (typeof record.duration_minutes === "number" && Number.isFinite(record.duration_minutes)) {
+    input.duration_minutes = record.duration_minutes;
+  }
+
+  return { ok: true, input };
+}
+
 function parseAbandonShiftInput(
   payload: unknown
 ):
@@ -590,6 +662,43 @@ function parseAbandonShiftInput(
   }
   const trimmed = record.reason.trim();
   return { ok: true, reason: trimmed ? trimmed : null };
+}
+
+const PROJECT_STATUS_SET = new Set<ProjectRow["status"]>(["active", "blocked", "parked"]);
+
+function parseCreateProjectInput(
+  payload: unknown
+): { ok: true; input: CreateProjectInput } | { ok: false; error: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, error: "request body must be an object" };
+  }
+  const record = payload as Record<string, unknown>;
+  const pathRaw = typeof record.path === "string" ? record.path.trim() : "";
+  if (!pathRaw) return { ok: false, error: "`path` must be a non-empty string" };
+  const name = typeof record.name === "string" ? record.name.trim() : "";
+  const id = typeof record.id === "string" ? record.id.trim() : "";
+  const statusRaw = typeof record.status === "string" ? record.status.trim() : "";
+  if (statusRaw && !PROJECT_STATUS_SET.has(statusRaw as ProjectRow["status"])) {
+    return { ok: false, error: "`status` must be active, blocked, or parked" };
+  }
+  const priorityRaw = typeof record.priority === "number" ? record.priority : NaN;
+  if (Number.isFinite(priorityRaw) && priorityRaw <= 0) {
+    return { ok: false, error: "`priority` must be a positive number" };
+  }
+  const initGit =
+    typeof record.init_git === "boolean" ? record.init_git : undefined;
+
+  return {
+    ok: true,
+    input: {
+      path: pathRaw,
+      name: name || undefined,
+      id: id || undefined,
+      status: statusRaw ? (statusRaw as ProjectRow["status"]) : undefined,
+      priority: Number.isFinite(priorityRaw) ? Math.trunc(priorityRaw) : undefined,
+      init_git: initGit,
+    },
+  };
 }
 
 type EscalationCreateInput = {
@@ -746,6 +855,128 @@ app.get("/global/escalations", (req, res) => {
     limit,
   });
   return res.json({ escalations });
+});
+
+app.post("/projects", (req, res) => {
+  const parsed = parseCreateProjectInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const created = createProjectFromSpec(parsed.input);
+  if (!created.ok) return res.status(400).json({ error: created.error });
+  const project = findProjectById(created.projectId);
+  return res.status(201).json({
+    project: project ?? { id: created.projectId, path: created.path },
+  });
+});
+
+app.post("/global/shifts", (req, res) => {
+  const parsed = parseStartShiftInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const result = startGlobalShift({
+    agentType: parsed.input.agentType,
+    agentId: parsed.input.agentId,
+    timeoutMinutes: parsed.input.timeoutMinutes,
+  });
+  if (!result.ok) {
+    return res.status(409).json({
+      error: "shift already active",
+      active_shift: result.activeShift,
+    });
+  }
+  return res.status(201).json(result.shift);
+});
+
+app.get("/global/shifts/active", (_req, res) => {
+  const shift = getActiveGlobalShift();
+  return res.json(shift ?? null);
+});
+
+app.get("/global/shifts", (req, res) => {
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit = Number.isFinite(limitRaw) ? Math.trunc(limitRaw) : 10;
+  const shifts = listGlobalShifts(limit);
+  return res.json(shifts);
+});
+
+app.post("/global/shifts/:shiftId/complete", (req, res) => {
+  const { shiftId } = req.params;
+  if (!shiftId || !shiftId.trim()) {
+    return res.status(400).json({ error: "`shiftId` must be provided" });
+  }
+
+  const parsed = parseCreateGlobalShiftHandoffInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+  expireStaleGlobalShifts();
+  const shift = getGlobalShiftById(shiftId);
+  if (!shift) return res.status(404).json({ error: "shift not found" });
+  if (shift.status !== "active") {
+    return res.status(409).json({ error: "shift not active", status: shift.status });
+  }
+
+  try {
+    const input = { ...parsed.input };
+    if (input.project_state === undefined) {
+      input.project_state = buildGlobalContextResponse();
+    }
+    const handoff = createGlobalShiftHandoff({
+      shiftId,
+      input,
+    });
+    const completedAt = new Date().toISOString();
+    const updatedOk = updateGlobalShift(shift.id, {
+      status: "completed",
+      completed_at: completedAt,
+      handoff_id: handoff.id,
+      error: null,
+    });
+    if (!updatedOk) {
+      return res.status(500).json({ error: "failed to update shift" });
+    }
+    const updatedShift =
+      getGlobalShiftById(shiftId) ??
+      ({
+        ...shift,
+        status: "completed",
+        completed_at: completedAt,
+        handoff_id: handoff.id,
+        error: null,
+      } as const);
+    return res.json({ shift: updatedShift, handoff });
+  } catch (err) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : "failed to complete shift",
+    });
+  }
+});
+
+app.post("/global/shifts/:shiftId/handoff", (req, res) => {
+  const { shiftId } = req.params;
+  if (!shiftId || !shiftId.trim()) {
+    return res.status(400).json({ error: "`shiftId` must be provided" });
+  }
+  const parsed = parseCreateGlobalShiftHandoffInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  expireStaleGlobalShifts();
+  const shift = getGlobalShiftById(shiftId);
+  if (!shift) return res.status(404).json({ error: "shift not found" });
+  if (shift.status !== "active") {
+    return res.status(409).json({ error: "shift not active", status: shift.status });
+  }
+  try {
+    const input = { ...parsed.input };
+    if (input.project_state === undefined) {
+      input.project_state = buildGlobalContextResponse();
+    }
+    const handoff = createGlobalShiftHandoff({
+      shiftId,
+      input,
+    });
+    return res.status(201).json(handoff);
+  } catch (err) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : "failed to create handoff",
+    });
+  }
 });
 
 app.post("/projects/:id/escalations", (req, res) => {
