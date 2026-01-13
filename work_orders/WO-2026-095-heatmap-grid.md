@@ -3,9 +3,10 @@ id: WO-2026-095
 title: "Visualization: Heatmap Grid"
 goal: Test if a dense grid view enables instant system health comprehension.
 context:
-  - WO-2026-091 (canvas foundation)
+  - WO-2026-094 (builds on Timeline River learnings)
   - Hypothesis: Color-coded grid lets you grok health of many items instantly
   - Inspired by: GitHub contribution graph, server monitoring grids, trading floors
+  - "Shared design: Node = Project, Size = consumption rate, Escalation badges, Click → popup → drill-through, Voice-primary/canvas-ambient"
 acceptance_criteria:
   - Grid of tiles, one per WO (or project)
   - Color = status (green/yellow/red spectrum)
@@ -31,7 +32,7 @@ status: backlog
 created_at: 2026-01-12
 updated_at: 2026-01-12
 depends_on:
-  - WO-2026-091
+  - WO-2026-094
 era: v2
 ---
 ## Hypothesis

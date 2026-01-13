@@ -6,9 +6,10 @@ context:
   - WO-2026-091 (canvas foundation)
   - Hypothesis: Seeing visual "life" creates engagement and surfaces active work
   - Inspired by: Server monitoring dashboards, heartbeat visualizations
+  - "Shared design: Node = Project, Size = consumption rate, Escalation badges, Click → popup → drill-through, Voice-primary/canvas-ambient"
 acceptance_criteria:
   - Projects rendered as circles on canvas
-  - Circle size = project health/activity level
+  - Circle size = token consumption rate (bigger = hungrier projects)
   - Pulse animation when run is active (expanding ring effect)
   - Glow intensity = current activity level
   - Idle projects are dimmer, smaller

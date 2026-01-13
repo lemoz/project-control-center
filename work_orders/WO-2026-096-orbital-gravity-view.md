@@ -3,17 +3,18 @@ id: WO-2026-096
 title: "Visualization: Orbital/Gravity View"
 goal: Test if a gravity/attention metaphor helps prioritize focus on active and important work.
 context:
-  - WO-2026-091 (canvas foundation)
-  - Hypothesis: "Hot" work should pull toward center, idle drifts away
-  - Inspired by: Solar system visualizations, attention/focus metaphors, physics games
+  - WO-2026-095 (builds on Heatmap learnings)
+  - "Hypothesis: Hot work should pull toward center, idle drifts away"
+  - Inspired by Solar system visualizations, attention/focus metaphors, physics games
+  - "Shared design: Node = Project, Size = consumption rate, Escalation badges, Click → popup → drill-through, Voice-primary/canvas-ambient"
 acceptance_criteria:
-  - Central "sun" represents user's attention
+  - Central sun represents user attention
   - Active/important nodes orbit close to center
   - Idle/completed nodes drift to outer rings
   - Nodes slowly orbit (not static)
-  - "Heat" (activity) pulls nodes inward
+  - Heat (activity) pulls nodes inward
   - Cooling (idle time) lets nodes drift outward
-  - Click node to "focus" - pulls it to center temporarily
+  - Click node to focus - pulls it to center temporarily
   - Visual rings to show attention zones (hot/warm/cold)
 non_goals:
   - Realistic orbital physics
@@ -32,7 +33,7 @@ status: backlog
 created_at: 2026-01-12
 updated_at: 2026-01-12
 depends_on:
-  - WO-2026-091
+  - WO-2026-095
 era: v2
 ---
 ## Hypothesis

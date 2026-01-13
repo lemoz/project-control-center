@@ -131,6 +131,7 @@ const TERMINAL_RUN_STATUSES = new Set<RunRow["status"]>([
   "failed",
   "canceled",
   "baseline_failed",
+  "superseded",
 ]);
 
 export function buildShiftContext(

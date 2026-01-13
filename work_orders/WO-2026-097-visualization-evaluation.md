@@ -30,10 +30,6 @@ status: backlog
 created_at: 2026-01-12
 updated_at: 2026-01-12
 depends_on:
-  - WO-2026-092
-  - WO-2026-093
-  - WO-2026-094
-  - WO-2026-095
   - WO-2026-096
 era: v2
 ---
