@@ -82,20 +82,106 @@ The shift-context endpoint returns everything you need:
 
 ---
 
-## What To Do While Waiting
+## What To Do While Waiting (MANDATORY)
 
-**Don't just poll in a loop.** When a run is building/testing, use the time:
+**You MUST do productive work between status checks.** Polling without gardening is a failure mode. When a run is building/testing, work through this checklist:
 
-| Task | How |
-|------|-----|
-| **Clean up merge conflicts** | Check `active_runs` for `merge_conflict` status. Try to resolve them. |
-| **Garden stale branches** | List old run branches, delete merged ones |
-| **Review backlog** | Read WOs in backlog, identify which could be unblocked |
-| **Check other runs** | Multiple runs can be in flight - monitor all of them |
-| **Summarize for user** | If reviewer feedback came in, summarize what it said |
-| **Plan next steps** | Based on goals, what should happen after this run? |
+### Gardening Checklist (work through these in order)
 
-**Polling strategy:** Check run status every 2-3 minutes, not every 30 seconds. Use the time between checks productively.
+**1. Clean up stale git state**
+```bash
+# Check for stale worktrees
+git worktree list
+
+# Remove worktrees for merged/failed runs
+git worktree remove .system/runs/{run_id}/worktree --force
+
+# Prune old worktree references
+git worktree prune
+
+# Delete merged run branches
+git branch -d run/WO-XXXX-{run_id}
+```
+
+**2. Check for runs needing attention**
+```bash
+# Find runs stuck in bad states
+curl -s "http://localhost:4010/repos/1/runs?status=merge_conflict"
+curl -s "http://localhost:4010/repos/1/runs?status=waiting_for_input"
+curl -s "http://localhost:4010/repos/1/runs?status=you_review"
+```
+
+**3. Review recent reviewer feedback**
+```bash
+# Read what reviewers are saying - patterns here inform future WOs
+cat .system/runs/{recent_run}/reviewer/iter-*/verdict.json
+```
+
+**4. Analyze backlog for blockers**
+```bash
+# Check which backlog WOs could be unblocked
+curl -s "http://localhost:4010/repos/1/work-orders?status=backlog" | jq '.[] | {id, depends_on}'
+```
+
+**5. Update WO statuses if stale**
+- If a WO's run merged but WO is still "building" → patch to "done"
+- If a WO is blocked but blocker resolved → patch to "ready"
+
+**6. Advance project goals (IMPORTANT)**
+```bash
+# Re-read the goals
+curl -s "http://localhost:4010/projects/{project_id}/shift-context" | jq '.goals'
+```
+
+Ask yourself:
+- Are the success_criteria covered by existing WOs?
+- Is there a gap? → Draft a new WO or note it for handoff
+- Is a WO spec incomplete or unclear? → Improve it
+- Are WO priorities aligned with goals? → Suggest reordering
+
+**Goal-driven work examples:**
+- Goal says "canvas shows project health" but no WO covers health indicators → draft WO
+- WO acceptance criteria are vague → add specific testable criteria
+- Multiple WOs address same goal → note redundancy, suggest consolidation
+- Goal is blocked by missing dependency → identify and document the blocker
+
+**7. Review and improve WO specs**
+```bash
+# Read a ready WO and check quality
+curl -s "http://localhost:4010/repos/1/work-orders/WO-2026-XXX"
+```
+
+Check for:
+- Clear goal statement (not just "implement X")
+- Testable acceptance criteria
+- Explicit stop conditions
+- Reasonable scope (not too big)
+
+If a WO is weak, improve it:
+```bash
+curl -s -X PATCH "http://localhost:4010/repos/1/work-orders/WO-2026-XXX" \
+  -H "Content-Type: application/json" \
+  -d '{"acceptance_criteria": ["...", "..."]}'
+```
+
+**8. Economy awareness (when available)**
+- Check budget consumption rate
+- Note if runs are burning through budget quickly
+- Flag expensive patterns (many iterations, long builds)
+- Prioritize high-value/low-cost WOs when budget is tight
+
+### Polling Strategy
+
+**Between every status check, complete at least ONE gardening task.**
+
+Pattern:
+1. Check run status
+2. Do ONE gardening task from checklist above
+3. Log what you did
+4. Check status again
+5. Repeat
+
+**Check run status every 3-5 minutes** - builder iterations take 10-20 minutes, so more frequent polling is wasted effort.
 
 ---
 
@@ -233,6 +319,9 @@ curl -s -X POST "http://localhost:4010/projects/{project_id}/shifts/{shift_id}/c
 - Any blockers or issues discovered
 - Decisions you made and why
 - What's ready to work on next
+- **Goal gaps identified** (success criteria not covered by WOs)
+- **WO improvements made** (specs you refined)
+- **Patterns observed** (recurring reviewer feedback, build issues)
 
 ---
 
@@ -269,13 +358,16 @@ curl -s -X POST "http://localhost:4010/projects/{project_id}/shifts/{shift_id}/c
 
 | Don't | Do instead |
 |-------|------------|
-| Poll every 30 seconds | Check every 2-3 minutes, work in between |
-| Just wait for runs | Garden, plan, clean up while waiting |
+| Poll every 30 seconds | Check every 3-5 minutes, garden in between |
+| Just wait for runs | **MUST garden between every poll** - this is mandatory |
+| Check status → check status → check status | Check status → garden → check status → garden |
 | Implement WO features directly | Kick off runs - builder does implementation |
 | Escalate simple git issues | Fix them yourself |
 | Leave merge conflicts piling up | Clean them up proactively |
 | End shift without handoff | Always complete with detailed notes |
 | Ignore last_handoff | Read it first - it's context from previous agent |
+| Let stale worktrees accumulate | Prune them every shift |
+| Ignore reviewer feedback patterns | Read and summarize - it helps improve WO specs |
 
 ---
 
@@ -288,11 +380,21 @@ curl -s -X POST "http://localhost:4010/projects/{project_id}/shifts/{shift_id}/c
 4. Fix: resolve merge conflict, merge branch
 5. Check ready WOs: WO-078 is ready
 6. Kick off WO-078 run
-7. While building: clean up 3 old merge_conflict runs
-8. Check WO-078: now in testing
-9. While testing: review backlog, note WO-079 is next
-10. Check WO-078: merged successfully!
-11. Kick off WO-079 run
-12. Approaching timeout: let run continue, prepare handoff
-13. Complete shift with detailed notes for next agent
+7. GARDEN: git worktree list → prune 2 stale worktrees
+8. Check WO-078: still building (5 min in)
+9. GARDEN: check waiting_for_input runs → none found
+10. Check WO-078: still building (10 min in)
+11. GARDEN: read reviewer feedback from last 3 runs → note pattern: "missing tests"
+12. Check WO-078: now in testing
+13. GOALS: review success_criteria → "real-time updates" not covered by any WO → note for handoff
+14. Check WO-078: merged successfully!
+15. GARDEN: delete run/WO-078 branch, remove worktree
+16. Kick off WO-079 run
+17. GOALS: WO-080 has vague acceptance criteria → improve spec with testable conditions
+18. Check WO-079: building...
+19. GARDEN: git worktree prune, clean up any remaining stale branches
+20. Approaching timeout: let run continue, prepare handoff
+21. Complete shift with detailed notes including goal gaps and WO improvements
 ```
+
+**Notice:** Mix of GARDEN (maintenance) and GOALS (advancement) tasks between polls. This is the expected pattern.
