@@ -949,7 +949,7 @@ function listWorkspacePackageDirs(
       : undefined;
   const patterns = Array.isArray(packagesRaw)
     ? packagesRaw
-        .filter((entry): entry is string => typeof entry === "string" && entry.trim())
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
         .map((entry) => entry.trim())
     : typeof packagesRaw === "string" && packagesRaw.trim()
       ? [packagesRaw.trim()]
