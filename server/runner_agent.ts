@@ -1,6 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "child_process";
 import crypto from "crypto";
 import fs from "fs";
+import fg from "fast-glob";
 import path from "path";
 import YAML from "yaml";
 import {
@@ -153,6 +154,7 @@ function recordCostFromCodexLog(params: {
 }
 
 type RunPhaseMetricMetadata = Record<string, unknown>;
+type PackageManager = "pnpm" | "npm" | "yarn" | "unknown";
 
 function recordPhaseMetric(params: {
   runId: string;
@@ -909,11 +911,115 @@ function cleanupWorktree(params: {
   });
 }
 
-function ensureNodeModulesSymlink(repoPath: string, worktreePath: string) {
+function detectPackageManager(repoPath: string): PackageManager {
+  const pkg = readJsonIfExists<{ packageManager?: string }>(
+    path.join(repoPath, "package.json")
+  );
+  const declared = pkg?.packageManager?.trim();
+  if (declared) {
+    const name = declared.split("@")[0]?.trim().toLowerCase();
+    if (name === "pnpm" || name === "npm" || name === "yarn") {
+      return name;
+    }
+  }
+  if (fs.existsSync(path.join(repoPath, "pnpm-lock.yaml"))) return "pnpm";
+  if (fs.existsSync(path.join(repoPath, "package-lock.json"))) return "npm";
+  if (fs.existsSync(path.join(repoPath, "yarn.lock"))) return "yarn";
+  return "unknown";
+}
+
+function listWorkspacePackageDirs(
+  repoPath: string,
+  packageManager: PackageManager = detectPackageManager(repoPath)
+): string[] {
+  if (packageManager !== "pnpm") return [];
+  const workspacePath = path.join(repoPath, "pnpm-workspace.yaml");
+  if (!fs.existsSync(workspacePath)) return [];
+  const raw = readTextIfExists(workspacePath);
+  if (!raw.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = YAML.parse(raw);
+  } catch {
+    return [];
+  }
+  const packagesRaw =
+    parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>).packages
+      : undefined;
+  const patterns = Array.isArray(packagesRaw)
+    ? packagesRaw
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim())
+        .map((entry) => entry.trim())
+    : typeof packagesRaw === "string" && packagesRaw.trim()
+      ? [packagesRaw.trim()]
+      : [];
+  if (patterns.length === 0) return [];
+
+  const repoResolved = path.resolve(repoPath);
+  let matches: string[] = [];
+  try {
+    matches = fg.sync(patterns, {
+      cwd: repoPath,
+      onlyDirectories: true,
+      unique: true,
+    });
+  } catch {
+    return [];
+  }
+  const dirs = new Set<string>();
+  for (const match of matches) {
+    const resolved = path.resolve(repoPath, match);
+    const rel = path.relative(repoResolved, resolved);
+    if (!rel || rel === "." || rel.startsWith("..") || path.isAbsolute(rel)) {
+      continue;
+    }
+    if (!fs.existsSync(path.join(resolved, "package.json"))) continue;
+    dirs.add(rel);
+  }
+  return Array.from(dirs).sort();
+}
+
+function ensureNodeModulesSymlink(
+  repoPath: string,
+  worktreePath: string,
+  log: (line: string) => void
+) {
+  const packageManager = detectPackageManager(repoPath);
+  log(`Detected package manager: ${packageManager}`);
+
+  let linkedCount = 0;
   const source = path.join(repoPath, "node_modules");
   const dest = path.join(worktreePath, "node_modules");
-  if (!fs.existsSync(source)) return;
-  safeSymlink(source, dest);
+  if (fs.existsSync(source)) {
+    safeSymlink(source, dest);
+    linkedCount += 1;
+  }
+
+  if (packageManager !== "pnpm") {
+    log(
+      `Linked ${linkedCount} node_modules symlink${linkedCount === 1 ? "" : "s"}.`
+    );
+    return;
+  }
+
+  const workspaceDirs = listWorkspacePackageDirs(repoPath, packageManager);
+  let workspaceLinked = 0;
+  for (const relDir of workspaceDirs) {
+    const pkgSource = path.join(repoPath, relDir, "node_modules");
+    if (!fs.existsSync(pkgSource)) continue;
+    const pkgDest = path.join(worktreePath, relDir, "node_modules");
+    safeSymlink(pkgSource, pkgDest);
+    workspaceLinked += 1;
+  }
+
+  log(
+    `Detected pnpm workspace with ${workspaceDirs.length} packages, linked ${workspaceLinked} node_modules`
+  );
+  const totalLinked = linkedCount + workspaceLinked;
+  log(
+    `Linked ${totalLinked} node_modules symlink${totalLinked === 1 ? "" : "s"}.`
+  );
 }
 
 function listUnmergedFiles(repoPath: string): string[] {
@@ -2608,7 +2714,7 @@ export async function runRun(runId: string) {
       });
       return;
     }
-    ensureNodeModulesSymlink(repoPath, worktreePath);
+    ensureNodeModulesSymlink(repoPath, worktreePath, log);
 
     const isolationMode = project.isolation_mode || "local";
     const wantsVmIsolation = VM_ISOLATION_MODES.has(isolationMode);
