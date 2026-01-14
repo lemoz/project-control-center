@@ -41,10 +41,34 @@ export type ProjectNode = {
 
 export type VisualizationNode = ProjectNode;
 
+export type RunStatus =
+  | "queued"
+  | "baseline_failed"
+  | "building"
+  | "waiting_for_input"
+  | "ai_review"
+  | "testing"
+  | "you_review"
+  | "merged"
+  | "merge_conflict"
+  | "failed"
+  | "canceled";
+
+export type RunSummary = {
+  id: string;
+  work_order_id: string;
+  status: RunStatus;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  escalation: string | null;
+};
+
 export type VisualizationData = {
   nodes: ProjectNode[];
   edges: VisualizationEdge[];
   timestamp: Date;
+  runsByProject?: Record<string, RunSummary[]>;
 };
 
 export interface Visualization {

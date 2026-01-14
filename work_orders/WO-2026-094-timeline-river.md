@@ -29,9 +29,9 @@ tags:
   - visualization
   - exploration
 estimate_hours: 3
-status: backlog
+status: you_review
 created_at: 2026-01-12
-updated_at: 2026-01-12
+updated_at: 2026-01-14
 depends_on:
   - WO-2026-093
 era: v2

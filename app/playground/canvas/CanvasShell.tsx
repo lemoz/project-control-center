@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEventHandler } from "react";
 import Link from "next/link";
 import type { Visualization } from "./types";
 import { EscalationBadge } from "./EscalationBadge";
@@ -8,8 +8,46 @@ import { ProjectPopup } from "./ProjectPopup";
 import { useProjectsVisualization } from "./useProjectsVisualization";
 import { useCanvasInteraction } from "./useCanvasInteraction";
 import { defaultVisualizationId, findVisualization, visualizations } from "./visualizations";
+import type { RiverBubbleDetails } from "./visualizations/TimelineRiverViz";
 
 const TOOLTIP_OFFSET = 14;
+const CLICK_THRESHOLD = 4;
+
+type BubbleHitTestVisualization = Visualization & {
+  getBubbleAtPoint: (point: { x: number; y: number }) => RiverBubbleDetails | null;
+  setSelectedBubbleId?: (id: string | null) => void;
+};
+
+function supportsBubbleHitTest(
+  visualization: Visualization | null
+): visualization is BubbleHitTestVisualization {
+  return Boolean(visualization && "getBubbleAtPoint" in visualization);
+}
+
+function getCanvasPoint(event: { clientX: number; clientY: number }, canvas: HTMLCanvasElement) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+}
+
+function screenToWorld(
+  point: { x: number; y: number },
+  transform: { offsetX: number; offsetY: number; scale: number }
+) {
+  return {
+    x: (point.x - transform.offsetX) / transform.scale,
+    y: (point.y - transform.offsetY) / transform.scale,
+  };
+}
+
+function formatRunStatus(value: string): string {
+  return value.replace(/_/g, " ");
+}
+
+function formatRunTimestamp(value: string | null | undefined): string {
+  if (!value) return "N/A";
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? "N/A" : date.toLocaleString();
+}
 
 function formatTimestamp(value: Date | null): string {
   if (!value) return "never";
@@ -30,8 +68,10 @@ export function CanvasShell() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const vizRef = useRef<Visualization | null>(null);
   const [selectedVizId, setSelectedVizId] = useState(defaultVisualizationId);
+  const [selectedRun, setSelectedRun] = useState<RiverBubbleDetails | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0, dpr: 1 });
   const lastFrame = useRef<number | null>(null);
+  const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
 
   const { data, loading, error, refresh, lastUpdated } = useProjectsVisualization();
 
@@ -68,6 +108,14 @@ export function CanvasShell() {
         vizRef.current = null;
       }
     };
+  }, [selectedVizId]);
+
+  useEffect(() => {
+    setSelectedRun(null);
+    const visualization = vizRef.current;
+    if (supportsBubbleHitTest(visualization)) {
+      visualization.setSelectedBubbleId?.(null);
+    }
   }, [selectedVizId]);
 
   useEffect(() => {
@@ -120,6 +168,50 @@ export function CanvasShell() {
   useEffect(() => {
     sizeRef.current = canvasSize;
   }, [canvasSize]);
+
+  const handlePointerDown = useCallback<PointerEventHandler<HTMLCanvasElement>>(
+    (event) => {
+      pointerDownRef.current = { x: event.clientX, y: event.clientY };
+      handlers.onPointerDown(event);
+    },
+    [handlers]
+  );
+
+  const handlePointerUp = useCallback<PointerEventHandler<HTMLCanvasElement>>(
+    (event) => {
+      handlers.onPointerUp(event);
+      const start = pointerDownRef.current;
+      pointerDownRef.current = null;
+      if (!start) return;
+      const distance = Math.hypot(event.clientX - start.x, event.clientY - start.y);
+      if (distance > CLICK_THRESHOLD) return;
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const point = getCanvasPoint(event, canvas);
+      const worldPoint = screenToWorld(point, transform);
+      const visualization = vizRef.current;
+      if (supportsBubbleHitTest(visualization)) {
+        const bubble = visualization.getBubbleAtPoint(worldPoint);
+        if (bubble) {
+          setSelectedRun(bubble);
+          visualization.setSelectedBubbleId?.(bubble.bubbleId);
+          return;
+        }
+        visualization.setSelectedBubbleId?.(null);
+      }
+      setSelectedRun(null);
+    },
+    [handlers, transform]
+  );
+
+  const handlePointerLeave = useCallback<PointerEventHandler<HTMLCanvasElement>>(
+    (event) => {
+      pointerDownRef.current = null;
+      handlers.onPointerLeave(event);
+    },
+    [handlers]
+  );
 
   useEffect(() => {
     const render = () => {
@@ -227,7 +319,11 @@ export function CanvasShell() {
               cursor: isPanning ? "grabbing" : "grab",
               touchAction: "none",
             }}
-            {...handlers}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlers.onPointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerLeave={handlePointerLeave}
+            onWheel={handlers.onWheel}
           />
 
           {hoveredNode && tooltipPosition && (
@@ -260,7 +356,72 @@ export function CanvasShell() {
             </div>
           )}
 
-          {selectedNode && <ProjectPopup node={selectedNode} />}
+          {selectedNode && !selectedRun && <ProjectPopup node={selectedNode} />}
+
+          {selectedRun && (
+            <aside
+              style={{
+                position: "absolute",
+                left: 16,
+                bottom: 16,
+                width: 280,
+                background: "rgba(10, 12, 18, 0.96)",
+                border: "1px solid #1d2233",
+                borderRadius: 14,
+                padding: 12,
+                boxShadow: "0 16px 32px rgba(0, 0, 0, 0.45)",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>Run {selectedRun.runId}</div>
+                <div
+                  style={{
+                    padding: "2px 8px",
+                    borderRadius: 999,
+                    fontSize: 11,
+                    border: "1px solid #2b3347",
+                    background: "#141824",
+                  }}
+                >
+                  {formatRunStatus(selectedRun.status)}
+                </div>
+              </div>
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                {selectedRun.projectName} · {selectedRun.stageLabel}
+              </div>
+              <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                Work Order: {selectedRun.workOrderId}
+              </div>
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                Created: {formatRunTimestamp(selectedRun.createdAt)}
+              </div>
+              {selectedRun.startedAt && (
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  Started: {formatRunTimestamp(selectedRun.startedAt)}
+                </div>
+              )}
+              {selectedRun.finishedAt && (
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  Finished: {formatRunTimestamp(selectedRun.finishedAt)}
+                </div>
+              )}
+              {selectedRun.escalation && (
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: 8,
+                    borderRadius: 10,
+                    background: "rgba(52, 17, 24, 0.5)",
+                    border: "1px solid #4b1620",
+                    fontSize: 11,
+                    color: "#ffb3b8",
+                  }}
+                >
+                  {selectedRun.escalation}
+                </div>
+              )}
+            </aside>
+          )}
 
           {loading && (
             <div
