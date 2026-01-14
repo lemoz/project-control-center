@@ -30,7 +30,7 @@ tags:
   - fix
   - unblocks-projects
 estimate_hours: 3
-status: ready
+status: building
 created_at: 2026-01-14
 updated_at: 2026-01-14
 depends_on:
