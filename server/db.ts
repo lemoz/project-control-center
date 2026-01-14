@@ -956,6 +956,16 @@ export function mergeProjectsByPath(
     let deletedProjects = 0;
     const mergedIds: string[] = [];
 
+    // Preserve starred if any duplicate was starred
+    const anyStarred = database
+      .prepare("SELECT 1 FROM projects WHERE path = ? AND starred = 1 LIMIT 1")
+      .get(repoPath);
+    if (anyStarred) {
+      database
+        .prepare("UPDATE projects SET starred = 1 WHERE id = ?")
+        .run(keepId);
+    }
+
     const moveProjectIdStmts = listProjectIdForeignKeys(database).map((fk) => ({
       ...fk,
       stmt: database.prepare(
@@ -1010,8 +1020,8 @@ export function upsertProject(p: Omit<ProjectRow, "created_at" | "updated_at"> &
          stage=excluded.stage,
          status=excluded.status,
          priority=excluded.priority,
-         starred=excluded.starred,
-         hidden=excluded.hidden,
+         starred=projects.starred,
+         hidden=projects.hidden,
          tags=excluded.tags,
          isolation_mode=excluded.isolation_mode,
          vm_size=excluded.vm_size,
