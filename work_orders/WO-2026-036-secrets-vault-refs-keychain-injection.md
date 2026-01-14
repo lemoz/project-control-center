@@ -31,9 +31,9 @@ created_at: 2026-01-08
 updated_at: 2026-01-08
 depends_on:
   - WO-2025-004
-  - WO-2026-034
-  - WO-2026-035
   - WO-2026-027
+notes:
+  - "Dependencies 034/035 archived. Secret refs can be stored in DB instead of YAML. Event logging for secret_accessed can be added to cost_records or a simple audit table."
 era: v2
 ---
 ## Notes

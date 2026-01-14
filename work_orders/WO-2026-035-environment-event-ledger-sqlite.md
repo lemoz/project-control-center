@@ -26,9 +26,10 @@ tags:
   - data
   - infra
 estimate_hours: 4
-status: backlog
+status: archived
 created_at: 2026-01-08
-updated_at: 2026-01-08
+updated_at: 2026-01-14
+archived_reason: "Cost tracking covered by 101-103 (cost_records table). Non-cost events (secret_accessed, etc.) can be added later if needed. Depends on archived WO-034."
 depends_on:
   - WO-2025-004
   - WO-2026-034
