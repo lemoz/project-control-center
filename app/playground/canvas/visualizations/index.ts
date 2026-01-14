@@ -1,6 +1,7 @@
 import type { VisualizationDefinition } from "../types";
 import { ActivityPulseVisualization } from "./ActivityPulseViz";
 import { PlaceholderVisualization } from "./PlaceholderViz";
+import { TimelineRiverVisualization } from "./TimelineRiverViz";
 
 export const visualizations: VisualizationDefinition[] = [
   {
@@ -8,6 +9,12 @@ export const visualizations: VisualizationDefinition[] = [
     name: "Activity Pulse",
     description: "Activity-driven pulse rings with glow.",
     create: () => new ActivityPulseVisualization(),
+  },
+  {
+    id: "timeline_river",
+    name: "Timeline River",
+    description: "Runs flow through backlog to done across project lanes.",
+    create: () => new TimelineRiverVisualization(),
   },
   {
     id: "placeholder",

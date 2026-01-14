@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ProjectNode, VisualizationData } from "./types";
+import type { ProjectNode, RunStatus, RunSummary, VisualizationData } from "./types";
 
 type RepoSummary = {
   id: string;
@@ -35,29 +35,6 @@ type WorkOrder = {
   priority: number;
   updated_at: string;
   depends_on: string[];
-};
-
-type RunStatus =
-  | "queued"
-  | "baseline_failed"
-  | "building"
-  | "waiting_for_input"
-  | "ai_review"
-  | "testing"
-  | "you_review"
-  | "merged"
-  | "merge_conflict"
-  | "failed"
-  | "canceled";
-
-type RunSummary = {
-  id: string;
-  work_order_id: string;
-  status: RunStatus;
-  created_at: string;
-  started_at: string | null;
-  finished_at: string | null;
-  escalation: string | null;
 };
 
 type ActivePhase = "building" | "testing" | "reviewing" | "waiting";
@@ -672,6 +649,7 @@ export function useProjectsVisualization(): {
       nodes,
       edges,
       timestamp: lastUpdated ?? new Date(),
+      runsByProject,
     };
   }, [projects, workOrdersByProject, runsByProject, globalContext, shiftContexts, costsByProject, lastUpdated]);
 
