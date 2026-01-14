@@ -28,7 +28,7 @@ tags:
   - visualization
   - exploration
 estimate_hours: 2
-status: backlog
+status: ready
 created_at: 2026-01-12
 updated_at: 2026-01-12
 depends_on:
