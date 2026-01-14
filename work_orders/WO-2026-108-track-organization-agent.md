@@ -18,11 +18,15 @@ acceptance_criteria:
   - Review UI for track suggestions before persisting
   - Track filter/view in WO list and tech tree
 non_goals:
-  - Fully automatic assignment (human approval required for v1)
   - Cross-project global tracks (per-project only for v1)
   - ML embeddings (LLM does the clustering)
+  - Specifying track completion behavior (builder figures it out)
+triggers:
+  - Auto-run after N new WOs created (threshold TBD, maybe 10-15)
+  - Manual trigger available
 notes:
   - "FRONTEND CONSTRAINT: 8 track limit is based on tech tree lane display capacity. If tech tree visualization changes to support more lanes or uses filter mode instead of lanes, this limit can be increased. See tech tree viz code when updating."
+  - "ARCHITECTURE: Global agent reasons about tracks, not WOs. Project agent reasons about WOs. Global says 'prioritize Runner track', project agent decides which WO that means."
 priority: 3
 tags:
   - meta
@@ -87,3 +91,23 @@ Output JSON with track definitions and WO assignments.
 4. User approves/edits
 5. Persisted to DB
 6. Tech tree updates to show track lanes
+
+### Agent Hierarchy
+
+```
+Global Agent (track-level reasoning)
+├── Sees: track progress across all projects
+├── Thinks: "Economy track 80% done, Runner track blocked"
+├── Decides: budget allocation, cross-project priorities
+└── Does NOT touch individual WOs
+
+Project Agent (WO-level reasoning)
+├── Sees: WOs within this project, track context
+├── Thinks: "WO-107 unblocks other work, run next"
+├── Decides: WO ordering, spawns new WOs
+├── Reports: track progress up to global agent
+└── Owns: WO generation and execution
+```
+
+Global agent directive: "Prioritize Runner track"
+Project agent interprets: "WO-107 is the next Runner WO, run it"
