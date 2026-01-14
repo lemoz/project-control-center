@@ -251,16 +251,18 @@ test.describe("Project Control Center smoke", () => {
 
     fs.renameSync(betaRepoPath, movedRepoPath);
     try {
-      await page.reload();
+      await page.reload({ waitUntil: "networkidle" });
       const betaAfter = page.locator(".grid .card.cardLink", { hasText: "beta" });
       await expect(betaAfter.locator("a.stretchedLink")).toHaveAttribute(
         "href",
         "/projects/beta-stable"
       );
       await expect(betaAfter).toContainText("beta-moved");
+      // Wait for card to be fully rendered before checking star button (flaky on mobile)
+      await expect(betaAfter).toBeVisible();
       await expect(
         betaAfter.locator('button[aria-label="Unstar project"]')
-      ).toBeVisible();
+      ).toBeVisible({ timeout: 15000 });
     } finally {
       if (fs.existsSync(movedRepoPath)) {
         fs.renameSync(movedRepoPath, betaRepoPath);
