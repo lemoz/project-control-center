@@ -32,7 +32,7 @@ tags:
   - dx
   - bug-fix
 estimate_hours: 4
-status: backlog
+status: ready
 created_at: 2026-01-13
 updated_at: 2026-01-13
 depends_on:
