@@ -1,7 +1,7 @@
 ---
 id: WO-2026-106
 title: Research and Plan pnpm Workspace Support
-status: you_review
+status: done
 priority: 1
 tags:
   - runner
