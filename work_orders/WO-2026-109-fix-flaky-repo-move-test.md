@@ -23,9 +23,9 @@ tags:
   - e2e
   - bugfix
 estimate_hours: 2
-status: ready
+status: you_review
 created_at: 2026-01-14
-updated_at: 2026-01-14
+updated_at: 2026-01-15
 depends_on: []
 era: v2
 ---

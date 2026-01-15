@@ -22,6 +22,12 @@ function waitForStarPatch(page: import("@playwright/test").Page, repoId: string)
   );
 }
 
+async function waitForStarToggle(card: import("@playwright/test").Locator) {
+  const toggle = card.getByRole("button", { name: /Star project|Unstar project/ });
+  await expect(toggle).toBeVisible();
+  return toggle;
+}
+
 function waitForThreadPatch(page: import("@playwright/test").Page, threadId: string) {
   const expectedPath = `/api/chat/threads/${encodeURIComponent(threadId)}`;
   return page.waitForResponse(
@@ -243,10 +249,12 @@ test.describe("Project Control Center smoke", () => {
       "/projects/beta-stable"
     );
 
-    if (await betaCard.locator('button[aria-label="Star project"]').isVisible()) {
+    const betaStarToggle = await waitForStarToggle(betaCard);
+    if ((await betaStarToggle.getAttribute("aria-label")) === "Star project") {
       const starResponse = waitForStarPatch(page, "beta-stable");
-      await betaCard.locator('button[aria-label="Star project"]').click();
+      await betaStarToggle.click();
       expect((await starResponse).ok()).toBe(true);
+      await expect(betaStarToggle).toHaveAttribute("aria-label", "Unstar project");
     }
 
     fs.renameSync(betaRepoPath, movedRepoPath);
@@ -260,9 +268,8 @@ test.describe("Project Control Center smoke", () => {
       await expect(betaAfter).toContainText("beta-moved");
       // Wait for card to be fully rendered before checking star button (flaky on mobile)
       await expect(betaAfter).toBeVisible();
-      await expect(
-        betaAfter.locator('button[aria-label="Unstar project"]')
-      ).toBeVisible({ timeout: 15000 });
+      const betaAfterToggle = await waitForStarToggle(betaAfter);
+      await expect(betaAfterToggle).toHaveAttribute("aria-label", "Unstar project");
     } finally {
       if (fs.existsSync(movedRepoPath)) {
         fs.renameSync(movedRepoPath, betaRepoPath);
@@ -271,10 +278,12 @@ test.describe("Project Control Center smoke", () => {
 
     await page.reload();
     const betaRestored = page.locator(".grid .card.cardLink", { hasText: "beta" });
-    if (await betaRestored.locator('button[aria-label="Unstar project"]').isVisible()) {
+    const betaRestoredToggle = await waitForStarToggle(betaRestored);
+    if ((await betaRestoredToggle.getAttribute("aria-label")) === "Unstar project") {
       const unstarResponse = waitForStarPatch(page, "beta-stable");
-      await betaRestored.locator('button[aria-label="Unstar project"]').click();
+      await betaRestoredToggle.click();
       expect((await unstarResponse).ok()).toBe(true);
+      await expect(betaRestoredToggle).toHaveAttribute("aria-label", "Star project");
     }
   });
 
