@@ -404,19 +404,28 @@ export function listChatAttention(): ChatAttentionResponse {
     : [];
   const projectNameById = new Map(projectRows.map((row) => [row.id, row.name]));
 
-  const workOrderIds = Array.from(
-    new Set(threads.map((row) => row.work_order_id).filter((id): id is string => Boolean(id)))
-  );
-  const workOrderRows = workOrderIds.length
-    ? (db
-        .prepare(
-          `SELECT id, title FROM work_orders WHERE id IN (${buildInClause(workOrderIds)})`
-        )
-        .all(...workOrderIds) as Array<{ id: string; title: string }>)
-    : [];
-  const workOrderTitleById = new Map(
-    workOrderRows.map((row) => [row.id, row.title])
-  );
+  const workOrderIdsByProject = new Map<string, Set<string>>();
+  for (const row of threads) {
+    if (!row.project_id || !row.work_order_id) continue;
+    const set = workOrderIdsByProject.get(row.project_id) ?? new Set<string>();
+    set.add(row.work_order_id);
+    workOrderIdsByProject.set(row.project_id, set);
+  }
+  const workOrderTitleByKey = new Map<string, string>();
+  for (const [projectId, idsSet] of workOrderIdsByProject.entries()) {
+    const workOrderIds = Array.from(idsSet);
+    if (!workOrderIds.length) continue;
+    const workOrderRows = db
+      .prepare(
+        `SELECT id, title FROM work_orders WHERE project_id = ? AND id IN (${buildInClause(
+          workOrderIds
+        )})`
+      )
+      .all(projectId, ...workOrderIds) as Array<{ id: string; title: string }>;
+    for (const row of workOrderRows) {
+      workOrderTitleByKey.set(`${projectId}:${row.id}`, row.title);
+    }
+  }
 
   const items: ChatAttentionItem[] = [];
   for (const [threadId, attention] of summaryByThread.entries()) {
@@ -429,9 +438,10 @@ export function listChatAttention(): ChatAttentionResponse {
       project_id: thread.project_id ?? null,
       work_order_id: thread.work_order_id ?? null,
       project_name: thread.project_id ? projectNameById.get(thread.project_id) ?? null : null,
-      work_order_title: thread.work_order_id
-        ? workOrderTitleById.get(thread.work_order_id) ?? null
-        : null,
+      work_order_title:
+        thread.project_id && thread.work_order_id
+          ? workOrderTitleByKey.get(`${thread.project_id}:${thread.work_order_id}`) ?? null
+          : null,
       attention,
     });
   }

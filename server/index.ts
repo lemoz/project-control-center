@@ -20,6 +20,7 @@ import {
   getShiftByProjectId,
   listEscalations,
   listGlobalShifts,
+  listTracks,
   listRunPhaseMetrics,
   listShifts,
   markInProgressRunsFailed,
@@ -31,9 +32,13 @@ import {
   updateEscalation,
   updateShift,
   updateGlobalShift,
+  updateTrack,
   syncWorkOrderDeps,
   listAllWorkOrderDeps,
   getWorkOrderDependents,
+  createTrack,
+  deleteTrack,
+  getTrackById,
   type CreateGlobalShiftHandoffInput,
   type CreateShiftHandoffInput,
   type EscalationStatus,
@@ -42,6 +47,7 @@ import {
   type ProjectRow,
   type ProjectVmRow,
   type ProjectVmSize,
+  type Track,
   type ShiftHandoffDecision,
 } from "./db.js";
 import {
@@ -61,6 +67,7 @@ import {
   patchWorkOrder,
   readWorkOrderMarkdown,
   WorkOrderError,
+  type WorkOrder,
 } from "./work_orders.js";
 import {
   getChatSettingsResponse,
@@ -1725,6 +1732,40 @@ function sendWorkOrderError(res: Response, err: unknown) {
   return res.status(status).json({ error: err.message, details: err.details });
 }
 
+type TrackCounts = {
+  workOrderCount: number;
+  doneCount: number;
+  readyCount: number;
+};
+
+function buildTrackCounts(workOrders: WorkOrder[]): Map<string, TrackCounts> {
+  const counts = new Map<string, TrackCounts>();
+  for (const wo of workOrders) {
+    if (!wo.trackId) continue;
+    const entry = counts.get(wo.trackId) ?? {
+      workOrderCount: 0,
+      doneCount: 0,
+      readyCount: 0,
+    };
+    entry.workOrderCount += 1;
+    if (wo.status === "done") entry.doneCount += 1;
+    if (wo.status === "ready") entry.readyCount += 1;
+    counts.set(wo.trackId, entry);
+  }
+  return counts;
+}
+
+function applyTrackCounts(track: Track, counts: Map<string, TrackCounts>): Track {
+  const entry = counts.get(track.id);
+  if (!entry) return track;
+  return { ...track, ...entry };
+}
+
+function normalizeOptionalText(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
 app.get("/repos/:id/work-orders", (req, res) => {
   const { id } = req.params;
   const project = findProjectById(id);
@@ -1802,6 +1843,179 @@ app.patch("/repos/:id/work-orders/:workOrderId", (req, res) => {
   } catch (err) {
     return sendWorkOrderError(res, err);
   }
+});
+
+app.get("/repos/:id/tracks", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const workOrders = listWorkOrders(project.path);
+  const counts = buildTrackCounts(workOrders);
+  const tracks = listTracks(project.id).map((track) => applyTrackCounts(track, counts));
+  return res.json({ tracks });
+});
+
+app.post("/repos/:id/tracks", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const payload = req.body ?? {};
+  const nameValue = payload.name;
+  if (typeof nameValue !== "string" || !nameValue.trim()) {
+    return res.status(400).json({ error: "`name` is required" });
+  }
+
+  const descriptionValue = payload.description;
+  if (
+    descriptionValue !== undefined &&
+    descriptionValue !== null &&
+    typeof descriptionValue !== "string"
+  ) {
+    return res.status(400).json({ error: "`description` must be a string" });
+  }
+  const goalValue = payload.goal;
+  if (goalValue !== undefined && goalValue !== null && typeof goalValue !== "string") {
+    return res.status(400).json({ error: "`goal` must be a string" });
+  }
+  const colorValue = payload.color;
+  if (colorValue !== undefined && colorValue !== null && typeof colorValue !== "string") {
+    return res.status(400).json({ error: "`color` must be a string" });
+  }
+  const iconValue = payload.icon;
+  if (iconValue !== undefined && iconValue !== null && typeof iconValue !== "string") {
+    return res.status(400).json({ error: "`icon` must be a string" });
+  }
+  const sortOrderValue = payload.sortOrder;
+  if (
+    sortOrderValue !== undefined &&
+    (typeof sortOrderValue !== "number" || !Number.isFinite(sortOrderValue))
+  ) {
+    return res.status(400).json({ error: "`sortOrder` must be a number" });
+  }
+
+  const track = createTrack({
+    project_id: project.id,
+    name: nameValue.trim(),
+    description:
+      typeof descriptionValue === "string"
+        ? normalizeOptionalText(descriptionValue)
+        : null,
+    goal: typeof goalValue === "string" ? normalizeOptionalText(goalValue) : null,
+    color: typeof colorValue === "string" ? normalizeOptionalText(colorValue) : null,
+    icon: typeof iconValue === "string" ? normalizeOptionalText(iconValue) : null,
+    sort_order:
+      typeof sortOrderValue === "number" ? Math.trunc(sortOrderValue) : undefined,
+  });
+
+  return res.status(201).json({ track });
+});
+
+app.get("/repos/:id/tracks/:trackId", (req, res) => {
+  const { id, trackId } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const track = getTrackById(project.id, trackId);
+  if (!track) return res.status(404).json({ error: "track not found" });
+
+  const workOrders = listWorkOrders(project.path).filter(
+    (wo) => wo.trackId === trackId
+  );
+  const counts: TrackCounts = {
+    workOrderCount: workOrders.length,
+    doneCount: workOrders.filter((wo) => wo.status === "done").length,
+    readyCount: workOrders.filter((wo) => wo.status === "ready").length,
+  };
+
+  return res.json({ track: { ...track, ...counts }, workOrders });
+});
+
+app.put("/repos/:id/tracks/:trackId", (req, res) => {
+  const { id, trackId } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const payload = req.body ?? {};
+  const patch: {
+    name?: string;
+    description?: string | null;
+    goal?: string | null;
+    color?: string | null;
+    icon?: string | null;
+    sortOrder?: number;
+  } = {};
+
+  if ("name" in payload) {
+    if (typeof payload.name !== "string" || !payload.name.trim()) {
+      return res.status(400).json({ error: "`name` must be a non-empty string" });
+    }
+    patch.name = payload.name.trim();
+  }
+  if ("description" in payload) {
+    if (payload.description === null) {
+      patch.description = null;
+    } else if (typeof payload.description === "string") {
+      patch.description = normalizeOptionalText(payload.description);
+    } else {
+      return res.status(400).json({ error: "`description` must be a string or null" });
+    }
+  }
+  if ("goal" in payload) {
+    if (payload.goal === null) {
+      patch.goal = null;
+    } else if (typeof payload.goal === "string") {
+      patch.goal = normalizeOptionalText(payload.goal);
+    } else {
+      return res.status(400).json({ error: "`goal` must be a string or null" });
+    }
+  }
+  if ("color" in payload) {
+    if (payload.color === null) {
+      patch.color = null;
+    } else if (typeof payload.color === "string") {
+      patch.color = normalizeOptionalText(payload.color);
+    } else {
+      return res.status(400).json({ error: "`color` must be a string or null" });
+    }
+  }
+  if ("icon" in payload) {
+    if (payload.icon === null) {
+      patch.icon = null;
+    } else if (typeof payload.icon === "string") {
+      patch.icon = normalizeOptionalText(payload.icon);
+    } else {
+      return res.status(400).json({ error: "`icon` must be a string or null" });
+    }
+  }
+  if ("sortOrder" in payload) {
+    if (
+      typeof payload.sortOrder !== "number" ||
+      !Number.isFinite(payload.sortOrder)
+    ) {
+      return res.status(400).json({ error: "`sortOrder` must be a number" });
+    }
+    patch.sortOrder = Math.trunc(payload.sortOrder);
+  }
+
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ error: "No valid fields to update" });
+  }
+
+  const track = updateTrack(project.id, trackId, patch);
+  if (!track) return res.status(404).json({ error: "track not found" });
+  return res.json({ track });
+});
+
+app.delete("/repos/:id/tracks/:trackId", (req, res) => {
+  const { id, trackId } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const deleted = deleteTrack(project.id, trackId);
+  if (!deleted) return res.status(404).json({ error: "track not found" });
+  return res.json({ ok: true });
 });
 
 app.get("/repos/:id/tech-tree", (req, res) => {

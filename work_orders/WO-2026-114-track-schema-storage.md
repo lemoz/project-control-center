@@ -28,7 +28,7 @@ tags:
   - data-model
   - tracks
 estimate_hours: 3
-status: ready
+status: you_review
 created_at: 2026-01-15
 updated_at: 2026-01-15
 depends_on: []
