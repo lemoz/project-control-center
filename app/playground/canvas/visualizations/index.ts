@@ -1,5 +1,6 @@
 import type { VisualizationDefinition } from "../types";
 import { ActivityPulseVisualization } from "./ActivityPulseViz";
+import { OrbitalGravityVisualization } from "./OrbitalGravityViz";
 import { PlaceholderVisualization } from "./PlaceholderViz";
 import { TimelineRiverVisualization } from "./TimelineRiverViz";
 
@@ -9,6 +10,12 @@ export const visualizations: VisualizationDefinition[] = [
     name: "Activity Pulse",
     description: "Activity-driven pulse rings with glow.",
     create: () => new ActivityPulseVisualization(),
+  },
+  {
+    id: "orbital_gravity",
+    name: "Orbital Gravity",
+    description: "Attention gravity with orbiting project nodes.",
+    create: () => new OrbitalGravityVisualization(),
   },
   {
     id: "timeline_river",
