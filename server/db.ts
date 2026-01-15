@@ -181,6 +181,35 @@ export type WorkOrderDepRow = {
   created_at: string;
 };
 
+export type TrackRow = {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string | null;
+  goal: string | null;
+  color: string | null;
+  icon: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Track = {
+  id: string;
+  projectId: string;
+  name: string;
+  description: string | null;
+  goal: string | null;
+  color: string | null;
+  icon: string | null;
+  sortOrder: number;
+  createdAt: Date;
+  updatedAt: Date;
+  workOrderCount?: number;
+  doneCount?: number;
+  readyCount?: number;
+};
+
 export type ShiftStatus = "active" | "completed" | "auto_completed" | "expired" | "failed";
 
 export type ShiftRow = {
@@ -374,16 +403,34 @@ function initSchema(database: Database.Database) {
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
     );
 
-    CREATE TABLE IF NOT EXISTS work_orders (
+    CREATE TABLE IF NOT EXISTS tracks (
       id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      goal TEXT,
+      color TEXT,
+      icon TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tracks_project_id ON tracks(project_id);
+
+    CREATE TABLE IF NOT EXISTS work_orders (
+      id TEXT NOT NULL,
       project_id TEXT NOT NULL,
       title TEXT NOT NULL,
       status TEXT NOT NULL,
       priority INTEGER NOT NULL,
       tags TEXT NOT NULL DEFAULT '[]',
       base_branch TEXT,
+      track_id TEXT REFERENCES tracks(id) ON DELETE SET NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, id),
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
     );
 
@@ -645,6 +692,13 @@ function initSchema(database: Database.Database) {
       model TEXT NOT NULL DEFAULT '',
       cli_path TEXT NOT NULL DEFAULT '',
       cwd TEXT NOT NULL,
+      context_depth TEXT NOT NULL DEFAULT 'messages',
+      access_filesystem TEXT NOT NULL DEFAULT 'read-only',
+      access_cli TEXT NOT NULL DEFAULT 'off',
+      access_network TEXT NOT NULL DEFAULT 'none',
+      access_network_allowlist TEXT,
+      suggestion_json TEXT,
+      suggestion_accepted INTEGER NOT NULL DEFAULT 0,
       log_path TEXT NOT NULL,
       created_at TEXT NOT NULL,
       started_at TEXT,
@@ -758,10 +812,89 @@ function initSchema(database: Database.Database) {
     database.exec("ALTER TABLE project_vms ADD COLUMN total_hours_used REAL NOT NULL DEFAULT 0;");
   }
 
-  const workOrderColumns = database.prepare("PRAGMA table_info(work_orders)").all() as Array<{ name: string }>;
+  const trackTableExists = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
+    .get();
+  if (!trackTableExists) {
+    database.exec(`
+      CREATE TABLE tracks (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        goal TEXT,
+        color TEXT,
+        icon TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_tracks_project_id ON tracks(project_id);
+    `);
+  }
+
+  let workOrderColumns = database
+    .prepare("PRAGMA table_info(work_orders)")
+    .all() as Array<{ name: string; pk: number }>;
+  const hasCompositeWorkOrderKey =
+    workOrderColumns.some((c) => c.name === "project_id" && c.pk > 0) &&
+    workOrderColumns.some((c) => c.name === "id" && c.pk > 0);
+  if (workOrderColumns.length && !hasCompositeWorkOrderKey) {
+    const hadBaseBranch = workOrderColumns.some((c) => c.name === "base_branch");
+    const hadTrackId = workOrderColumns.some((c) => c.name === "track_id");
+    const migrate = database.transaction(() => {
+      database.exec(`
+        CREATE TABLE work_orders_new (
+          id TEXT NOT NULL,
+          project_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          status TEXT NOT NULL,
+          priority INTEGER NOT NULL,
+          tags TEXT NOT NULL DEFAULT '[]',
+          base_branch TEXT,
+          track_id TEXT REFERENCES tracks(id) ON DELETE SET NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (project_id, id),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+      `);
+      database.exec(`
+        INSERT INTO work_orders_new
+          (id, project_id, title, status, priority, tags, base_branch, track_id, created_at, updated_at)
+        SELECT
+          id,
+          project_id,
+          title,
+          status,
+          priority,
+          tags,
+          ${hadBaseBranch ? "base_branch" : "NULL"},
+          ${hadTrackId ? "track_id" : "NULL"},
+          created_at,
+          updated_at
+        FROM work_orders;
+      `);
+      database.exec("DROP TABLE work_orders;");
+      database.exec("ALTER TABLE work_orders_new RENAME TO work_orders;");
+      database.exec("CREATE INDEX IF NOT EXISTS idx_work_orders_project_id ON work_orders(project_id);");
+    });
+    migrate();
+    workOrderColumns = database
+      .prepare("PRAGMA table_info(work_orders)")
+      .all() as Array<{ name: string; pk: number }>;
+  }
+
   const hasWorkOrderBaseBranch = workOrderColumns.some((c) => c.name === "base_branch");
+  const hasWorkOrderTrackId = workOrderColumns.some((c) => c.name === "track_id");
   if (!hasWorkOrderBaseBranch) {
     database.exec("ALTER TABLE work_orders ADD COLUMN base_branch TEXT;");
+  }
+  if (!hasWorkOrderTrackId) {
+    database.exec(
+      "ALTER TABLE work_orders ADD COLUMN track_id TEXT REFERENCES tracks(id) ON DELETE SET NULL;"
+    );
   }
 
   const runColumns = database.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
@@ -835,6 +968,39 @@ function initSchema(database: Database.Database) {
   }
   if (!hasThreadPendingChanges) {
     database.exec("ALTER TABLE chat_threads ADD COLUMN has_pending_changes INTEGER NOT NULL DEFAULT 0;");
+  }
+
+  // chat_runs migrations
+  const chatRunColumns = database.prepare("PRAGMA table_info(chat_runs)").all() as Array<{ name: string }>;
+  const hasRunContextDepth = chatRunColumns.some((c) => c.name === "context_depth");
+  const hasRunAccessFilesystem = chatRunColumns.some((c) => c.name === "access_filesystem");
+  const hasRunAccessCli = chatRunColumns.some((c) => c.name === "access_cli");
+  const hasRunAccessNetwork = chatRunColumns.some((c) => c.name === "access_network");
+  const hasRunAccessNetworkAllowlist = chatRunColumns.some(
+    (c) => c.name === "access_network_allowlist"
+  );
+  const hasRunSuggestionJson = chatRunColumns.some((c) => c.name === "suggestion_json");
+  const hasRunSuggestionAccepted = chatRunColumns.some((c) => c.name === "suggestion_accepted");
+  if (!hasRunContextDepth) {
+    database.exec("ALTER TABLE chat_runs ADD COLUMN context_depth TEXT NOT NULL DEFAULT 'messages';");
+  }
+  if (!hasRunAccessFilesystem) {
+    database.exec("ALTER TABLE chat_runs ADD COLUMN access_filesystem TEXT NOT NULL DEFAULT 'read-only';");
+  }
+  if (!hasRunAccessCli) {
+    database.exec("ALTER TABLE chat_runs ADD COLUMN access_cli TEXT NOT NULL DEFAULT 'off';");
+  }
+  if (!hasRunAccessNetwork) {
+    database.exec("ALTER TABLE chat_runs ADD COLUMN access_network TEXT NOT NULL DEFAULT 'none';");
+  }
+  if (!hasRunAccessNetworkAllowlist) {
+    database.exec("ALTER TABLE chat_runs ADD COLUMN access_network_allowlist TEXT;");
+  }
+  if (!hasRunSuggestionJson) {
+    database.exec("ALTER TABLE chat_runs ADD COLUMN suggestion_json TEXT;");
+  }
+  if (!hasRunSuggestionAccepted) {
+    database.exec("ALTER TABLE chat_runs ADD COLUMN suggestion_accepted INTEGER NOT NULL DEFAULT 0;");
   }
 
   // chat_messages migrations
@@ -1622,6 +1788,143 @@ export function setSetting(key: string, value: string): SettingRow {
       updated_at: now,
     }
   );
+}
+
+type TrackCounts = Partial<
+  Pick<Track, "workOrderCount" | "doneCount" | "readyCount">
+>;
+
+type TrackPatch = Partial<{
+  name: string;
+  description: string | null;
+  goal: string | null;
+  color: string | null;
+  icon: string | null;
+  sortOrder: number;
+}>;
+
+function toTrack(row: TrackRow, counts?: TrackCounts): Track {
+  const track: Track = {
+    id: row.id,
+    projectId: row.project_id,
+    name: row.name,
+    description: row.description,
+    goal: row.goal,
+    color: row.color,
+    icon: row.icon,
+    sortOrder: row.sort_order,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
+  };
+  if (counts) {
+    if (counts.workOrderCount !== undefined) {
+      track.workOrderCount = counts.workOrderCount;
+    }
+    if (counts.doneCount !== undefined) {
+      track.doneCount = counts.doneCount;
+    }
+    if (counts.readyCount !== undefined) {
+      track.readyCount = counts.readyCount;
+    }
+  }
+  return track;
+}
+
+export function createTrack(input: {
+  project_id: string;
+  name: string;
+  description?: string | null;
+  goal?: string | null;
+  color?: string | null;
+  icon?: string | null;
+  sort_order?: number;
+}): Track {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const row: TrackRow = {
+    id: crypto.randomUUID(),
+    project_id: input.project_id,
+    name: input.name,
+    description: input.description ?? null,
+    goal: input.goal ?? null,
+    color: input.color ?? null,
+    icon: input.icon ?? null,
+    sort_order:
+      typeof input.sort_order === "number" && Number.isFinite(input.sort_order)
+        ? Math.trunc(input.sort_order)
+        : 0,
+    created_at: now,
+    updated_at: now,
+  };
+  database
+    .prepare(
+      `INSERT INTO tracks
+        (id, project_id, name, description, goal, color, icon, sort_order, created_at, updated_at)
+       VALUES
+        (@id, @project_id, @name, @description, @goal, @color, @icon, @sort_order, @created_at, @updated_at)`
+    )
+    .run(row);
+  return toTrack(row);
+}
+
+export function updateTrack(
+  projectId: string,
+  trackId: string,
+  patch: TrackPatch
+): Track | null {
+  const database = getDb();
+  const fields: Array<{ key: keyof TrackPatch; column: string }> = [
+    { key: "name", column: "name" },
+    { key: "description", column: "description" },
+    { key: "goal", column: "goal" },
+    { key: "color", column: "color" },
+    { key: "icon", column: "icon" },
+    { key: "sortOrder", column: "sort_order" },
+  ];
+  const sets = fields
+    .filter((f) => patch[f.key] !== undefined)
+    .map((f) => `${f.column} = @${f.key}`);
+  if (!sets.length) return getTrackById(projectId, trackId);
+  const now = new Date().toISOString();
+  database
+    .prepare(
+      `UPDATE tracks
+       SET ${sets.join(", ")}, updated_at = @updated_at
+       WHERE id = @id AND project_id = @project_id`
+    )
+    .run({
+      id: trackId,
+      project_id: projectId,
+      updated_at: now,
+      ...patch,
+    });
+  return getTrackById(projectId, trackId);
+}
+
+export function deleteTrack(projectId: string, trackId: string): boolean {
+  const database = getDb();
+  const result = database
+    .prepare("DELETE FROM tracks WHERE id = ? AND project_id = ?")
+    .run(trackId, projectId);
+  return result.changes > 0;
+}
+
+export function listTracks(projectId: string): Track[] {
+  const database = getDb();
+  const rows = database
+    .prepare(
+      "SELECT * FROM tracks WHERE project_id = ? ORDER BY sort_order ASC, name ASC"
+    )
+    .all(projectId) as TrackRow[];
+  return rows.map((row) => toTrack(row));
+}
+
+export function getTrackById(projectId: string, trackId: string): Track | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM tracks WHERE id = ? AND project_id = ? LIMIT 1")
+    .get(trackId, projectId) as TrackRow | undefined;
+  return row ? toTrack(row) : null;
 }
 
 export function syncWorkOrderDeps(

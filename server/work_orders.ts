@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import YAML from "yaml";
 import { z } from "zod";
+import { findProjectByPath, getDb } from "./db.js";
 import { slugify } from "./utils.js";
 
 export const WORK_ORDER_STATUSES = [
@@ -65,6 +66,8 @@ export type WorkOrder = {
   depends_on: string[];
   era: string | null;
   ready_check: { ok: boolean; errors: string[] };
+  trackId: string | null;
+  track: { id: string; name: string; color: string | null } | null;
 };
 
 export type WorkOrderSummary = Pick<
@@ -257,6 +260,8 @@ function normalizeWorkOrder(
     depends_on,
     era,
     ready_check: rc,
+    trackId: null,
+    track: null,
   };
 }
 
@@ -267,6 +272,103 @@ function serializeWorkOrderFile(
   const yamlText = YAML.stringify(frontmatter, { lineWidth: 0 }).trimEnd();
   const normalizedBody = body.startsWith("\n") ? body : `\n${body}`;
   return `---\n${yamlText}\n---${normalizedBody.endsWith("\n") ? normalizedBody : `${normalizedBody}\n`}`;
+}
+
+type WorkOrderTrackInfo = {
+  trackId: string | null;
+  track: { id: string; name: string; color: string | null } | null;
+};
+
+type WorkOrderRowInput = {
+  id: string;
+  project_id: string;
+  title: string;
+  status: WorkOrderStatus;
+  priority: number;
+  tags: string;
+  base_branch: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function buildWorkOrderRow(projectId: string, workOrder: WorkOrder): WorkOrderRowInput {
+  return {
+    id: workOrder.id,
+    project_id: projectId,
+    title: workOrder.title,
+    status: workOrder.status,
+    priority: workOrder.priority,
+    tags: JSON.stringify(workOrder.tags ?? []),
+    base_branch: workOrder.base_branch,
+    created_at: workOrder.created_at,
+    updated_at: workOrder.updated_at,
+  };
+}
+
+function syncWorkOrderRows(projectId: string, workOrders: WorkOrder[]): void {
+  if (!workOrders.length) return;
+  const database = getDb();
+  const rows = workOrders.map((workOrder) => buildWorkOrderRow(projectId, workOrder));
+  const stmt = database.prepare(
+    `INSERT INTO work_orders
+      (id, project_id, title, status, priority, tags, base_branch, created_at, updated_at)
+     VALUES
+      (@id, @project_id, @title, @status, @priority, @tags, @base_branch, @created_at, @updated_at)
+     ON CONFLICT(project_id, id) DO UPDATE SET
+       title = excluded.title,
+       status = excluded.status,
+       priority = excluded.priority,
+       tags = excluded.tags,
+       base_branch = excluded.base_branch,
+       created_at = excluded.created_at,
+       updated_at = excluded.updated_at`
+  );
+  const tx = database.transaction((entries: WorkOrderRowInput[]) => {
+    for (const entry of entries) {
+      stmt.run(entry);
+    }
+  });
+  tx(rows);
+}
+
+function buildInClause(ids: string[]): string {
+  return ids.map(() => "?").join(", ");
+}
+
+function loadWorkOrderTrackInfo(
+  projectId: string,
+  workOrderIds: string[]
+): Map<string, WorkOrderTrackInfo> {
+  if (!workOrderIds.length) return new Map();
+  const database = getDb();
+  const rows = database
+    .prepare(
+      `SELECT wo.id as work_order_id,
+              wo.track_id as track_id,
+              t.name as track_name,
+              t.color as track_color
+       FROM work_orders wo
+       LEFT JOIN tracks t ON t.id = wo.track_id
+       WHERE wo.project_id = ? AND wo.id IN (${buildInClause(workOrderIds)})`
+    )
+    .all(projectId, ...workOrderIds) as Array<{
+    work_order_id: string;
+    track_id: string | null;
+    track_name: string | null;
+    track_color: string | null;
+  }>;
+
+  const map = new Map<string, WorkOrderTrackInfo>();
+  for (const row of rows) {
+    const trackId = typeof row.track_id === "string" ? row.track_id : null;
+    const trackName = typeof row.track_name === "string" ? row.track_name : null;
+    const trackColor = typeof row.track_color === "string" ? row.track_color : null;
+    map.set(row.work_order_id, {
+      trackId,
+      track: trackId && trackName ? { id: trackId, name: trackName, color: trackColor } : null,
+    });
+  }
+  return map;
 }
 
 export function listWorkOrders(repoPath: string): WorkOrder[] {
@@ -307,6 +409,21 @@ export function listWorkOrders(repoPath: string): WorkOrder[] {
     if (a.priority !== b.priority) return a.priority - b.priority;
     return b.updated_at.localeCompare(a.updated_at);
   });
+
+  const project = findProjectByPath(repoPath);
+  if (project && workOrders.length > 0) {
+    syncWorkOrderRows(project.id, workOrders);
+    const trackInfo = loadWorkOrderTrackInfo(
+      project.id,
+      workOrders.map((wo) => wo.id)
+    );
+    for (const wo of workOrders) {
+      const info = trackInfo.get(wo.id);
+      if (!info) continue;
+      wo.trackId = info.trackId;
+      wo.track = info.track;
+    }
+  }
 
   return workOrders;
 }
@@ -480,6 +597,10 @@ export function createWorkOrder(
   if (!normalized) {
     throw new WorkOrderError("Failed to normalize created Work Order", "invalid");
   }
+  const project = findProjectByPath(repoPath);
+  if (project) {
+    syncWorkOrderRows(project.id, [normalized]);
+  }
   return normalized;
 }
 
@@ -598,6 +719,10 @@ export function patchWorkOrder(
   const normalized = normalizeWorkOrder(frontmatter);
   if (!normalized) {
     throw new WorkOrderError("Invalid Work Order after patch", "invalid");
+  }
+  const project = findProjectByPath(repoPath);
+  if (project) {
+    syncWorkOrderRows(project.id, [normalized]);
   }
   return normalized;
 }
@@ -725,6 +850,10 @@ export function overwriteWorkOrderMarkdown(
   const normalized = normalizeWorkOrder(parsed.rawFrontmatter);
   if (!normalized) {
     throw new WorkOrderError("Invalid Work Order after overwrite", "invalid");
+  }
+  const project = findProjectByPath(repoPath);
+  if (project) {
+    syncWorkOrderRows(project.id, [normalized]);
   }
   return normalized;
 }
