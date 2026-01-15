@@ -85,6 +85,7 @@ export function CanvasShell() {
   const [selectedVizId, setSelectedVizId] = useState(defaultVisualizationId);
   const [selectedRun, setSelectedRun] = useState<RiverBubbleDetails | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0, dpr: 1 });
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const lastFrame = useRef<number | null>(null);
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
 
@@ -293,16 +294,45 @@ export function CanvasShell() {
   }, []);
 
   return (
-    <main style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <section className="card" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <Link href="/" className="badge">
-          &larr; Portfolio
-        </Link>
+    <main style={{
+      display: "flex",
+      flexDirection: "column",
+      gap: 12,
+      ...(isFullscreen ? {
+        position: "fixed",
+        inset: 0,
+        zIndex: 1000,
+        background: "#0a0c12",
+        padding: 0,
+        gap: 0,
+      } : {}),
+    }}>
+      <section
+        className={isFullscreen ? "" : "card"}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          flexWrap: "wrap",
+          ...(isFullscreen ? {
+            padding: "8px 16px",
+            borderBottom: "1px solid #1d2233",
+            background: "rgba(10, 12, 18, 0.95)",
+          } : {}),
+        }}
+      >
+        {!isFullscreen && (
+          <Link href="/" className="badge">
+            &larr; Portfolio
+          </Link>
+        )}
         <div>
-          <h2 style={{ margin: 0 }}>Canvas Playground</h2>
-          <div className="muted" style={{ fontSize: 13 }}>
-            Ambient canvas shell for spatial project experiments.
-          </div>
+          <h2 style={{ margin: 0, fontSize: isFullscreen ? 16 : undefined }}>Canvas Playground</h2>
+          {!isFullscreen && (
+            <div className="muted" style={{ fontSize: 13 }}>
+              Ambient canvas shell for spatial project experiments.
+            </div>
+          )}
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
           <select
@@ -319,18 +349,33 @@ export function CanvasShell() {
           <button className="btnSecondary" onClick={refresh} disabled={loading}>
             Refresh
           </button>
+          <button
+            className="btnSecondary"
+            onClick={() => setIsFullscreen(!isFullscreen)}
+            title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+          >
+            {isFullscreen ? "✕" : "⛶"}
+          </button>
         </div>
       </section>
 
-      <section className="card" style={{ position: "relative", minHeight: 520, padding: 0 }}>
+      <section
+        className={isFullscreen ? "" : "card"}
+        style={{
+          position: "relative",
+          minHeight: isFullscreen ? undefined : 520,
+          padding: 0,
+          ...(isFullscreen ? { flex: 1 } : {}),
+        }}
+      >
         <div
           ref={containerRef}
           style={{
             position: "relative",
             width: "100%",
-            height: 520,
+            height: isFullscreen ? "100%" : 520,
             overflow: "hidden",
-            borderRadius: 12,
+            borderRadius: isFullscreen ? 0 : 12,
           }}
         >
           <canvas
@@ -483,6 +528,7 @@ export function CanvasShell() {
 
       {error && <div className="error">{error}</div>}
 
+      {!isFullscreen && (
       <section className="card" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
@@ -514,6 +560,7 @@ export function CanvasShell() {
           </div>
         )}
       </section>
+      )}
     </main>
   );
 }
