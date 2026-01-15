@@ -1932,7 +1932,9 @@ app.post("/repos/:id/work-orders/:workOrderId/runs", (req, res) => {
   if (!project) return res.status(404).json({ error: "project not found" });
 
   try {
-    const run = enqueueCodexRun(project.id, workOrderId);
+    const sourceBranch =
+      typeof req.body?.source_branch === "string" ? req.body.source_branch.trim() : "";
+    const run = enqueueCodexRun(project.id, workOrderId, sourceBranch || null);
     return res.status(201).json(run);
   } catch (err) {
     return res.status(400).json({ error: String(err instanceof Error ? err.message : err) });

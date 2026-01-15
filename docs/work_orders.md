@@ -31,6 +31,9 @@ updated_at: "YYYY-MM-DD"
 ---
 ```
 
+Optional fields (can be added to the frontmatter as needed):
+- `base_branch`: default base branch for runs when no run-level override is provided.
+
 Everything below the frontmatter is free-form detail/spec.
 
 ## Status semantics

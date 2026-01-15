@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,9 +10,36 @@ const {
   buildConflictContext,
   ensureWorktreeLink,
   removeWorktreeLink,
+  resolveBaseBranch,
   resolveWorktreePaths,
   shouldFallbackToLocalVm,
 } = __test__;
+
+function runGit(repoPath, args) {
+  const result = spawnSync("git", args, { cwd: repoPath, encoding: "utf8" });
+  if (result.status !== 0) {
+    const message = result.stderr.trim() || result.stdout.trim() || "git failed";
+    throw new Error(message);
+  }
+  return result.stdout.trim();
+}
+
+function setupRepo(t) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pcc-branch-"));
+  t.after(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const repoPath = path.join(tmpDir, "repo");
+  fs.mkdirSync(repoPath, { recursive: true });
+  runGit(repoPath, ["init"]);
+  runGit(repoPath, ["config", "user.email", "tester@example.com"]);
+  runGit(repoPath, ["config", "user.name", "Tester"]);
+  fs.writeFileSync(path.join(repoPath, "README.md"), "init\n", "utf8");
+  runGit(repoPath, ["add", "."]);
+  runGit(repoPath, ["commit", "-m", "init"]);
+  return repoPath;
+}
 
 test("resolveWorktreePaths places worktree under run dir without a symlink", (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pcc-worktree-"));
@@ -138,4 +166,31 @@ test("shouldFallbackToLocalVm allows unprovisioned or missing VMs", () => {
   assert.equal(shouldFallbackToLocalVm({ status: "deleted" }), true);
   assert.equal(shouldFallbackToLocalVm({ status: "stopped" }), false);
   assert.equal(shouldFallbackToLocalVm({ status: "running" }), false);
+});
+
+test("resolveBaseBranch prefers current HEAD when no overrides are set", (t) => {
+  const repoPath = setupRepo(t);
+  runGit(repoPath, ["checkout", "-b", "feature"]);
+  const base = resolveBaseBranch(repoPath, () => {});
+  assert.equal(base, "feature");
+});
+
+test("resolveBaseBranch uses work order base_branch over current HEAD", (t) => {
+  const repoPath = setupRepo(t);
+  runGit(repoPath, ["branch", "develop"]);
+  runGit(repoPath, ["checkout", "-b", "feature"]);
+  const base = resolveBaseBranch(repoPath, () => {}, { woBaseBranch: "develop" });
+  assert.equal(base, "develop");
+});
+
+test("resolveBaseBranch uses run source_branch over work order base_branch", (t) => {
+  const repoPath = setupRepo(t);
+  runGit(repoPath, ["branch", "develop"]);
+  runGit(repoPath, ["branch", "hotfix"]);
+  runGit(repoPath, ["checkout", "-b", "feature"]);
+  const base = resolveBaseBranch(repoPath, () => {}, {
+    runSourceBranch: "hotfix",
+    woBaseBranch: "develop",
+  });
+  assert.equal(base, "hotfix");
 });

@@ -84,6 +84,7 @@ export type RunRow = {
   reviewer_notes: string | null; // JSON array
   summary: string | null;
   branch_name: string | null;
+  source_branch: string | null;
   merge_status: "pending" | "merged" | "conflict" | null;
   conflict_with_run_id: string | null;
   run_dir: string;
@@ -374,6 +375,7 @@ function initSchema(database: Database.Database) {
       status TEXT NOT NULL,
       priority INTEGER NOT NULL,
       tags TEXT NOT NULL DEFAULT '[]',
+      base_branch TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
@@ -393,6 +395,7 @@ function initSchema(database: Database.Database) {
       reviewer_notes TEXT,
       summary TEXT,
       branch_name TEXT,
+      source_branch TEXT,
       merge_status TEXT,
       conflict_with_run_id TEXT,
       run_dir TEXT NOT NULL,
@@ -742,14 +745,24 @@ function initSchema(database: Database.Database) {
     database.exec("ALTER TABLE project_vms ADD COLUMN total_hours_used REAL NOT NULL DEFAULT 0;");
   }
 
+  const workOrderColumns = database.prepare("PRAGMA table_info(work_orders)").all() as Array<{ name: string }>;
+  const hasWorkOrderBaseBranch = workOrderColumns.some((c) => c.name === "base_branch");
+  if (!hasWorkOrderBaseBranch) {
+    database.exec("ALTER TABLE work_orders ADD COLUMN base_branch TEXT;");
+  }
+
   const runColumns = database.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
   const hasBranchName = runColumns.some((c) => c.name === "branch_name");
+  const hasSourceBranch = runColumns.some((c) => c.name === "source_branch");
   const hasMergeStatus = runColumns.some((c) => c.name === "merge_status");
   const hasConflictWithRunId = runColumns.some((c) => c.name === "conflict_with_run_id");
   const hasBuilderIteration = runColumns.some((c) => c.name === "builder_iteration");
   const hasEscalation = runColumns.some((c) => c.name === "escalation");
   if (!hasBranchName) {
     database.exec("ALTER TABLE runs ADD COLUMN branch_name TEXT;");
+  }
+  if (!hasSourceBranch) {
+    database.exec("ALTER TABLE runs ADD COLUMN source_branch TEXT;");
   }
   if (!hasMergeStatus) {
     database.exec("ALTER TABLE runs ADD COLUMN merge_status TEXT;");
@@ -1188,9 +1201,9 @@ export function createRun(run: RunRow): void {
   database
     .prepare(
       `INSERT INTO runs
-        (id, project_id, work_order_id, provider, status, iteration, builder_iteration, reviewer_verdict, reviewer_notes, summary, branch_name, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error, escalation)
+        (id, project_id, work_order_id, provider, status, iteration, builder_iteration, reviewer_verdict, reviewer_notes, summary, branch_name, source_branch, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error, escalation)
        VALUES
-        (@id, @project_id, @work_order_id, @provider, @status, @iteration, @builder_iteration, @reviewer_verdict, @reviewer_notes, @summary, @branch_name, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error, @escalation)`
+        (@id, @project_id, @work_order_id, @provider, @status, @iteration, @builder_iteration, @reviewer_verdict, @reviewer_notes, @summary, @branch_name, @source_branch, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error, @escalation)`
     )
     .run(run);
 }

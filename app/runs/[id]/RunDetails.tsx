@@ -58,6 +58,7 @@ type RunDetails = {
   reviewer_notes: string | null;
   summary: string | null;
   branch_name: string | null;
+  source_branch: string | null;
   merge_status: "pending" | "merged" | "conflict" | null;
   conflict_with_run_id: string | null;
   run_dir: string;
@@ -214,6 +215,9 @@ export function RunDetails({ runId }: { runId: string }) {
     return history[history.length - 1]?.builder_changes || [];
   })();
 
+  const sourceBranchValue = run?.source_branch?.trim();
+  const sourceBranchLabel = sourceBranchValue ? "explicit" : "auto-detected";
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <section className="card">
@@ -258,7 +262,8 @@ export function RunDetails({ runId }: { runId: string }) {
               <code>{run.builder_iteration ?? run.iteration}</code>
             </div>
             <div className="muted" style={{ fontSize: 12 }}>
-              Branch: <code>{run.branch_name || "n/a"}</code> · Merge:{" "}
+              Branch: <code>{run.branch_name || "n/a"}</code> · Source:{" "}
+              <code>{sourceBranchValue || "auto"}</code> ({sourceBranchLabel}) · Merge:{" "}
               <code>{run.merge_status || "n/a"}</code>
               {run.conflict_with_run_id ? (
                 <>

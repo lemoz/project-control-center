@@ -100,6 +100,7 @@ test("provideRunInput records escalation resolution", () => {
     reviewer_notes: null,
     summary: null,
     branch_name: "run/WO-1234-escalation",
+    source_branch: null,
     merge_status: null,
     conflict_with_run_id: null,
     run_dir: path.join(tmpDir, "run"),

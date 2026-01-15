@@ -24,6 +24,7 @@ type WorkOrder = {
   stop_conditions: string[];
   priority: number;
   tags: string[];
+  base_branch: string | null;
   estimate_hours: number | null;
   status: WorkOrderStatus;
   created_at: string;
@@ -165,6 +166,7 @@ export function WorkOrderDetails({
   const [status, setStatus] = useState<WorkOrderStatus>("backlog");
   const [priority, setPriority] = useState("3");
   const [tags, setTags] = useState("");
+  const [baseBranch, setBaseBranch] = useState("");
   const [estimateHours, setEstimateHours] = useState("");
   const [goal, setGoal] = useState("");
   const [context, setContext] = useState("");
@@ -178,6 +180,7 @@ export function WorkOrderDetails({
     setStatus(workOrder.status);
     setPriority(String(workOrder.priority));
     setTags(tagsToString(workOrder.tags));
+    setBaseBranch(workOrder.base_branch ?? "");
     setEstimateHours(
       workOrder.estimate_hours === null ? "" : String(workOrder.estimate_hours)
     );
@@ -203,6 +206,7 @@ export function WorkOrderDetails({
             status,
             priority: Number(priority),
             tags: stringToTags(tags),
+            base_branch: baseBranch.trim() ? baseBranch.trim() : null,
             estimate_hours: estimateHours.trim()
               ? Number(estimateHours)
               : null,
@@ -240,6 +244,7 @@ export function WorkOrderDetails({
     status,
     stops,
     tags,
+    baseBranch,
     title,
     workOrder,
     workOrderId,
@@ -428,6 +433,16 @@ export function WorkOrderDetails({
             <label className="field" style={{ gridColumn: "1 / -1" }}>
               <div className="muted fieldLabel">Tags (comma-separated)</div>
               <input className="input" value={tags} onChange={(e) => setTags(e.target.value)} />
+            </label>
+
+            <label className="field" style={{ gridColumn: "1 / -1" }}>
+              <div className="muted fieldLabel">Base branch (optional)</div>
+              <input
+                className="input"
+                value={baseBranch}
+                onChange={(e) => setBaseBranch(e.target.value)}
+                placeholder="e.g. develop"
+              />
             </label>
 
             <label className="field" style={{ gridColumn: "1 / -1" }}>

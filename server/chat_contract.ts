@@ -131,6 +131,7 @@ export const WorkOrderCreatePayloadSchema = z
     tags: z.array(z.string()).optional(),
     depends_on: z.array(z.string()).optional(),
     era: z.string().optional(),
+    base_branch: z.string().optional(),
   })
   .strict();
 
@@ -144,6 +145,7 @@ export const WorkOrderPatchSchema = z
     stop_conditions: z.array(z.string()).optional(),
     priority: z.number().int().min(1).max(5).optional(),
     tags: z.array(z.string()).optional(),
+    base_branch: z.string().nullable().optional(),
     estimate_hours: z.number().nullable().optional(),
     status: WorkOrderStatusSchema.optional(),
     depends_on: z.array(z.string()).optional(),
@@ -172,6 +174,7 @@ export const WorkOrderStartRunPayloadSchema = z
   .object({
     projectId: z.string().min(1),
     workOrderId: z.string().min(1),
+    source_branch: z.string().optional(),
   })
   .strict();
 
@@ -190,6 +193,8 @@ export const ChatActionPayloadSchema = z
     title: z.string().min(1).optional(),
     priority: z.number().int().min(1).max(5).optional(),
     tags: z.array(z.string()).optional(),
+    base_branch: z.string().optional(),
+    source_branch: z.string().optional(),
     starred: z.boolean().optional(),
     hidden: z.boolean().optional(),
     success_criteria: z.string().min(1).optional(),

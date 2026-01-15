@@ -63,6 +63,7 @@ const WorkOrderCreatePayloadSchema = z
     tags: z.array(z.string()).optional(),
     depends_on: z.array(z.string()).optional(),
     era: z.string().optional(),
+    base_branch: z.string().optional(),
   })
   .strict();
 
@@ -76,6 +77,7 @@ const WorkOrderPatchSchema: z.ZodType<WorkOrderPatchInput> = z
     stop_conditions: z.array(z.string()).optional(),
     priority: z.number().int().min(1).max(5).optional(),
     tags: z.array(z.string()).optional(),
+    base_branch: z.string().nullable().optional(),
     estimate_hours: z.number().nullable().optional(),
     status: z.enum(WORK_ORDER_STATUSES).optional(),
     depends_on: z.array(z.string()).optional(),
@@ -104,6 +106,7 @@ const WorkOrderStartRunPayloadSchema = z
   .object({
     projectId: z.string().min(1),
     workOrderId: z.string().min(1),
+    source_branch: z.string().optional(),
   })
   .strict();
 
@@ -257,6 +260,7 @@ export function applyChatAction(input: unknown) {
           tags: payload.tags,
           depends_on: payload.depends_on,
           era: payload.era,
+          base_branch: payload.base_branch,
         });
         const undoPayload: UndoPayload = {
           type: "work_order_delete",
@@ -312,7 +316,11 @@ export function applyChatAction(input: unknown) {
       }
       case "work_order_start_run": {
         const payload = WorkOrderStartRunPayloadSchema.parse(action.payload);
-        const run = enqueueCodexRun(payload.projectId, payload.workOrderId);
+        const run = enqueueCodexRun(
+          payload.projectId,
+          payload.workOrderId,
+          payload.source_branch ?? null
+        );
         return { undoPayload: null, result: { run }, workOrderRunId: run.id };
       }
       case "worktree_merge": {

@@ -32,9 +32,9 @@ tags:
   - dx
   - bug-fix
 estimate_hours: 4
-status: ready
+status: done
 created_at: 2026-01-13
-updated_at: 2026-01-13
+updated_at: 2026-01-15
 depends_on:
   - WO-2026-020
 era: v2

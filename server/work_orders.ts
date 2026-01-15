@@ -37,6 +37,7 @@ const FrontmatterSchema = z
     stop_conditions: z.array(z.string()).optional(),
     priority: z.coerce.number().int().min(1).max(5).optional(),
     tags: z.array(z.string()).optional(),
+    base_branch: z.string().optional(),
     estimate_hours: z.coerce.number().optional(),
     status: WorkOrderStatusSchema.optional(),
     created_at: z.string().optional(),
@@ -56,6 +57,7 @@ export type WorkOrder = {
   stop_conditions: string[];
   priority: number;
   tags: string[];
+  base_branch: string | null;
   estimate_hours: number | null;
   status: WorkOrderStatus;
   created_at: string;
@@ -76,6 +78,7 @@ export type WorkOrderCreateInput = {
   tags?: string[];
   depends_on?: string[];
   era?: string;
+  base_branch?: string;
 };
 
 export type WorkOrderPatchInput = Partial<{
@@ -87,6 +90,7 @@ export type WorkOrderPatchInput = Partial<{
   stop_conditions: string[];
   priority: number;
   tags: string[];
+  base_branch: string | null;
   estimate_hours: number | null;
   status: WorkOrderStatus;
   depends_on: string[];
@@ -169,6 +173,12 @@ function normalizeStringArray(value: unknown): string[] {
     .filter(Boolean);
 }
 
+function normalizeOptionalString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
 export function readyCheck(frontmatter: Record<string, unknown>): {
   ok: boolean;
   errors: string[];
@@ -205,6 +215,7 @@ function normalizeWorkOrder(
       : 3;
   const priority = Math.min(5, Math.max(1, Math.trunc(priorityRaw)));
   const tags = normalizeStringArray(data.tags);
+  const base_branch = normalizeOptionalString(data.base_branch);
   const context = normalizeStringArray(data.context);
   const acceptance_criteria = normalizeStringArray(data.acceptance_criteria);
   const non_goals = normalizeStringArray(data.non_goals);
@@ -238,6 +249,7 @@ function normalizeWorkOrder(
     stop_conditions,
     priority,
     tags,
+    base_branch,
     estimate_hours,
     status,
     created_at,
@@ -431,6 +443,7 @@ export function createWorkOrder(
   const depends_on = normalizeStringArray(input.depends_on);
   const era =
     typeof input.era === "string" && input.era.trim() ? input.era.trim() : null;
+  const base_branch = normalizeOptionalString(input.base_branch);
 
   const frontmatter: Record<string, unknown> = {
     id,
@@ -449,6 +462,9 @@ export function createWorkOrder(
     depends_on,
     era,
   };
+  if (base_branch) {
+    frontmatter.base_branch = base_branch;
+  }
 
   const body = `\n\n## Notes\n- \n`;
 
@@ -516,6 +532,14 @@ export function patchWorkOrder(
   }
   if (patch.tags !== undefined) {
     frontmatter.tags = normalizeStringArray(patch.tags);
+  }
+  if (patch.base_branch !== undefined) {
+    const normalized = normalizeOptionalString(patch.base_branch);
+    if (normalized) {
+      frontmatter.base_branch = normalized;
+    } else {
+      delete frontmatter.base_branch;
+    }
   }
   if (patch.estimate_hours !== undefined) {
     if (patch.estimate_hours === null) {

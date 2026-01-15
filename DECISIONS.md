@@ -15,6 +15,7 @@ Key architectural/product choices and why. This file should stay short and curre
 - **Decision:** All ongoing work lives as Work Orders in `work_orders/` with YAML frontmatter.
 - **Why:** Spec-first, agent-friendly, and easy to visualize as Kanban.
 - **Ready contract:** `goal`, `acceptance_criteria`, and `stop_conditions` required before runs start.
+- **Optional:** `base_branch` may be set to define a default worktree base for runs.
 
 ## Two-agent gate before human review
 - **Decision:** Every Work Order run uses a Builder agent then a fresh Reviewer agent; only approved outputs reach you.

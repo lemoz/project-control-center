@@ -805,17 +805,57 @@ function gitBranchExists(repoPath: string, branchName: string): boolean {
   return result.status === 0;
 }
 
-function resolveBaseBranch(repoPath: string, log: (line: string) => void): string {
-  for (const candidate of ["main", "master"]) {
-    if (gitBranchExists(repoPath, candidate)) return candidate;
+type ResolveBaseBranchOptions = {
+  runSourceBranch?: string | null;
+  woBaseBranch?: string | null;
+};
+
+function normalizeBranchName(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function resolveBaseBranch(
+  repoPath: string,
+  log: (line: string) => void,
+  options?: ResolveBaseBranchOptions
+): string {
+  const runSource = normalizeBranchName(options?.runSourceBranch);
+  if (runSource) {
+    if (gitBranchExists(repoPath, runSource)) {
+      log(`Using run source_branch: ${runSource}`);
+      return runSource;
+    }
+    log(`Warning: run source_branch "${runSource}" not found; falling back`);
   }
+
+  const woBase = normalizeBranchName(options?.woBaseBranch);
+  if (woBase) {
+    if (gitBranchExists(repoPath, woBase)) {
+      log(`Using work order base_branch: ${woBase}`);
+      return woBase;
+    }
+    log(`Warning: work order base_branch "${woBase}" not found; falling back`);
+  }
+
   const current = runGit(["rev-parse", "--abbrev-ref", "HEAD"], {
     cwd: repoPath,
     allowFailure: true,
   }).stdout.trim();
   if (current && current !== "HEAD") {
-    log(`Base branch fallback to ${current}`);
+    log(`Using current HEAD branch: ${current}`);
     return current;
+  }
+  if (current === "HEAD") {
+    log("Detected detached HEAD; falling back to main/master.");
+  }
+
+  for (const candidate of ["main", "master"]) {
+    if (gitBranchExists(repoPath, candidate)) {
+      log(`Falling back to ${candidate}`);
+      return candidate;
+    }
   }
   throw new Error("Unable to resolve base branch");
 }
@@ -2696,7 +2736,10 @@ export async function runRun(runId: string) {
     logConstitutionSelection(log, "builder", builderConstitution);
     logConstitutionSelection(log, "reviewer", reviewerConstitution);
 
-    const baseBranch = resolveBaseBranch(repoPath, log);
+    const baseBranch = resolveBaseBranch(repoPath, log, {
+      runSourceBranch: run.source_branch,
+      woBaseBranch: workOrder.base_branch,
+    });
     const branchName =
       run.branch_name?.trim() || buildRunBranchName(workOrder.id, runId);
     if (branchName !== run.branch_name) {
@@ -4342,7 +4385,11 @@ export async function runRun(runId: string) {
   }
 }
 
-export function enqueueCodexRun(projectId: string, workOrderId: string): RunRow {
+export function enqueueCodexRun(
+  projectId: string,
+  workOrderId: string,
+  sourceBranch?: string | null
+): RunRow {
   const project = findProjectById(projectId);
   if (!project) {
     throw new Error("project not found");
@@ -4375,6 +4422,7 @@ export function enqueueCodexRun(projectId: string, workOrderId: string): RunRow 
   const branchName = buildRunBranchName(workOrder.id, id);
   const runDir = path.join(project.path, ".system", "runs", id);
   const logPath = path.join(runDir, "run.log");
+  const sourceBranchNormalized = normalizeBranchName(sourceBranch);
 
   ensureDir(runDir);
 
@@ -4390,6 +4438,7 @@ export function enqueueCodexRun(projectId: string, workOrderId: string): RunRow 
     reviewer_notes: null,
     summary: null,
     branch_name: branchName,
+    source_branch: sourceBranchNormalized,
     merge_status: null,
     conflict_with_run_id: null,
     run_dir: runDir,
@@ -4642,7 +4691,9 @@ export function finalizeManualRunResolution(
   const log = (line: string) => appendLog(path.join(runDir, "run.log"), line);
 
   try {
-    const baseBranch = resolveBaseBranch(repoPath, log);
+    const baseBranch = resolveBaseBranch(repoPath, log, {
+      runSourceBranch: run.source_branch,
+    });
 
     // Attempt merge after manual resolution
     log("Attempting merge after manual resolution");
@@ -4712,5 +4763,6 @@ export const __test__ = {
   findEscalationRequest,
   removeWorktreeLink,
   resolveWorktreePaths,
+  resolveBaseBranch,
   shouldFallbackToLocalVm,
 };
