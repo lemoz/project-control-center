@@ -5,12 +5,15 @@ import fg from "fast-glob";
 import path from "path";
 import YAML from "yaml";
 import {
+  acquireMergeLock,
   createRun,
   createRunPhaseMetric,
   findProjectById,
+  getMergeLock,
   getProjectVm,
   getRunById,
   listRunsByProject,
+  releaseMergeLock,
   type CostCategory,
   type ProjectVmRow,
   type RunPhaseMetricOutcome,
@@ -109,6 +112,8 @@ const RUNNER_PID_FILENAME = "runner.pid";
 const RUNNER_TERMINATE_TIMEOUT_MS = 4000;
 const RUNNER_KILL_TIMEOUT_MS = 2000;
 const RUNNER_KILL_POLL_MS = 200;
+const MERGE_LOCK_POLL_MS = 2000;
+const MERGE_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const DENY_BASENAME_PREFIXES = [".env"];
@@ -3688,7 +3693,8 @@ export async function runRun(runId: string) {
     const finishMergeConflict = (
       message: string,
       conflictRunId: string | null,
-      conflictFiles: string[]
+      conflictFiles: string[],
+      reason = "merge_conflict"
     ) => {
       const finishedAt = nowIso();
       updateRun(runId, {
@@ -3701,7 +3707,7 @@ export async function runRun(runId: string) {
         reviewer_notes: JSON.stringify(reviewerNotes),
         summary: approvedSummary,
       });
-      recordMergeOutcome("failed", { reason: "merge_conflict" });
+      recordMergeOutcome("failed", { reason });
       log(`Merge conflict: ${message}`);
       if (conflictFiles.length) {
         writeJson(path.join(runDir, "conflict_files.json"), conflictFiles);
@@ -4199,69 +4205,49 @@ export async function runRun(runId: string) {
     };
     writeMergeArtifacts();
 
-    const mainStatus = runGit(["status", "--porcelain"], {
-      cwd: repoPath,
-      allowFailure: true,
-    });
-    if (mainStatus.stdout.trim()) {
-      finishMergeConflict(
-        "Main branch has uncommitted changes; merge aborted.",
-        conflictRunId,
-        conflictFiles
-      );
-      return;
-    }
-
-    try {
-      runGit(["checkout", baseBranch], { cwd: repoPath, log });
-    } catch (err) {
-      recordMergeOutcome("failed", { reason: "checkout_failed" });
-      updateRun(runId, {
-        status: "failed",
-        error: `git checkout failed: ${String(err)}`,
-        finished_at: nowIso(),
-        merge_status: null,
-      });
-      return;
-    }
-
-    const mergeTitle = workOrder.title.replace(/\s+/g, " ").trim();
-    const mergeMessage = `Merge ${workOrder.id}: ${mergeTitle || "Update"}`;
-    const mergeArgs = [
-      "-c",
-      "user.name=Control Center Runner",
-      "-c",
-      "user.email=runner@local",
-      "merge",
-      branchName,
-      "--no-ff",
-      "-m",
-      mergeMessage,
-    ];
-    const mergeMain = runGit(mergeArgs, { cwd: repoPath, allowFailure: true, log });
-    if (mergeMain.status !== 0) {
-      const mainConflictFiles = listUnmergedFiles(repoPath);
-      const mainConflictOutput = runGit(["diff"], {
-        cwd: repoPath,
-        allowFailure: true,
-      }).stdout;
-      runGit(["merge", "--abort"], { cwd: repoPath, allowFailure: true, log });
-      log("Merge to base branch failed; retrying after syncing branch");
-
-      const retryResult = await mergeBaseIntoBranch();
-      if (!retryResult.ok) {
-        recordMergeOutcome("failed", { reason: "merge_retry_failed" });
+    const lockStart = Date.now();
+    let mergeLockAcquired = false;
+    while (!mergeLockAcquired) {
+      mergeLockAcquired = acquireMergeLock(project.id, runId);
+      if (mergeLockAcquired) {
+        log("Merge lock acquired");
+        break;
+      }
+      const lockInfo = getMergeLock(project.id);
+      const lockHolder = lockInfo ? lockInfo.run_id.slice(0, 8) : "unknown";
+      const holderLabel = lockInfo ? ` (held by run ${lockHolder})` : "";
+      log(`Waiting for merge lock${holderLabel}...`);
+      if (Date.now() - lockStart >= MERGE_LOCK_TIMEOUT_MS) {
+        finishMergeConflict(
+          "Merge lock timeout after 5 minutes.",
+          conflictRunId,
+          conflictFiles,
+          "merge_lock_timeout"
+        );
         return;
       }
-      if (retryResult.conflictRunId) conflictRunId = retryResult.conflictRunId;
-      if (retryResult.conflictFiles.length) conflictFiles = retryResult.conflictFiles;
-      writeMergeArtifacts();
+      await sleep(MERGE_LOCK_POLL_MS);
+    }
 
-      const retryMainStatus = runGit(["status", "--porcelain"], {
+    const ensureCleanMainRepo = (): boolean => {
+      const status = runGit(["status", "--porcelain"], {
         cwd: repoPath,
         allowFailure: true,
       });
-      if (retryMainStatus.stdout.trim()) {
+      if (!status.stdout.trim()) return true;
+      log("Main repo dirty; cleaning before merge");
+      runGit(["merge", "--abort"], { cwd: repoPath, allowFailure: true, log });
+      runGit(["reset", "--hard", "HEAD"], { cwd: repoPath, log });
+      runGit(["clean", "-fd"], { cwd: repoPath, log });
+      const cleaned = runGit(["status", "--porcelain"], {
+        cwd: repoPath,
+        allowFailure: true,
+      });
+      return !cleaned.stdout.trim();
+    };
+
+    try {
+      if (!ensureCleanMainRepo()) {
         finishMergeConflict(
           "Main branch has uncommitted changes; merge aborted.",
           conflictRunId,
@@ -4270,65 +4256,129 @@ export async function runRun(runId: string) {
         return;
       }
 
-      const retryMergeMain = runGit(mergeArgs, {
-        cwd: repoPath,
-        allowFailure: true,
-        log,
-      });
-      if (retryMergeMain.status !== 0) {
-        const retryConflictFiles = listUnmergedFiles(repoPath);
-        const retryConflictOutput = runGit(["diff"], {
+      try {
+        runGit(["checkout", baseBranch], { cwd: repoPath, log });
+      } catch (err) {
+        recordMergeOutcome("failed", { reason: "checkout_failed" });
+        updateRun(runId, {
+          status: "failed",
+          error: `git checkout failed: ${String(err)}`,
+          finished_at: nowIso(),
+          merge_status: null,
+        });
+        return;
+      }
+
+      const mergeTitle = workOrder.title.replace(/\s+/g, " ").trim();
+      const mergeMessage = `Merge ${workOrder.id}: ${mergeTitle || "Update"}`;
+      const mergeArgs = [
+        "-c",
+        "user.name=Control Center Runner",
+        "-c",
+        "user.email=runner@local",
+        "merge",
+        branchName,
+        "--no-ff",
+        "-m",
+        mergeMessage,
+      ];
+      const mergeMain = runGit(mergeArgs, { cwd: repoPath, allowFailure: true, log });
+      if (mergeMain.status !== 0) {
+        const mainConflictFiles = listUnmergedFiles(repoPath);
+        const mainConflictOutput = runGit(["diff"], {
           cwd: repoPath,
           allowFailure: true,
         }).stdout;
         runGit(["merge", "--abort"], { cwd: repoPath, allowFailure: true, log });
-        const finalConflictFiles = retryConflictFiles.length
-          ? retryConflictFiles
-          : mainConflictFiles;
-        const finalConflictOutput = retryConflictOutput || mainConflictOutput;
-        const conflictDetails = buildConflictContext({
-          repoPath,
-          runId,
-          runDir,
-          workOrder,
-          approvedSummary,
-          conflictFiles: finalConflictFiles.length ? finalConflictFiles : conflictFiles,
-          gitConflictOutput: finalConflictOutput,
-        });
-        writeJson(path.join(runDir, "merge_conflict.json"), conflictDetails.conflictContext);
-        if (conflictDetails.conflictingRunId) {
-          conflictRunId = conflictDetails.conflictingRunId;
+        log("Merge to base branch failed; retrying after syncing branch");
+
+        const retryResult = await mergeBaseIntoBranch();
+        if (!retryResult.ok) {
+          recordMergeOutcome("failed", { reason: "merge_retry_failed" });
+          return;
         }
-        finishMergeConflict(
-          `Merge to ${baseBranch} failed: ${retryMergeMain.stderr || retryMergeMain.stdout}`,
-          conflictRunId,
-          finalConflictFiles.length ? finalConflictFiles : conflictFiles
-        );
-        return;
+        if (retryResult.conflictRunId) conflictRunId = retryResult.conflictRunId;
+        if (retryResult.conflictFiles.length) conflictFiles = retryResult.conflictFiles;
+        writeMergeArtifacts();
+
+        if (!ensureCleanMainRepo()) {
+          finishMergeConflict(
+            "Main branch has uncommitted changes; merge aborted.",
+            conflictRunId,
+            conflictFiles
+          );
+          return;
+        }
+
+        const retryMergeMain = runGit(mergeArgs, {
+          cwd: repoPath,
+          allowFailure: true,
+          log,
+        });
+        if (retryMergeMain.status !== 0) {
+          const retryConflictFiles = listUnmergedFiles(repoPath);
+          const retryConflictOutput = runGit(["diff"], {
+            cwd: repoPath,
+            allowFailure: true,
+          }).stdout;
+          runGit(["merge", "--abort"], { cwd: repoPath, allowFailure: true, log });
+          const finalConflictFiles = retryConflictFiles.length
+            ? retryConflictFiles
+            : mainConflictFiles;
+          const finalConflictOutput = retryConflictOutput || mainConflictOutput;
+          const conflictDetails = buildConflictContext({
+            repoPath,
+            runId,
+            runDir,
+            workOrder,
+            approvedSummary,
+            conflictFiles: finalConflictFiles.length ? finalConflictFiles : conflictFiles,
+            gitConflictOutput: finalConflictOutput,
+          });
+          writeJson(path.join(runDir, "merge_conflict.json"), conflictDetails.conflictContext);
+          if (conflictDetails.conflictingRunId) {
+            conflictRunId = conflictDetails.conflictingRunId;
+          }
+          finishMergeConflict(
+            `Merge to ${baseBranch} failed: ${retryMergeMain.stderr || retryMergeMain.stdout}`,
+            conflictRunId,
+            finalConflictFiles.length ? finalConflictFiles : conflictFiles
+          );
+          return;
+        }
+      }
+
+      cleanupWorktree({
+        repoPath,
+        worktreePath,
+        worktreeRealPath,
+        branchName,
+        log,
+      });
+
+      const finishedAt = nowIso();
+      updateRun(runId, {
+        status: "you_review",
+        finished_at: finishedAt,
+        reviewer_verdict: "approved",
+        reviewer_notes: JSON.stringify(reviewerNotes),
+        summary: approvedSummary,
+        merge_status: "merged",
+        conflict_with_run_id: null,
+      });
+
+      recordMergeOutcome("success");
+      log("Run completed and approved");
+    } finally {
+      if (mergeLockAcquired) {
+        try {
+          releaseMergeLock(project.id, runId);
+          log("Merge lock released");
+        } catch (err) {
+          log(`Merge lock release failed: ${String(err)}`);
+        }
       }
     }
-
-    cleanupWorktree({
-      repoPath,
-      worktreePath,
-      worktreeRealPath,
-      branchName,
-      log,
-    });
-
-    const finishedAt = nowIso();
-    updateRun(runId, {
-      status: "you_review",
-      finished_at: finishedAt,
-      reviewer_verdict: "approved",
-      reviewer_notes: JSON.stringify(reviewerNotes),
-      summary: approvedSummary,
-      merge_status: "merged",
-      conflict_with_run_id: null,
-    });
-
-    recordMergeOutcome("success");
-    log("Run completed and approved");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log(`Unhandled error: ${message}`);
