@@ -96,6 +96,12 @@ export type RunRow = {
   escalation: string | null;
 };
 
+export type MergeLockRow = {
+  project_id: string;
+  run_id: string;
+  acquired_at: string;
+};
+
 export type CostCategory = "builder" | "reviewer" | "chat" | "handoff" | "other";
 
 export type CostRecord = {
@@ -410,6 +416,13 @@ function initSchema(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_runs_project_id_created_at ON runs(project_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_runs_status_created_at ON runs(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS merge_locks (
+      project_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      acquired_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
 
     CREATE TABLE IF NOT EXISTS cost_records (
       id TEXT PRIMARY KEY,
@@ -1282,6 +1295,42 @@ export function listRunsByProject(projectId: string, limit = 50): RunRow[] {
       "SELECT * FROM runs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?"
     )
     .all(projectId, limit) as RunRow[];
+}
+
+const MERGE_LOCK_TTL_MS = 10 * 60 * 1000;
+
+export function acquireMergeLock(projectId: string, runId: string): boolean {
+  const database = getDb();
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - MERGE_LOCK_TTL_MS).toISOString();
+  database.prepare("DELETE FROM merge_locks WHERE acquired_at < ?").run(cutoff);
+
+  const insert = database
+    .prepare(
+      "INSERT OR IGNORE INTO merge_locks (project_id, run_id, acquired_at) VALUES (?, ?, ?)"
+    )
+    .run(projectId, runId, now.toISOString());
+  if (insert.changes > 0) return true;
+
+  const existing = database
+    .prepare("SELECT * FROM merge_locks WHERE project_id = ?")
+    .get(projectId) as MergeLockRow | undefined;
+  return existing?.run_id === runId;
+}
+
+export function releaseMergeLock(projectId: string, runId: string): void {
+  const database = getDb();
+  database
+    .prepare("DELETE FROM merge_locks WHERE project_id = ? AND run_id = ?")
+    .run(projectId, runId);
+}
+
+export function getMergeLock(projectId: string): MergeLockRow | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM merge_locks WHERE project_id = ? LIMIT 1")
+    .get(projectId) as MergeLockRow | undefined;
+  return row || null;
 }
 
 export type EscalationQuery = {
