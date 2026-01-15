@@ -1,5 +1,6 @@
 import type { VisualizationDefinition } from "../types";
 import { ActivityPulseVisualization } from "./ActivityPulseViz";
+import { HeatmapGridVisualization } from "./HeatmapGridViz";
 import { OrbitalGravityVisualization } from "./OrbitalGravityViz";
 import { PlaceholderVisualization } from "./PlaceholderViz";
 import { TimelineRiverVisualization } from "./TimelineRiverViz";
@@ -10,6 +11,12 @@ export const visualizations: VisualizationDefinition[] = [
     name: "Activity Pulse",
     description: "Activity-driven pulse rings with glow.",
     create: () => new ActivityPulseVisualization(),
+  },
+  {
+    id: "heatmap_grid",
+    name: "Heatmap Grid",
+    description: "Dense grid of WO tiles colored by status and activity.",
+    create: () => new HeatmapGridVisualization(),
   },
   {
     id: "orbital_gravity",

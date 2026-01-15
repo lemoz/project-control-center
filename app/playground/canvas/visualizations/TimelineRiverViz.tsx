@@ -1,4 +1,4 @@
-import type { RunStatus, RunSummary, Visualization, VisualizationData, VisualizationNode } from "../types";
+import type { ProjectNode, RunStatus, RunSummary, Visualization, VisualizationData } from "../types";
 
 type StageId = "backlog" | "ready" | "building" | "review" | "done";
 
@@ -18,7 +18,7 @@ type StageBounds = {
 };
 
 type LaneLayout = {
-  node: VisualizationNode;
+  node: ProjectNode;
   index: number;
   centerY: number;
   top: number;
@@ -265,7 +265,7 @@ export class TimelineRiverVisualization implements Visualization {
     this.syncBubbles();
   }
 
-  private computeLayout(nodes: VisualizationNode[]): Layout {
+  private computeLayout(nodes: ProjectNode[]): Layout {
     const ordered = [...nodes].sort((a, b) => a.name.localeCompare(b.name));
     const laneCount = Math.max(1, ordered.length);
     const totalHeight = laneCount * LANE_HEIGHT + (laneCount - 1) * LANE_GAP;

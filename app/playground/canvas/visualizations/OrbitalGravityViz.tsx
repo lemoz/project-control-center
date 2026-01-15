@@ -1,4 +1,4 @@
-import type { Visualization, VisualizationData, VisualizationNode } from "../types";
+import type { ProjectNode, Visualization, VisualizationData } from "../types";
 
 type Zone = {
   name: string;
@@ -115,7 +115,7 @@ function radiusFromConsumption(consumptionRate: number): number {
   return clamp(radius, 10, 30);
 }
 
-function targetHeatFor(node: VisualizationNode): number {
+function targetHeatFor(node: ProjectNode): number {
   let heat = clamp(node.activityLevel, 0, 1);
   if (node.isActive) heat = Math.max(heat, 0.65);
   if (node.needsHuman || node.status === "blocked") heat = Math.max(heat, 0.78);
@@ -126,7 +126,7 @@ function targetHeatFor(node: VisualizationNode): number {
   return clamp(heat, 0, 1);
 }
 
-function paletteForNode(node: VisualizationNode): Palette {
+function paletteForNode(node: ProjectNode): Palette {
   if (node.needsHuman || node.status === "blocked") {
     return { base: COLORS.blocked, label: "#fecaca", glow: "#fca5a5" };
   }
@@ -148,7 +148,7 @@ function paletteForNode(node: VisualizationNode): Palette {
   return { base: COLORS.active, label: "#dbeafe", glow: "#93c5fd" };
 }
 
-function computeOrbitRadius(node: VisualizationNode, heat: number, layout: Layout): number {
+function computeOrbitRadius(node: ProjectNode, heat: number, layout: Layout): number {
   const outerTarget =
     node.status === "parked" || (!node.isActive && node.activityLevel < 0.2)
       ? layout.archiveRadius
@@ -210,12 +210,12 @@ export class OrbitalGravityVisualization implements Visualization {
     }
   }
 
-  onNodeClick(node: VisualizationNode): void {
+  onNodeClick(node: ProjectNode): void {
     this.focusedId = node.id;
     this.focusUntil = performance.now() + FOCUS_DURATION_MS;
   }
 
-  onNodeHover(node: VisualizationNode | null): void {
+  onNodeHover(node: ProjectNode | null): void {
     this.hoveredId = node?.id ?? null;
   }
 

@@ -1,4 +1,4 @@
-import type { Visualization, VisualizationData, VisualizationNode } from "../types";
+import type { ProjectNode, Visualization, VisualizationData } from "../types";
 
 type PulseRing = {
   radius: number;
@@ -85,7 +85,7 @@ function activityScale(level: number): number {
   return lerp(IDLE_SCALE, ACTIVE_SCALE, clamp(level, 0, 1));
 }
 
-function layoutNodes(nodes: VisualizationNode[]): Map<string, { x: number; y: number }> {
+function layoutNodes(nodes: ProjectNode[]): Map<string, { x: number; y: number }> {
   const positions = new Map<string, { x: number; y: number }>();
   if (!nodes.length) return positions;
   const ordered = [...nodes].sort((a, b) => a.name.localeCompare(b.name));
@@ -105,7 +105,7 @@ function layoutNodes(nodes: VisualizationNode[]): Map<string, { x: number; y: nu
   return positions;
 }
 
-function paletteForNode(node: VisualizationNode): Palette {
+function paletteForNode(node: ProjectNode): Palette {
   const hasError = node.needsHuman || node.health < 0.35;
   const hasWarning = node.health <= 0.55;
 

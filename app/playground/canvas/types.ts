@@ -2,6 +2,16 @@ export type ProjectStatus = "active" | "blocked" | "parked";
 
 export type VisualizationNodeType = "project" | "work_order" | "run";
 
+export type WorkOrderStatus =
+  | "backlog"
+  | "ready"
+  | "building"
+  | "ai_review"
+  | "you_review"
+  | "done"
+  | "blocked"
+  | "parked";
+
 export type VisualizationEdge = {
   source: string;
   target: string;
@@ -10,11 +20,12 @@ export type VisualizationEdge = {
 
 export type ProjectNode = {
   id: string;
-  type: VisualizationNodeType;
+  type: "project";
   label: string;
   name: string;
   path: string;
   status: ProjectStatus;
+  priority: number;
   consumptionRate: number;
   isActive: boolean;
   activePhase?: "building" | "testing" | "reviewing" | "waiting";
@@ -32,6 +43,7 @@ export type ProjectNode = {
     blocked: number;
     done: number;
   };
+  era?: string | null;
   parentId?: string;
   dependsOn: string[];
   x?: number;
@@ -39,7 +51,26 @@ export type ProjectNode = {
   radius?: number;
 };
 
-export type VisualizationNode = ProjectNode;
+export type WorkOrderNode = {
+  id: string;
+  type: "work_order";
+  workOrderId: string;
+  label: string;
+  title: string;
+  status: WorkOrderStatus;
+  priority: number;
+  era: string | null;
+  projectId: string;
+  projectName: string;
+  lastActivity: Date | null;
+  activityLevel: number;
+  isActive: boolean;
+  x?: number;
+  y?: number;
+  radius?: number;
+};
+
+export type VisualizationNode = ProjectNode | WorkOrderNode;
 
 export type RunStatus =
   | "queued"
@@ -69,6 +100,7 @@ export type VisualizationData = {
   edges: VisualizationEdge[];
   timestamp: Date;
   runsByProject?: Record<string, RunSummary[]>;
+  workOrderNodes?: WorkOrderNode[];
 };
 
 export interface Visualization {

@@ -2,13 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEventHandler } from "react";
 import Link from "next/link";
-import type { Visualization, VisualizationNode } from "./types";
+import type { ProjectNode, Visualization, VisualizationNode, WorkOrderNode } from "./types";
 import { EscalationBadge } from "./EscalationBadge";
 import { ProjectPopup } from "./ProjectPopup";
+import { WorkOrderPopup } from "./WorkOrderPopup";
 import { useProjectsVisualization } from "./useProjectsVisualization";
 import { useCanvasInteraction } from "./useCanvasInteraction";
 import { defaultVisualizationId, findVisualization, visualizations } from "./visualizations";
 import type { RiverBubbleDetails } from "./visualizations/TimelineRiverViz";
+import type { HeatmapGrouping } from "./visualizations/HeatmapGridViz";
 
 const TOOLTIP_OFFSET = 14;
 const CLICK_THRESHOLD = 4;
@@ -22,6 +24,24 @@ function supportsBubbleHitTest(
   visualization: Visualization | null
 ): visualization is BubbleHitTestVisualization {
   return Boolean(visualization && "getBubbleAtPoint" in visualization);
+}
+
+type LayoutConfigurableVisualization = Visualization & {
+  setLayoutOptions?: (options: { grouping: HeatmapGrouping }) => void;
+};
+
+function supportsLayoutOptions(
+  visualization: Visualization | null
+): visualization is LayoutConfigurableVisualization {
+  return Boolean(visualization && "setLayoutOptions" in visualization);
+}
+
+function isWorkOrderNode(node: VisualizationNode | null): node is WorkOrderNode {
+  return Boolean(node && node.type === "work_order");
+}
+
+function isProjectNode(node: VisualizationNode | null): node is ProjectNode {
+  return Boolean(node && node.type === "project");
 }
 
 function getCanvasPoint(event: { clientX: number; clientY: number }, canvas: HTMLCanvasElement) {
@@ -86,10 +106,19 @@ export function CanvasShell() {
   const [selectedRun, setSelectedRun] = useState<RiverBubbleDetails | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0, dpr: 1 });
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [heatmapGrouping, setHeatmapGrouping] = useState<HeatmapGrouping>("status");
   const lastFrame = useRef<number | null>(null);
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
 
   const { data, loading, error, refresh, lastUpdated } = useProjectsVisualization();
+
+  const interactionNodes = useMemo<VisualizationNode[]>(() => {
+    if (selectedVizId !== "heatmap_grid") return data.nodes;
+    if (data.workOrderNodes && data.workOrderNodes.length > 0) {
+      return data.workOrderNodes;
+    }
+    return data.nodes;
+  }, [data.nodes, data.workOrderNodes, selectedVizId]);
 
   const {
     transform,
@@ -99,7 +128,7 @@ export function CanvasShell() {
     tooltipPosition,
     isPanning,
     handlers,
-  } = useCanvasInteraction({ canvasRef, nodes: data.nodes });
+  } = useCanvasInteraction({ canvasRef, nodes: interactionNodes });
   const transformRef = useRef(transform);
   const selectedRef = useRef(selectedNode);
   const hoveredRef = useRef(hoveredNode);
@@ -107,6 +136,9 @@ export function CanvasShell() {
 
   const selectedSummary = useMemo(() => {
     if (!selectedNode) return "None";
+    if (isWorkOrderNode(selectedNode)) {
+      return `${selectedNode.workOrderId} · ${selectedNode.title}`;
+    }
     return selectedNode.name;
   }, [selectedNode]);
 
@@ -133,6 +165,12 @@ export function CanvasShell() {
       visualization.setSelectedBubbleId?.(null);
     }
   }, [selectedVizId]);
+
+  useEffect(() => {
+    const visualization = vizRef.current;
+    if (!supportsLayoutOptions(visualization)) return;
+    visualization.setLayoutOptions?.({ grouping: heatmapGrouping });
+  }, [heatmapGrouping, selectedVizId]);
 
   useEffect(() => {
     vizRef.current?.update(data);
@@ -409,22 +447,49 @@ export function CanvasShell() {
                 boxShadow: "0 8px 20px rgba(0, 0, 0, 0.35)",
               }}
             >
-              <div style={{ fontWeight: 600 }}>{hoveredNode.name}</div>
-              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                Status {hoveredNode.status} | Consumption {hoveredNode.consumptionRate} t/day
-              </div>
-              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                Activity {formatPercent(hoveredNode.activityLevel)} | Health {formatPercent(hoveredNode.health)}
-              </div>
-              {hoveredNode.escalationCount > 0 && (
-                <div style={{ marginTop: 6 }}>
-                  <EscalationBadge count={hoveredNode.escalationCount} compact />
-                </div>
+              {isWorkOrderNode(hoveredNode) ? (
+                <>
+                  <div style={{ fontWeight: 600 }}>{hoveredNode.workOrderId}</div>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    {hoveredNode.title}
+                  </div>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    Status {formatRunStatus(hoveredNode.status)} | Priority P{hoveredNode.priority}
+                  </div>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    Project {hoveredNode.projectName} | Era {hoveredNode.era ?? "Unassigned"}
+                  </div>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    Activity {formatPercent(hoveredNode.activityLevel)} | Last{" "}
+                    {formatActivity(hoveredNode.lastActivity)}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontWeight: 600 }}>{hoveredNode.name}</div>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    Status {hoveredNode.status} | Consumption {hoveredNode.consumptionRate} t/day
+                  </div>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    Activity {formatPercent(hoveredNode.activityLevel)} | Health{" "}
+                    {formatPercent(hoveredNode.health)}
+                  </div>
+                  {hoveredNode.escalationCount > 0 && (
+                    <div style={{ marginTop: 6 }}>
+                      <EscalationBadge count={hoveredNode.escalationCount} compact />
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
 
-          {selectedNode && !selectedRun && <ProjectPopup node={selectedNode} />}
+          {selectedNode && !selectedRun && isProjectNode(selectedNode) && (
+            <ProjectPopup node={selectedNode} />
+          )}
+          {selectedNode && !selectedRun && isWorkOrderNode(selectedNode) && (
+            <WorkOrderPopup node={selectedNode} />
+          )}
 
           {selectedRun && (
             <aside
@@ -544,19 +609,30 @@ export function CanvasShell() {
             </div>
           </div>
         </div>
-        {selectedNode && (
+        {selectedNode && isProjectNode(selectedNode) && (
           <div className="muted" style={{ fontSize: 13 }}>
-            Status {selectedNode.status} | Active {selectedNode.isActive ? "yes" : "no"} | Success {formatPercent(
-              selectedNode.successProgress
-            )}
+            Status {selectedNode.status} | Active {selectedNode.isActive ? "yes" : "no"} | Success{" "}
+            {formatPercent(selectedNode.successProgress)}
           </div>
         )}
-        {selectedNode && (
+        {selectedNode && isProjectNode(selectedNode) && (
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <EscalationBadge count={selectedNode.escalationCount} />
             <div className="muted" style={{ fontSize: 12 }}>
               Last activity: {formatActivity(selectedNode.lastActivity)}
             </div>
+          </div>
+        )}
+        {selectedNode && isWorkOrderNode(selectedNode) && (
+          <div className="muted" style={{ fontSize: 13 }}>
+            Status {formatRunStatus(selectedNode.status)} | Priority P{selectedNode.priority} | Project{" "}
+            {selectedNode.projectName}
+          </div>
+        )}
+        {selectedNode && isWorkOrderNode(selectedNode) && (
+          <div className="muted" style={{ fontSize: 12 }}>
+            Era {selectedNode.era ?? "Unassigned"} | Last activity:{" "}
+            {formatActivity(selectedNode.lastActivity)}
           </div>
         )}
       </section>

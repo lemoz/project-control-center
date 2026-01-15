@@ -1,11 +1,11 @@
-import type { Visualization, VisualizationData, VisualizationNode } from "../types";
+import type { ProjectNode, Visualization, VisualizationData } from "../types";
 
 type StatusColor = {
   fill: string;
   outline: string;
 };
 
-const STATUS_COLORS: Record<VisualizationNode["status"], StatusColor> = {
+const STATUS_COLORS: Record<ProjectNode["status"], StatusColor> = {
   active: { fill: "#2b5cff", outline: "#88a6ff" },
   blocked: { fill: "#ef4444", outline: "#f9a8a8" },
   parked: { fill: "#64748b", outline: "#94a3b8" },
@@ -16,7 +16,7 @@ function radiusFromConsumption(consumptionRate: number, activityLevel: number): 
   return base + activityLevel * 6;
 }
 
-function applyLayout(nodes: VisualizationNode[]): void {
+function applyLayout(nodes: ProjectNode[]): void {
   if (!nodes.length) return;
   const columns = Math.max(1, Math.ceil(Math.sqrt(nodes.length)));
   const rows = Math.ceil(nodes.length / columns);

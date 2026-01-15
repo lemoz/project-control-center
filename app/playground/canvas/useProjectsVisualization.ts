@@ -1,7 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ProjectNode, RunStatus, RunSummary, VisualizationData } from "./types";
+import type {
+  ProjectNode,
+  RunStatus,
+  RunSummary,
+  VisualizationData,
+  WorkOrderNode,
+  WorkOrderStatus,
+} from "./types";
 
 type RepoSummary = {
   id: string;
@@ -18,16 +25,6 @@ type RepoSummary = {
   next_work_orders?: Array<{ id: string; title: string; status: string }>;
 };
 
-type WorkOrderStatus =
-  | "backlog"
-  | "ready"
-  | "building"
-  | "ai_review"
-  | "you_review"
-  | "done"
-  | "blocked"
-  | "parked";
-
 type WorkOrder = {
   id: string;
   title: string;
@@ -35,6 +32,7 @@ type WorkOrder = {
   priority: number;
   updated_at: string;
   depends_on: string[];
+  era: string | null;
 };
 
 type ActivePhase = "building" | "testing" | "reviewing" | "waiting";
@@ -187,6 +185,17 @@ function summarizeWorkOrders(workOrders: WorkOrder[]): WorkOrderSummary {
   return summary;
 }
 
+function resolveProjectEra(workOrders: WorkOrder[]): string | null {
+  const withEra = workOrders.filter((workOrder) => workOrder.era);
+  if (!withEra.length) return null;
+  const sorted = withEra.slice().sort((a, b) => {
+    const aDate = parseDate(a.updated_at)?.getTime() ?? 0;
+    const bDate = parseDate(b.updated_at)?.getTime() ?? 0;
+    return bDate - aDate;
+  });
+  return sorted[0]?.era ?? null;
+}
+
 function computeSuccessProgress(workOrders: WorkOrder[]): number {
   if (!workOrders.length) return 0;
   const doneCount = workOrders.filter((wo) => wo.status === "done").length;
@@ -231,6 +240,30 @@ function computeActivityLevel(activeRunsCount: number, lastActivity: Date | null
   if (ageHours < 72) return 0.4;
   if (ageHours < 168) return 0.25;
   return 0.1;
+}
+
+const ACTIVE_WORK_ORDER_STATUSES = new Set<WorkOrderStatus>([
+  "building",
+  "ai_review",
+  "you_review",
+]);
+
+function computeWorkOrderActivityLevel(
+  status: WorkOrderStatus,
+  lastActivity: Date | null
+): number {
+  if (ACTIVE_WORK_ORDER_STATUSES.has(status)) return 1;
+  if (!lastActivity) return 0;
+  const ageHours = (Date.now() - lastActivity.getTime()) / 3_600_000;
+  if (ageHours < 6) return 0.7;
+  if (ageHours < 24) return 0.5;
+  if (ageHours < 72) return 0.3;
+  return 0.15;
+}
+
+function shortWorkOrderLabel(woId: string): string {
+  const match = woId.match(/WO-\d{4}-(\d+)/);
+  return match ? match[1] : woId.slice(0, 4);
 }
 
 function resolveActivePhase(activeRuns: RunSummary[]): ActivePhase | undefined {
@@ -561,6 +594,7 @@ export function useProjectsVisualization(): {
 
   const data = useMemo<VisualizationData>(() => {
     const nodes: ProjectNode[] = [];
+    const workOrderNodes: WorkOrderNode[] = [];
     const globalProjects = new Map(
       globalContext?.projects.map((project) => [project.id, project]) ?? []
     );
@@ -573,6 +607,7 @@ export function useProjectsVisualization(): {
       const shiftSummary = shiftContext ? summarizeShiftWorkOrders(shiftContext) : null;
       const summary = shiftSummary ?? summaryFromList;
       const globalProject = globalProjects.get(project.id) ?? null;
+      const projectEra = resolveProjectEra(workOrders);
 
       const activeRuns = runs.filter((run) => !TERMINAL_RUN_STATUSES.has(run.status));
       const activeRunsCount = shiftContext ? shiftContext.active_runs.length : activeRuns.length;
@@ -621,6 +656,7 @@ export function useProjectsVisualization(): {
         name: project.name,
         path: project.path,
         status: project.status,
+        priority: project.priority,
         consumptionRate,
         isActive: activeRunsCount > 0 || hasActiveShift,
         activePhase,
@@ -633,8 +669,32 @@ export function useProjectsVisualization(): {
         progress: successProgress,
         successProgress,
         workOrders: summary,
+        era: projectEra,
         dependsOn: [],
       });
+
+      for (const workOrder of workOrders) {
+        const woLastActivity = parseDate(workOrder.updated_at);
+        const woActivityLevel = computeWorkOrderActivityLevel(
+          workOrder.status,
+          woLastActivity
+        );
+        workOrderNodes.push({
+          id: `${project.id}::${workOrder.id}`,
+          type: "work_order",
+          workOrderId: workOrder.id,
+          label: shortWorkOrderLabel(workOrder.id),
+          title: workOrder.title,
+          status: workOrder.status,
+          priority: workOrder.priority ?? 3,
+          era: workOrder.era ?? null,
+          projectId: project.id,
+          projectName: project.name,
+          lastActivity: woLastActivity,
+          activityLevel: woActivityLevel,
+          isActive: ACTIVE_WORK_ORDER_STATUSES.has(workOrder.status),
+        });
+      }
     }
 
     const edges = nodes.flatMap((node) =>
@@ -650,6 +710,7 @@ export function useProjectsVisualization(): {
       edges,
       timestamp: lastUpdated ?? new Date(),
       runsByProject,
+      workOrderNodes,
     };
   }, [projects, workOrdersByProject, runsByProject, globalContext, shiftContexts, costsByProject, lastUpdated]);
 

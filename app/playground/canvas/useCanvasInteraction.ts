@@ -102,7 +102,11 @@ export function useCanvasInteraction({
         const radius = node.radius ?? 16;
         const dx = worldPoint.x - node.x;
         const dy = worldPoint.y - node.y;
-        if (dx * dx + dy * dy <= radius * radius) return node;
+        if (node.type === "work_order") {
+          if (Math.abs(dx) <= radius && Math.abs(dy) <= radius) return node;
+        } else if (dx * dx + dy * dy <= radius * radius) {
+          return node;
+        }
       }
       return null;
     },
