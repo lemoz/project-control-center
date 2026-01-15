@@ -64,7 +64,7 @@ const REMOTE_TEST_TIMEOUT_MS = Math.round(
 const E2E_WEB_PORT_BASE = 3012;
 const E2E_OFFLINE_WEB_PORT_BASE = 3013;
 const E2E_API_PORT_BASE = 4011;
-const E2E_PORT_OFFSET_MOD = 90;
+const E2E_PORT_OFFSET_MOD = 500;
 const E2E_PORT_OFFSET_STEP = 10;
 
 const IGNORE_DIRS = new Set([
@@ -202,7 +202,8 @@ function parseNumberEnv(value: string | undefined, fallback: number): number {
 }
 
 function getPortOffset(runId: string): number {
-  const prefix = runId.slice(0, 4);
+  // Use 8 chars of UUID for better distribution (4 billion values vs 65K)
+  const prefix = runId.slice(0, 8);
   const hash = Number.parseInt(prefix, 16);
   if (!Number.isFinite(hash)) return 0;
   return (hash % E2E_PORT_OFFSET_MOD) * E2E_PORT_OFFSET_STEP;
@@ -2297,6 +2298,7 @@ async function runRepoTests(
   repoPath: string,
   runDir: string,
   iteration: number,
+  runId: string,
   options?: { logPath?: string; label?: string }
 ) {
   const testInfo = getTestScriptInfo(repoPath);
@@ -2311,12 +2313,17 @@ async function runRepoTests(
   logStream.write(`[${nowIso()}] ${label} start (iter ${iteration})\n`);
   const outputCapture = createOutputCapture(MAX_TEST_OUTPUT_LINES);
 
+  // Apply port offset to avoid collisions when multiple runs execute in parallel
+  const portOffset = getPortOffset(runId);
   const child = spawn(npmCommand(), ["test"], {
     cwd: repoPath,
     env: {
       ...process.env,
       CI: "1",
       NEXT_DIST_DIR: ".system/next-run-tests",
+      E2E_WEB_PORT: String(E2E_WEB_PORT_BASE + portOffset),
+      E2E_OFFLINE_WEB_PORT: String(E2E_OFFLINE_WEB_PORT_BASE + portOffset),
+      E2E_API_PORT: String(E2E_API_PORT_BASE + portOffset),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -2891,7 +2898,7 @@ export async function runRun(runId: string) {
               logPath: baselineLogPath,
               labelPrefix: "baseline",
             })
-          : await runRepoTests(worktreePath, runDir, 0, {
+          : await runRepoTests(worktreePath, runDir, 0, runId, {
               logPath: baselineLogPath,
               label: "baseline npm test",
             });
@@ -3341,7 +3348,7 @@ export async function runRun(runId: string) {
               runId,
               remote: remoteConfig,
             })
-          : await runRepoTests(worktreePath, runDir, iteration);
+          : await runRepoTests(worktreePath, runDir, iteration, runId);
         writeJson(path.join(runDir, "tests", "results.json"), tests);
       } catch (err) {
         tests = [{ command: "tests", passed: false, output: String(err) }];

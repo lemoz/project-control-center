@@ -82,6 +82,10 @@ const MACHINE_TYPES: Record<ProjectVmSize, string> = {
   xlarge: "e2-standard-8",
 };
 
+// Minimum boot disk size in GB - 10GB default is too small for node_modules,
+// Playwright browsers, multiple concurrent test runs, etc.
+const BOOT_DISK_SIZE_GB = 50;
+
 const GCLOUD_COMMAND = process.env.CONTROL_CENTER_GCLOUD_PATH || "gcloud";
 const SSH_COMMAND = process.env.CONTROL_CENTER_SSH_PATH || "ssh";
 const DEFAULT_VM_REPO_ROOT = "/home/project/repo";
@@ -304,7 +308,7 @@ function buildPrereqInstallScript(): string {
     "done",
     "if [ -z \"$missing\" ]; then",
     "  if ! command -v codex >/dev/null 2>&1; then",
-    "    sudo -n npm install -g @anthropic-ai/codex-cli",
+    "    sudo -n npm install -g @openai/codex",
     "  fi",
     "  exit 0",
     "fi",
@@ -335,7 +339,7 @@ function buildPrereqInstallScript(): string {
     "  exit 1",
     "fi",
     "if ! command -v codex >/dev/null 2>&1; then",
-    "  sudo -n npm install -g @anthropic-ai/codex-cli",
+    "  sudo -n npm install -g @openai/codex",
     "fi",
   ].join("\n");
 }
@@ -865,6 +869,8 @@ async function createInstance(params: {
     params.gcp.zone,
     "--machine-type",
     MACHINE_TYPES[params.size],
+    "--boot-disk-size",
+    `${BOOT_DISK_SIZE_GB}GB`,
     "--quiet",
   ];
 
