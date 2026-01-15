@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEventHandler } from "react";
 import Link from "next/link";
-import type { Visualization } from "./types";
+import type { Visualization, VisualizationNode } from "./types";
 import { EscalationBadge } from "./EscalationBadge";
 import { ProjectPopup } from "./ProjectPopup";
 import { useProjectsVisualization } from "./useProjectsVisualization";
@@ -37,6 +37,21 @@ function screenToWorld(
     x: (point.x - transform.offsetX) / transform.scale,
     y: (point.y - transform.offsetY) / transform.scale,
   };
+}
+
+function findNodeAtPoint(
+  nodes: VisualizationNode[],
+  worldPoint: { x: number; y: number }
+): VisualizationNode | null {
+  for (let i = nodes.length - 1; i >= 0; i -= 1) {
+    const node = nodes[i];
+    if (node.x === undefined || node.y === undefined) continue;
+    const radius = node.radius ?? 16;
+    const dx = worldPoint.x - node.x;
+    const dy = worldPoint.y - node.y;
+    if (dx * dx + dy * dy <= radius * radius) return node;
+  }
+  return null;
 }
 
 function formatRunStatus(value: string): string {
@@ -166,6 +181,10 @@ export function CanvasShell() {
   }, [hoveredNode]);
 
   useEffect(() => {
+    vizRef.current?.onNodeHover?.(hoveredNode);
+  }, [hoveredNode]);
+
+  useEffect(() => {
     sizeRef.current = canvasSize;
   }, [canvasSize]);
 
@@ -200,9 +219,13 @@ export function CanvasShell() {
         }
         visualization.setSelectedBubbleId?.(null);
       }
+      const clickedNode = findNodeAtPoint(data.nodes, worldPoint);
+      if (clickedNode) {
+        vizRef.current?.onNodeClick?.(clickedNode);
+      }
       setSelectedRun(null);
     },
-    [handlers, transform]
+    [data.nodes, handlers, transform]
   );
 
   const handlePointerLeave = useCallback<PointerEventHandler<HTMLCanvasElement>>(
