@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type GlobalBudget = {
   monthly_budget_usd: number;
@@ -28,6 +28,14 @@ type RepoSummary = {
   id: string;
   name: string;
   hidden: boolean;
+};
+
+type BudgetEnforcementEvent = {
+  id: string;
+  project_id: string;
+  event_type: string;
+  details: string | null;
+  created_at: string;
 };
 
 type TransferResponse = {
@@ -85,6 +93,51 @@ function formatRunway(value: number): string {
   return value >= 1000 ? "999+" : value.toFixed(1);
 }
 
+function parseEnforcementDetails(details: string | null): Record<string, unknown> | null {
+  if (!details) return null;
+  try {
+    const parsed = JSON.parse(details) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function formatEnforcementSummary(event: BudgetEnforcementEvent): string {
+  const parsed = parseEnforcementDetails(event.details);
+  if (!parsed) return "";
+  const parts: string[] = [];
+  const remaining = Number(parsed.remaining_usd);
+  if (Number.isFinite(remaining)) parts.push(`remaining ${formatUsd(remaining)}`);
+  const estimated = Number(parsed.estimated_cost_usd);
+  if (Number.isFinite(estimated)) parts.push(`est run ${formatUsd(estimated)}`);
+  const available = Number(parsed.available_usd ?? parsed.daily_drip_usd);
+  if (Number.isFinite(available)) parts.push(`available ${formatUsd(available)}`);
+  const workOrderId =
+    typeof parsed.work_order_id === "string" ? parsed.work_order_id : "";
+  if (workOrderId) parts.push(`WO ${workOrderId}`);
+  const payload = parsed.payload;
+  if (payload && typeof payload === "object") {
+    const payloadRecord = payload as Record<string, unknown>;
+    if (!Number.isFinite(remaining)) {
+      const payloadRemaining = Number(payloadRecord.remaining_usd);
+      if (Number.isFinite(payloadRemaining)) {
+        parts.push(`remaining ${formatUsd(payloadRemaining)}`);
+      }
+    }
+    const runwayDays = Number(payloadRecord.runway_days);
+    if (Number.isFinite(runwayDays)) parts.push(`runway ${formatRunway(runwayDays)} days`);
+  }
+  return parts.join(" | ");
+}
+
+function formatTimestamp(value: string): string {
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return value;
+  return new Date(ms).toLocaleString();
+}
+
 export function BudgetPanel({ repoId }: { repoId: string }) {
   const [globalBudget, setGlobalBudget] = useState<GlobalBudget | null>(null);
   const [projectBudget, setProjectBudget] = useState<ProjectBudget | null>(null);
@@ -97,16 +150,22 @@ export function BudgetPanel({ repoId }: { repoId: string }) {
   const [allocationInput, setAllocationInput] = useState("");
   const [transferTarget, setTransferTarget] = useState("");
   const [transferAmount, setTransferAmount] = useState("");
+  const [enforcementLog, setEnforcementLog] = useState<BudgetEnforcementEvent[]>([]);
+  const [dismissedAlert, setDismissedAlert] = useState(false);
+  const allocationInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     setNotice(null);
     try {
-      const [globalRes, projectRes, reposRes] = await Promise.all([
+      const [globalRes, projectRes, reposRes, enforcementRes] = await Promise.all([
         fetch("/api/budget", { cache: "no-store" }),
         fetch(`/api/projects/${encodeURIComponent(repoId)}/budget`, { cache: "no-store" }),
         fetch("/api/repos", { cache: "no-store" }).catch(() => null),
+        fetch(`/api/projects/${encodeURIComponent(repoId)}/budget/enforcement`, { cache: "no-store" }).catch(
+          () => null
+        ),
       ]);
 
       const globalJson = (await globalRes.json().catch(() => null)) as GlobalBudget | null;
@@ -127,6 +186,15 @@ export function BudgetPanel({ repoId }: { repoId: string }) {
       setGlobalBudget(globalJson);
       setProjectBudget(projectJson);
       setProjects(repos);
+
+      if (enforcementRes && enforcementRes.ok) {
+        const enforcementJson = (await enforcementRes.json().catch(() => null)) as
+          | { events?: BudgetEnforcementEvent[] }
+          | null;
+        if (Array.isArray(enforcementJson?.events)) {
+          setEnforcementLog(enforcementJson?.events ?? []);
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "failed to load budget data");
     } finally {
@@ -149,6 +217,11 @@ export function BudgetPanel({ repoId }: { repoId: string }) {
       setAllocationInput(projectBudget.monthly_allocation_usd.toFixed(2));
     }
   }, [projectBudget]);
+
+  useEffect(() => {
+    if (!projectBudget) return;
+    setDismissedAlert(false);
+  }, [projectBudget?.budget_status]);
 
   const setTimedNotice = useCallback((message: string) => {
     setNotice(message);
@@ -278,8 +351,29 @@ export function BudgetPanel({ repoId }: { repoId: string }) {
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [projects, repoId]);
 
+  const budgetAlert = useMemo(() => {
+    if (!projectBudget || dismissedAlert) return null;
+    if (projectBudget.budget_status === "healthy") return null;
+    const label =
+      projectBudget.budget_status === "warning"
+        ? "Budget warning"
+        : projectBudget.budget_status === "critical"
+          ? "Budget critical"
+          : "Budget exhausted";
+    return {
+      label,
+      status: projectBudget.budget_status,
+      remaining: formatUsd(projectBudget.remaining_usd),
+      runway: formatRunway(projectBudget.runway_days),
+    };
+  }, [projectBudget, dismissedAlert]);
+
   return (
-    <section className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+    <section
+      id="budget"
+      className="card"
+      style={{ display: "flex", flexDirection: "column", gap: 12 }}
+    >
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
         <div>
           <h2 style={{ margin: 0 }}>Budgets</h2>
@@ -298,6 +392,45 @@ export function BudgetPanel({ repoId }: { repoId: string }) {
 
       {!loading && globalBudget && projectBudget && (
         <>
+          {budgetAlert && (
+            <div
+              style={{
+                border: "1px solid",
+                borderColor:
+                  budgetAlert.status === "warning" ? "#2b3b57" : "#5a2a33",
+                borderRadius: 12,
+                padding: 12,
+                background:
+                  budgetAlert.status === "warning"
+                    ? "rgba(38, 54, 85, 0.35)"
+                    : "rgba(92, 32, 44, 0.35)",
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              <div style={{ fontWeight: 700 }}>{budgetAlert.label}</div>
+              <div className="muted" style={{ fontSize: 13 }}>
+                Remaining: {budgetAlert.remaining} | Runway: {budgetAlert.runway} days
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  className="btn"
+                  onClick={() => allocationInputRef.current?.focus()}
+                  disabled={action !== null}
+                >
+                  Add Funds
+                </button>
+                <button
+                  className="btnSecondary"
+                  onClick={() => setDismissedAlert(true)}
+                  disabled={action !== null}
+                >
+                  Ignore
+                </button>
+              </div>
+            </div>
+          )}
           <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", alignItems: "start" }}>
             <div
               style={{
@@ -396,6 +529,7 @@ export function BudgetPanel({ repoId }: { repoId: string }) {
                 type="number"
                 min="0"
                 step="0.01"
+                ref={allocationInputRef}
                 value={allocationInput}
                 onChange={(e) => setAllocationInput(e.target.value)}
                 disabled={action !== null}
@@ -408,7 +542,7 @@ export function BudgetPanel({ repoId }: { repoId: string }) {
             </div>
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div id="budget-transfer" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <div style={{ fontWeight: 700 }}>Transfer budget</div>
             <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", alignItems: "end" }}>
               <div className="field">
@@ -445,6 +579,44 @@ export function BudgetPanel({ repoId }: { repoId: string }) {
                 </button>
               </div>
             </div>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ fontWeight: 700 }}>Budget enforcement log</div>
+            {enforcementLog.length === 0 ? (
+              <div className="muted" style={{ fontSize: 12 }}>
+                No enforcement events yet.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {enforcementLog.slice(0, 10).map((event) => {
+                  const summary = formatEnforcementSummary(event);
+                  return (
+                    <div
+                      key={event.id}
+                      style={{
+                        border: "1px solid #22293a",
+                        borderRadius: 10,
+                        padding: 10,
+                        background: "#0f1320",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                      }}
+                    >
+                      <div style={{ fontSize: 12, fontWeight: 600 }}>
+                        {event.event_type} | {formatTimestamp(event.created_at)}
+                      </div>
+                      {summary && (
+                        <div className="muted" style={{ fontSize: 12 }}>
+                          {summary}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </>
       )}

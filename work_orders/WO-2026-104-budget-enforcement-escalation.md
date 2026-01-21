@@ -28,9 +28,9 @@ tags:
   - enforcement
   - escalation
 estimate_hours: 3
-status: ready
+status: you_review
 created_at: 2026-01-13
-updated_at: 2026-01-13
+updated_at: 2026-01-21
 depends_on:
   - WO-2026-103
 era: v2

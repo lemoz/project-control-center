@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import {
+  BudgetRunBlockedCard,
+  isBudgetRunBlockedDetails,
+  type BudgetRunBlockedDetails,
+} from "../../../../components/BudgetRunBlockedCard";
 
 type WorkOrderStatus =
   | "backlog"
@@ -110,6 +115,8 @@ export function WorkOrderDetails({
   const [saving, setSaving] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [blockedDetails, setBlockedDetails] = useState<BudgetRunBlockedDetails | null>(null);
+  const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
   const router = useRouter();
 
   const load = useCallback(async () => {
@@ -254,6 +261,8 @@ export function WorkOrderDetails({
     if (!workOrder) return;
     setStarting(true);
     setError(null);
+    setBlockedDetails(null);
+    setBlockedMessage(null);
     try {
       const res = await fetch(
         `/api/repos/${encodeURIComponent(repoId)}/work-orders/${encodeURIComponent(workOrderId)}/runs`,
@@ -261,10 +270,18 @@ export function WorkOrderDetails({
       );
       const json = (await res.json().catch(() => null)) as
         | Run
-        | { error?: string }
+        | { error?: string; details?: unknown }
         | null;
       if (!res.ok) {
-        throw new Error((json as { error?: string } | null)?.error || "failed to start run");
+        const message =
+          (json as { error?: string } | null)?.error || "failed to start run";
+        const details = (json as { details?: unknown } | null)?.details;
+        if (details && isBudgetRunBlockedDetails(details)) {
+          setBlockedDetails(details);
+          setBlockedMessage(message);
+          return;
+        }
+        throw new Error(message);
       }
       const run = json as Run;
       router.push(`/runs/${encodeURIComponent(run.id)}`);
@@ -327,6 +344,16 @@ export function WorkOrderDetails({
         {!!error && (
           <div className="error" style={{ marginTop: 10 }}>
             {error}
+          </div>
+        )}
+        {blockedDetails && (
+          <div style={{ marginTop: 10 }}>
+            <BudgetRunBlockedCard
+              message={blockedMessage}
+              details={blockedDetails}
+              projectId={repoId}
+              budgetHref={`/projects/${encodeURIComponent(repoId)}#budget-transfer`}
+            />
           </div>
         )}
         {loading && (

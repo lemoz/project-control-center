@@ -8,6 +8,7 @@ import {
   type RunRow,
 } from "./db.js";
 import { getGlobalBudget } from "./budgeting.js";
+import { syncProjectBudgetAlerts } from "./budget_enforcement.js";
 import { syncAndListRepoSummaries } from "./projects_catalog.js";
 import { getRunsForProject } from "./runner_agent.js";
 import { buildShiftContext } from "./shift_context.js";
@@ -41,6 +42,13 @@ export type GlobalProjectSummary = {
   name: string;
   status: ProjectRow["status"];
   health: "healthy" | "stalled" | "failing" | "blocked";
+  budget: {
+    status: "healthy" | "warning" | "critical" | "exhausted";
+    remaining_usd: number;
+    allocation_usd: number;
+    daily_drip_usd: number;
+    runway_days: number;
+  };
   active_shift: { id: string; started_at: string; agent_id: string | null } | null;
   escalations: Array<{ id: string; type: string; summary: string }>;
   work_orders: { ready: number; building: number; blocked: number };
@@ -231,6 +239,16 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
   for (const project of summaries) {
     const context = buildShiftContext(project.id, { runHistoryLimit: 5, activeRunScanLimit: 50 });
     if (!context) continue;
+    try {
+      syncProjectBudgetAlerts({
+        projectId: context.project.id,
+        projectName: context.project.name,
+        projectPath: context.project.path,
+        readyWorkOrderIds: context.work_orders.ready.map((wo) => wo.id),
+      });
+    } catch {
+      // ignore budget alert sync failures
+    }
     const priority = project.priority;
     const runs = getRunsForProject(project.id, 50);
     const runsById = new Map(runs.map((run) => [run.id, run]));
@@ -274,6 +292,13 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
       name: context.project.name,
       status: project.status,
       health,
+      budget: {
+        status: context.economy.budget_status,
+        remaining_usd: context.economy.budget_remaining_usd,
+        allocation_usd: context.economy.budget_allocation_usd,
+        daily_drip_usd: context.economy.daily_drip_usd,
+        runway_days: context.economy.runway_days,
+      },
       active_shift: activeShift
         ? { id: activeShift.id, started_at: activeShift.started_at, agent_id: activeShift.agent_id }
         : null,

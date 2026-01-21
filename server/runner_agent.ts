@@ -46,6 +46,7 @@ import {
   type RemoteExecOptions,
   type RemoteSyncOptions,
 } from "./remote_exec.js";
+import { enforceRunBudget } from "./budget_enforcement.js";
 
 const DEFAULT_MAX_BUILDER_ITERATIONS = 10;
 const MAX_TEST_OUTPUT_LINES = 200;
@@ -4466,6 +4467,12 @@ export function enqueueCodexRun(
       `Run ${activeRunForWO.id.slice(0, 8)} is already ${activeRunForWO.status} for ${workOrderId}. Wait for it to complete or cancel it first.`
     );
   }
+
+  enforceRunBudget({
+    projectId,
+    projectPath: project.path,
+    workOrderId: workOrder.id,
+  });
 
   const id = crypto.randomUUID();
   const createdAt = nowIso();
