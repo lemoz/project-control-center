@@ -69,6 +69,7 @@ import {
   WorkOrderError,
   type WorkOrder,
 } from "./work_orders.js";
+import { generateWorkOrderDraft } from "./wo_generation.js";
 import {
   getChatSettingsResponse,
   getRunnerSettingsResponse,
@@ -1205,6 +1206,60 @@ app.get("/projects/:id/shift-context", (req, res) => {
   const context = buildShiftContext(req.params.id);
   if (!context) return res.status(404).json({ error: "project not found" });
   return res.json(context);
+});
+
+app.post("/projects/:id/work-orders/generate", async (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const payload = req.body ?? {};
+  const bodyProjectId =
+    typeof payload.project_id === "string" ? payload.project_id.trim() : "";
+  if (bodyProjectId && bodyProjectId !== id) {
+    return res.status(400).json({ error: "`project_id` does not match path" });
+  }
+
+  const descriptionRaw =
+    typeof payload.description === "string" ? payload.description.trim() : "";
+  if (!descriptionRaw) {
+    return res.status(400).json({ error: "`description` is required" });
+  }
+
+  const typeRaw = typeof payload.type === "string" ? payload.type.trim().toLowerCase() : "";
+  const allowedTypes = new Set(["feature", "bugfix", "refactor", "research"]);
+  if (typeRaw && !allowedTypes.has(typeRaw)) {
+    return res.status(400).json({
+      error: "`type` must be one of feature, bugfix, refactor, research",
+    });
+  }
+  const type = typeRaw ? (typeRaw as "feature" | "bugfix" | "refactor" | "research") : undefined;
+
+  let priority: number | null = null;
+  if (payload.priority !== undefined) {
+    const rawValue =
+      typeof payload.priority === "string" ? Number(payload.priority) : payload.priority;
+    if (typeof rawValue !== "number" || !Number.isFinite(rawValue)) {
+      return res.status(400).json({ error: "`priority` must be a number" });
+    }
+    const clamped = Math.min(5, Math.max(1, Math.trunc(rawValue)));
+    priority = clamped;
+  }
+
+  try {
+    const result = await generateWorkOrderDraft({
+      project,
+      description: descriptionRaw,
+      type,
+      priority,
+    });
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({
+      error: "failed to generate work order",
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 app.post("/projects/:id/shifts", (req, res) => {
