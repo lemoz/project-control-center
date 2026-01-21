@@ -61,6 +61,33 @@ function createRepo(params) {
   return repoPath;
 }
 
+function createRunRow(params) {
+  const runDir = path.join(tmpDir, params.id);
+  createRun({
+    id: params.id,
+    project_id: params.projectId,
+    work_order_id: params.workOrderId,
+    provider: "codex",
+    status: params.status,
+    iteration: 1,
+    builder_iteration: 1,
+    reviewer_verdict: null,
+    reviewer_notes: null,
+    summary: null,
+    branch_name: `run/${params.id}`,
+    source_branch: null,
+    merge_status: params.mergeStatus ?? null,
+    conflict_with_run_id: null,
+    run_dir: runDir,
+    log_path: `${runDir}.log`,
+    created_at: params.createdAt,
+    started_at: params.createdAt,
+    finished_at: null,
+    error: null,
+    escalation: params.escalation ?? null,
+  });
+}
+
 function escalationRecord({ tried, need, createdAt }) {
   return JSON.stringify({
     what_i_tried: tried,
@@ -68,6 +95,36 @@ function escalationRecord({ tried, need, createdAt }) {
     inputs: [{ key: "token", label: "Token" }],
     created_at: createdAt,
   });
+}
+
+function withFixedTime(isoString, fn) {
+  const RealDate = Date;
+  const fixedMs = RealDate.parse(isoString);
+
+  class FixedDate extends RealDate {
+    constructor(...args) {
+      if (args.length) {
+        return new RealDate(...args);
+      }
+      return new RealDate(fixedMs);
+    }
+    static now() {
+      return fixedMs;
+    }
+    static parse(value) {
+      return RealDate.parse(value);
+    }
+    static UTC(...args) {
+      return RealDate.UTC(...args);
+    }
+  }
+
+  globalThis.Date = FixedDate;
+  try {
+    return fn();
+  } finally {
+    globalThis.Date = RealDate;
+  }
 }
 
 after(() => {
@@ -236,6 +293,10 @@ test("buildGlobalContextResponse aggregates and sorts projects", () => {
   assert.equal(response.projects[0].escalations.length, 1);
   assert.equal(response.projects[1].escalations[0].summary, "Need alpha token");
   assert.equal(response.projects[2].health, "healthy");
+  assert.equal(response.projects[1].health_summary.project_id, "alpha");
+  assert.equal(response.projects[1].health_summary.status, response.projects[1].health);
+  assert.equal(response.projects[1].health_summary.metrics.ready_wo_count, 1);
+  assert.equal(response.projects[1].health_summary.metrics.pending_escalations, 1);
 
   assert.equal(response.escalation_queue.length, 2);
   assert.deepEqual(
@@ -258,4 +319,147 @@ test("buildGlobalContextResponse aggregates and sorts projects", () => {
     response.economy.projects_exhausted;
   assert.equal(statusTotal, response.projects.length);
   assert.ok(Number.isFinite(Date.parse(response.assembled_at)));
+});
+
+test("buildGlobalContextResponse applies health rules and metrics", () => {
+  createRepo({
+    dirName: "delta-repo",
+    control: { id: "delta", name: "Delta Project", status: "active", priority: 3 },
+    workOrders: [],
+  });
+  createRepo({
+    dirName: "epsilon-repo",
+    control: { id: "epsilon", name: "Epsilon Project", status: "active", priority: 3 },
+    workOrders: [
+      { id: "WO-EPS-1", title: "Epsilon Ready", status: "ready", priority: 3 },
+    ],
+  });
+  createRepo({
+    dirName: "zeta-repo",
+    control: { id: "zeta", name: "Zeta Project", status: "active", priority: 3 },
+    workOrders: [
+      { id: "WO-ZETA-1", title: "Zeta Blocked", status: "blocked", priority: 3 },
+    ],
+  });
+  createRepo({
+    dirName: "eta-repo",
+    control: { id: "eta", name: "Eta Project", status: "active", priority: 3 },
+    workOrders: [{ id: "WO-ETA-1", title: "Eta Done", status: "done", priority: 3 }],
+  });
+  createRepo({
+    dirName: "theta-repo",
+    control: { id: "theta", name: "Theta Project", status: "active", priority: 3 },
+    workOrders: [],
+  });
+
+  const fixedNow = "2026-02-10T12:00:00.000Z";
+  const oneDayAgo = "2026-02-09T12:00:00.000Z";
+  const twoDaysAgo = "2026-02-08T12:00:00.000Z";
+  const threeDaysAgo = "2026-02-07T12:00:00.000Z";
+  const fourDaysAgo = "2026-02-06T12:00:00.000Z";
+
+  withFixedTime(fixedNow, () => {
+    invalidateDiscoveryCache();
+    syncAndListRepoSummaries();
+
+    createRunRow({
+      id: "run-delta-1",
+      projectId: "delta",
+      workOrderId: "WO-DELTA-1",
+      status: "failed",
+      createdAt: oneDayAgo,
+    });
+    createRunRow({
+      id: "run-delta-2",
+      projectId: "delta",
+      workOrderId: "WO-DELTA-2",
+      status: "failed",
+      createdAt: twoDaysAgo,
+    });
+    createRunRow({
+      id: "run-delta-3",
+      projectId: "delta",
+      workOrderId: "WO-DELTA-3",
+      status: "merge_conflict",
+      createdAt: threeDaysAgo,
+    });
+
+    createRunRow({
+      id: "run-epsilon-1",
+      projectId: "epsilon",
+      workOrderId: "WO-EPS-1",
+      status: "merged",
+      createdAt: threeDaysAgo,
+    });
+
+    createRunRow({
+      id: "run-eta-1",
+      projectId: "eta",
+      workOrderId: "WO-ETA-1",
+      status: "waiting_for_input",
+      createdAt: oneDayAgo,
+      escalation: escalationRecord({
+        tried: "Eta setup attempt",
+        need: "Need eta token",
+        createdAt: oneDayAgo,
+      }),
+    });
+
+    createRunRow({
+      id: "run-theta-1",
+      projectId: "theta",
+      workOrderId: "WO-THETA-1",
+      status: "you_review",
+      createdAt: oneDayAgo,
+    });
+    createRunRow({
+      id: "run-theta-2",
+      projectId: "theta",
+      workOrderId: "WO-THETA-2",
+      status: "failed",
+      createdAt: twoDaysAgo,
+    });
+    createRunRow({
+      id: "run-theta-3",
+      projectId: "theta",
+      workOrderId: "WO-THETA-3",
+      status: "failed",
+      createdAt: threeDaysAgo,
+    });
+    createRunRow({
+      id: "run-theta-4",
+      projectId: "theta",
+      workOrderId: "WO-THETA-4",
+      status: "failed",
+      createdAt: fourDaysAgo,
+    });
+
+    const response = buildGlobalContextResponse();
+    const byId = new Map(response.projects.map((project) => [project.id, project]));
+
+    const failing = byId.get("delta");
+    assert.ok(failing);
+    assert.equal(failing.health, "failing");
+    assert.equal(failing.health_summary.metrics.recent_failure_rate, 1);
+
+    const stalled = byId.get("epsilon");
+    assert.ok(stalled);
+    assert.equal(stalled.health, "stalled");
+    assert.equal(stalled.health_summary.metrics.days_since_run, 3);
+    assert.equal(stalled.health_summary.metrics.ready_wo_count, 1);
+
+    const blocked = byId.get("zeta");
+    assert.ok(blocked);
+    assert.equal(blocked.health, "blocked");
+
+    const attention = byId.get("eta");
+    assert.ok(attention);
+    assert.equal(attention.health, "attention_needed");
+    assert.equal(attention.health_summary.metrics.pending_escalations, 1);
+
+    const recovered = byId.get("theta");
+    assert.ok(recovered);
+    assert.equal(recovered.health, "healthy");
+    assert.equal(recovered.health_summary.metrics.recent_failure_rate, 0.75);
+  });
 });

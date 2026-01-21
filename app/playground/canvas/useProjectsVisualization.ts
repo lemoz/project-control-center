@@ -46,7 +46,7 @@ type GlobalContextProject = {
   id: string;
   name: string;
   status: "active" | "blocked" | "parked";
-  health: "healthy" | "stalled" | "failing" | "blocked";
+  health: "healthy" | "attention_needed" | "stalled" | "failing" | "blocked";
   active_shift: { id: string; started_at: string; agent_id: string | null } | null;
   escalations: Array<{ id: string; type: string; summary: string }>;
   work_orders: { ready: number; building: number; blocked: number };
@@ -147,6 +147,7 @@ const PROJECT_STATUS_HEALTH: Record<RepoSummary["status"], number> = {
 
 const GLOBAL_HEALTH_SCORE: Record<GlobalContextProject["health"], number> = {
   healthy: 0.85,
+  attention_needed: 0.45,
   stalled: 0.55,
   failing: 0.3,
   blocked: 0.2,
