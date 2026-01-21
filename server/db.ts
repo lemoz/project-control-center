@@ -168,6 +168,12 @@ export type RunPhaseMetricsSummary = {
   recent_runs: Array<{ wo_id: string; iterations: number; total_seconds: number }>;
 };
 
+export type WorkOrderRunDuration = {
+  work_order_id: string;
+  avg_seconds: number;
+  run_count: number;
+};
+
 export type SettingRow = {
   key: string;
   value: string; // JSON payload
@@ -1734,6 +1740,50 @@ export function getRunPhaseMetricsSummary(
       total_seconds: normalizeCount(row.total_seconds),
     })),
   };
+}
+
+export function getWorkOrderRunDurations(
+  projectId: string,
+  workOrderIds: string[]
+): WorkOrderRunDuration[] {
+  if (!workOrderIds.length) return [];
+  const database = getDb();
+  const placeholders = workOrderIds.map(() => "?").join(", ");
+  const rows = database
+    .prepare(
+      `SELECT r.work_order_id as work_order_id,
+              COUNT(r.id) as run_count,
+              AVG(COALESCE(t.total_seconds, 0)) as avg_seconds
+       FROM runs r
+       LEFT JOIN (
+         SELECT run_id, SUM(duration_seconds) AS total_seconds
+         FROM run_phase_metrics
+         GROUP BY run_id
+       ) t ON t.run_id = r.id
+       WHERE r.project_id = ? AND r.work_order_id IN (${placeholders})
+       GROUP BY r.work_order_id`
+    )
+    .all(projectId, ...workOrderIds) as Array<{
+    work_order_id: string;
+    run_count: number | null;
+    avg_seconds: number | null;
+  }>;
+
+  const normalizeSeconds = (value: number | null): number => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+    return Math.max(0, value);
+  };
+
+  const normalizeCount = (value: number | null): number => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+    return Math.max(0, Math.trunc(value));
+  };
+
+  return rows.map((row) => ({
+    work_order_id: row.work_order_id,
+    avg_seconds: normalizeSeconds(row.avg_seconds),
+    run_count: normalizeCount(row.run_count),
+  }));
 }
 
 export function markWorkOrderRunsMerged(projectId: string, workOrderId: string): number {

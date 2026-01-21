@@ -27,7 +27,7 @@ const DEFAULT_COST_PRICING: ModelPricing[] = [
   },
   {
     id: "gpt-5.2-codex",
-    input_cost_per_1k: 0.03,
+    input_cost_per_1k: 0.015,
     output_cost_per_1k: 0.06,
     match: (model) => model.includes("gpt-5.2-codex"),
   },
