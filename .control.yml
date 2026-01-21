@@ -17,5 +17,6 @@ success_metrics:
     current: 1
   - name: Autonomous run success rate
     target: 80%
-    current: null
+    current: 36%
+    notes: "62 merged / 174 terminal runs (excludes superseded/canceled)"
 
