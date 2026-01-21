@@ -10,7 +10,7 @@ import {
 import { getGlobalBudget } from "./budgeting.js";
 import { syncAndListRepoSummaries } from "./projects_catalog.js";
 import { getRunsForProject } from "./runner_agent.js";
-import { buildShiftContext } from "./shift_context.js";
+import { buildShiftContext, type ShiftContext } from "./shift_context.js";
 
 type EscalationInput = {
   key: string;
@@ -36,11 +36,32 @@ type RoutingEscalationSummary = EscalationSummary & {
   status: EscalationStatus;
 };
 
+export type HealthStatus =
+  | "healthy"
+  | "attention_needed"
+  | "stalled"
+  | "failing"
+  | "blocked";
+
+export type ProjectHealth = {
+  project_id: string;
+  status: HealthStatus;
+  reasons: string[];
+  last_activity: string | null;
+  metrics: {
+    days_since_run: number;
+    recent_failure_rate: number;
+    pending_escalations: number;
+    ready_wo_count: number;
+  };
+};
+
 export type GlobalProjectSummary = {
   id: string;
   name: string;
   status: ProjectRow["status"];
-  health: "healthy" | "stalled" | "failing" | "blocked";
+  health: HealthStatus;
+  health_summary: ProjectHealth;
   active_shift: { id: string; started_at: string; agent_id: string | null } | null;
   escalations: Array<{ id: string; type: string; summary: string }>;
   work_orders: { ready: number; building: number; blocked: number };
@@ -91,6 +112,10 @@ const ROUTING_ESCALATION_STATUSES: EscalationStatus[] = [
   "escalated_to_user",
 ];
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const STALLED_RUN_DAYS = 3;
+const FAILURE_STREAK_THRESHOLD = 3;
+const RECENT_RUN_WINDOW = 10;
+const LONG_RUNNING_SHIFT_HOURS = 2;
 
 function parseEscalationRecord(raw: string | null): EscalationRecord | null {
   if (!raw) return null;
@@ -161,18 +186,143 @@ function selectLatestTimestamp(values: Array<string | null | undefined>): string
   return null;
 }
 
-function resolveHealth(params: {
+function resolveDaysSince(value: string | null, now: Date): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  const diffDays = (now.getTime() - parsed) / MS_PER_DAY;
+  return Math.max(0, diffDays);
+}
+
+function resolveLastRunAt(runs: RunRow[]): string | null {
+  if (!runs.length) return null;
+  const latest = runs[0];
+  return latest.started_at ?? latest.created_at ?? null;
+}
+
+function resolveFailureStreak(runs: RunRow[]): number {
+  let streak = 0;
+  for (const run of runs) {
+    const outcome = resolveRunOutcome(run);
+    if (!outcome) continue;
+    if (outcome === "failed") {
+      streak += 1;
+    } else {
+      break;
+    }
+  }
+  return streak;
+}
+
+function resolveFailureRate(runs: RunRow[], limit: number): number {
+  const outcomes = runs
+    .map((run) => resolveRunOutcome(run))
+    .filter(
+      (outcome): outcome is Exclude<ReturnType<typeof resolveRunOutcome>, null> =>
+        outcome !== null
+    )
+    .slice(0, limit);
+  if (!outcomes.length) return 0;
+  const failures = outcomes.filter((outcome) => outcome === "failed").length;
+  return Math.round((failures / outcomes.length) * 100) / 100;
+}
+
+function resolveShiftAgeHours(
+  activeShift: { started_at: string } | null,
+  now: Date
+): number | null {
+  if (!activeShift) return null;
+  const parsed = Date.parse(activeShift.started_at);
+  if (!Number.isFinite(parsed)) return null;
+  const diffMs = now.getTime() - parsed;
+  return diffMs > 0 ? diffMs / (60 * 60 * 1000) : 0;
+}
+
+function areAllWorkOrdersBlocked(workOrders: ShiftContext["work_orders"]): boolean {
+  const hasAny =
+    workOrders.summary.ready > 0 ||
+    workOrders.summary.backlog > 0 ||
+    workOrders.summary.in_progress > 0 ||
+    workOrders.summary.done > 0 ||
+    workOrders.blocked.length > 0;
+  if (!hasAny) return false;
+  const hasUnblockedBacklog = workOrders.backlog.some((wo) => wo.deps_satisfied);
+  const hasUnblocked =
+    workOrders.summary.ready > 0 || workOrders.summary.in_progress > 0 || hasUnblockedBacklog;
+  return !hasUnblocked && workOrders.blocked.length > 0;
+}
+
+function buildProjectHealth(params: {
+  projectId: string;
   projectStatus: ProjectRow["status"];
-  hasEscalation: boolean;
-  hasFailures: boolean;
-  hasReadyWork: boolean;
-  hasActiveShiftOrRun: boolean;
-}): GlobalProjectSummary["health"] {
-  if (params.projectStatus === "blocked" || params.hasEscalation) return "blocked";
-  if (params.projectStatus === "parked") return "stalled";
-  if (params.hasFailures) return "failing";
-  if (params.hasReadyWork && !params.hasActiveShiftOrRun) return "stalled";
-  return "healthy";
+  workOrders: ShiftContext["work_orders"];
+  runs: RunRow[];
+  pendingEscalations: number;
+  activeShift: { started_at: string } | null;
+  lastActivity: string | null;
+  now: Date;
+}): ProjectHealth {
+  const reasons: string[] = [];
+  const lastRunAt = resolveLastRunAt(params.runs);
+  const daysSinceRunRaw = resolveDaysSince(lastRunAt, params.now);
+  const daysSinceRun =
+    daysSinceRunRaw === null ? -1 : Math.floor(daysSinceRunRaw);
+  const failureStreak = resolveFailureStreak(params.runs);
+  const failureRate = resolveFailureRate(params.runs, RECENT_RUN_WINDOW);
+  const readyCount = params.workOrders.summary.ready;
+  const stalled =
+    readyCount > 0 &&
+    (daysSinceRunRaw === null || daysSinceRunRaw >= STALLED_RUN_DAYS);
+  const allBlocked = areAllWorkOrdersBlocked(params.workOrders);
+  const shiftAgeHours = resolveShiftAgeHours(params.activeShift, params.now);
+  const longRunningShift =
+    shiftAgeHours !== null && shiftAgeHours > LONG_RUNNING_SHIFT_HOURS;
+  const attentionNeeded = params.pendingEscalations > 0 || longRunningShift;
+
+  let status: HealthStatus = "healthy";
+  if (params.projectStatus === "blocked") {
+    status = "blocked";
+    reasons.push("Project status is blocked.");
+  } else if (params.projectStatus === "parked") {
+    status = "stalled";
+    reasons.push("Project is parked.");
+  } else if (failureStreak >= FAILURE_STREAK_THRESHOLD) {
+    status = "failing";
+    reasons.push(`Failure streak: ${failureStreak} consecutive failed runs.`);
+  } else if (stalled) {
+    status = "stalled";
+    if (daysSinceRunRaw === null) {
+      reasons.push(`No runs recorded with ${readyCount} ready WOs.`);
+    } else {
+      reasons.push(
+        `No runs in ${Math.floor(daysSinceRunRaw)} days with ${readyCount} ready WOs.`
+      );
+    }
+  } else if (allBlocked) {
+    status = "blocked";
+    reasons.push("All work orders blocked on dependencies.");
+  } else if (attentionNeeded) {
+    status = "attention_needed";
+    if (params.pendingEscalations > 0) {
+      reasons.push(`Pending escalations: ${params.pendingEscalations}.`);
+    }
+    if (longRunningShift && shiftAgeHours !== null) {
+      reasons.push(`Shift running ${shiftAgeHours.toFixed(1)}h.`);
+    }
+  }
+
+  return {
+    project_id: params.projectId,
+    status,
+    reasons,
+    last_activity: params.lastActivity,
+    metrics: {
+      days_since_run: daysSinceRun,
+      recent_failure_rate: failureRate,
+      pending_escalations: params.pendingEscalations,
+      ready_wo_count: readyCount,
+    },
+  };
 }
 
 function summarizeRunEscalation(run: RunRow): EscalationSummary | null {
@@ -250,30 +400,31 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
       (entry) => entry.status === "escalated_to_user"
     );
     const escalations = runEscalations.concat(routingEscalations);
-    const hasEscalation = escalations.length > 0;
-    const hasFailures = runs.some((run) => RUN_FAILURE_STATUSES.has(run.status));
-    const hasActiveShiftOrRun = Boolean(activeShift) || context.active_runs.length > 0;
-    const health = resolveHealth({
-      projectStatus: project.status,
-      hasEscalation,
-      hasFailures,
-      hasReadyWork: context.work_orders.summary.ready > 0,
-      hasActiveShiftOrRun,
-    });
-    const attentionNeeded =
-      hasEscalation || (health !== "healthy" && project.status !== "parked");
     const lastActivity = selectLatestTimestamp([
       activeShift?.started_at,
       context.last_handoff?.created_at,
       context.last_human_interaction?.timestamp,
       context.recent_runs[0]?.created_at,
     ]);
+    const healthSummary = buildProjectHealth({
+      projectId: context.project.id,
+      projectStatus: project.status,
+      workOrders: context.work_orders,
+      runs,
+      pendingEscalations: escalations.length,
+      activeShift,
+      lastActivity,
+      now,
+    });
+    const health = healthSummary.status;
+    const attentionNeeded = health !== "healthy" && project.status !== "parked";
 
     const projectSummary: GlobalProjectSummary = {
       id: context.project.id,
       name: context.project.name,
       status: project.status,
       health,
+      health_summary: healthSummary,
       active_shift: activeShift
         ? { id: activeShift.id, started_at: activeShift.started_at, agent_id: activeShift.agent_id }
         : null,
