@@ -301,7 +301,7 @@ function buildPrereqInstallScript(): string {
     "fi",
     // Check for missing tools
     "missing=''",
-    "for tool in git rsync node npm python3 docker; do",
+    "for tool in git rsync node npm python3 docker jq; do",
     "  if ! command -v \"$tool\" >/dev/null 2>&1; then",
     "    missing=\"$missing $tool\"",
     "  fi",
@@ -317,7 +317,7 @@ function buildPrereqInstallScript(): string {
     "  sudo -n rm -rf /var/lib/apt/lists/*",
     "  sudo -n apt-get clean",
     "  sudo -n apt-get update -y",
-    "  sudo -n apt-get install -y git rsync python3 docker.io curl ca-certificates gnupg",
+    "  sudo -n apt-get install -y git rsync python3 docker.io curl ca-certificates gnupg jq",
     "  if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then",
     "    sudo -n mkdir -p /etc/apt/keyrings",
     "    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo -n gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg",
@@ -329,10 +329,10 @@ function buildPrereqInstallScript(): string {
     "  npx --yes playwright install-deps chromium || true",
     "  if command -v systemctl >/dev/null 2>&1; then sudo -n systemctl enable --now docker >/dev/null 2>&1 || true; fi",
     "elif command -v yum >/dev/null 2>&1; then",
-    "  sudo -n yum install -y git rsync nodejs npm python3 docker",
+    "  sudo -n yum install -y git rsync nodejs npm python3 docker jq",
     "  if command -v systemctl >/dev/null 2>&1; then sudo -n systemctl enable --now docker >/dev/null 2>&1 || true; fi",
     "elif command -v dnf >/dev/null 2>&1; then",
-    "  sudo -n dnf install -y git rsync nodejs npm python3 docker",
+    "  sudo -n dnf install -y git rsync nodejs npm python3 docker jq",
     "  if command -v systemctl >/dev/null 2>&1; then sudo -n systemctl enable --now docker >/dev/null 2>&1 || true; fi",
     "else",
     "  echo \"Missing tools:$missing. Install git, rsync, node, npm, python3, docker manually.\" >&2",
@@ -437,6 +437,10 @@ async function installVmDependencies(projectId: string): Promise<void> {
   try {
     await remoteExec(projectId, "npm ci", {
       cwd: ".",  // Run in repo root
+      allowVmStatuses: PROVISIONING_ALLOWED_VM_STATUSES,
+    });
+    await remoteExec(projectId, "npx playwright install chromium", {
+      cwd: ".",  // Ensure browsers are available for headless shifts
       allowVmStatuses: PROVISIONING_ALLOWED_VM_STATUSES,
     });
   } catch (err) {
