@@ -218,10 +218,12 @@ export function BudgetPanel({ repoId }: { repoId: string }) {
     }
   }, [projectBudget]);
 
+  const budgetStatus = projectBudget?.budget_status ?? null;
+
   useEffect(() => {
-    if (!projectBudget) return;
+    if (!budgetStatus) return;
     setDismissedAlert(false);
-  }, [projectBudget?.budget_status]);
+  }, [budgetStatus]);
 
   const setTimedNotice = useCallback((message: string) => {
     setNotice(message);

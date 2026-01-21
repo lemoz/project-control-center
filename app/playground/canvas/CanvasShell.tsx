@@ -111,6 +111,11 @@ export function CanvasShell() {
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
 
   const { data, loading, error, refresh, lastUpdated } = useProjectsVisualization();
+  const dataRef = useRef(data);
+
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
 
   const interactionNodes = useMemo<VisualizationNode[]>(() => {
     if (selectedVizId !== "heatmap_grid") return data.nodes;
@@ -120,6 +125,13 @@ export function CanvasShell() {
     return data.nodes;
   }, [data.nodes, data.workOrderNodes, selectedVizId]);
 
+  const combinedNodes = useMemo<VisualizationNode[]>(() => {
+    if (!data.workOrderNodes?.length) return data.nodes;
+    return [...data.nodes, ...data.workOrderNodes];
+  }, [data.nodes, data.workOrderNodes]);
+
+  const nodeDragEnabled = selectedVizId === "force_graph";
+
   const {
     transform,
     setTransform,
@@ -128,7 +140,19 @@ export function CanvasShell() {
     tooltipPosition,
     isPanning,
     handlers,
-  } = useCanvasInteraction({ canvasRef, nodes: interactionNodes });
+  } = useCanvasInteraction({
+    canvasRef,
+    nodes: nodeDragEnabled ? combinedNodes : interactionNodes,
+    onNodeDragStart: nodeDragEnabled
+      ? (node, point) => vizRef.current?.onNodeDragStart?.(node, point)
+      : undefined,
+    onNodeDrag: nodeDragEnabled
+      ? (node, point) => vizRef.current?.onNodeDrag?.(node, point)
+      : undefined,
+    onNodeDragEnd: nodeDragEnabled
+      ? (node) => vizRef.current?.onNodeDragEnd?.(node)
+      : undefined,
+  });
   const transformRef = useRef(transform);
   const selectedRef = useRef(selectedNode);
   const hoveredRef = useRef(hoveredNode);
@@ -149,7 +173,7 @@ export function CanvasShell() {
     const visualization = definition.create();
     vizRef.current?.destroy();
     vizRef.current = visualization;
-    visualization.init(canvas, data);
+    visualization.init(canvas, dataRef.current);
     return () => {
       visualization.destroy();
       if (vizRef.current === visualization) {
@@ -258,13 +282,14 @@ export function CanvasShell() {
         }
         visualization.setSelectedBubbleId?.(null);
       }
-      const clickedNode = findNodeAtPoint(data.nodes, worldPoint);
-      if (clickedNode) {
-        vizRef.current?.onNodeClick?.(clickedNode);
-      }
+      const clickedNode = findNodeAtPoint(
+        nodeDragEnabled ? combinedNodes : interactionNodes,
+        worldPoint
+      );
+      vizRef.current?.onNodeClick?.(clickedNode ?? null);
       setSelectedRun(null);
     },
-    [data.nodes, handlers, transform]
+    [combinedNodes, handlers, interactionNodes, nodeDragEnabled, transform]
   );
 
   const handlePointerLeave = useCallback<PointerEventHandler<HTMLCanvasElement>>(

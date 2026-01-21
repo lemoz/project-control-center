@@ -26,6 +26,9 @@ type DragState = {
   lastX: number;
   lastY: number;
   moved: boolean;
+  mode: "pan" | "node";
+  nodeId?: string;
+  nodeOffset?: { x: number; y: number };
 };
 
 const MIN_SCALE = 0.4;
@@ -51,9 +54,15 @@ function screenToWorld(point: { x: number; y: number }, transform: CanvasTransfo
 export function useCanvasInteraction({
   canvasRef,
   nodes,
+  onNodeDragStart,
+  onNodeDrag,
+  onNodeDragEnd,
 }: {
   canvasRef: React.RefObject<HTMLCanvasElement>;
   nodes: VisualizationNode[];
+  onNodeDragStart?: (node: VisualizationNode, point: { x: number; y: number }) => void;
+  onNodeDrag?: (node: VisualizationNode, point: { x: number; y: number }) => void;
+  onNodeDragEnd?: (node: VisualizationNode) => void;
 }): {
   transform: CanvasTransform;
   setTransform: React.Dispatch<React.SetStateAction<CanvasTransform>>;
@@ -118,6 +127,10 @@ export function useCanvasInteraction({
       if (event.button !== 0) return;
       const canvas = canvasRef.current;
       if (!canvas) return;
+      const point = getCanvasPoint(event, canvas);
+      const worldPoint = screenToWorld(point, transform);
+      const dragNode =
+        onNodeDrag ? findNodeAtPoint(worldPoint) : null;
       canvas.setPointerCapture(event.pointerId);
       dragState.current = {
         pointerId: event.pointerId,
@@ -126,10 +139,28 @@ export function useCanvasInteraction({
         lastX: event.clientX,
         lastY: event.clientY,
         moved: false,
+        mode: dragNode ? "node" : "pan",
+        nodeId: dragNode?.id,
+        nodeOffset:
+          dragNode && dragNode.x !== undefined && dragNode.y !== undefined
+            ? { x: worldPoint.x - dragNode.x, y: worldPoint.y - dragNode.y }
+            : { x: 0, y: 0 },
       };
+      if (dragNode) {
+        const offset =
+          dragNode.x !== undefined && dragNode.y !== undefined
+            ? { x: worldPoint.x - dragNode.x, y: worldPoint.y - dragNode.y }
+            : { x: 0, y: 0 };
+        onNodeDragStart?.(dragNode, {
+          x: worldPoint.x - offset.x,
+          y: worldPoint.y - offset.y,
+        });
+        setHoveredId(dragNode.id);
+        setTooltipPosition(null);
+      }
       setIsPanning(true);
     },
-    [canvasRef]
+    [canvasRef, findNodeAtPoint, onNodeDrag, onNodeDragStart, transform]
   );
 
   const onPointerMove = useCallback<PointerEventHandler<HTMLCanvasElement>>(
@@ -152,6 +183,21 @@ export function useCanvasInteraction({
           activeDrag.moved = true;
         }
 
+        if (activeDrag.mode === "node") {
+          const point = getCanvasPoint(event, canvas);
+          const worldPoint = screenToWorld(point, transform);
+          const node = nodes.find((item) => item.id === activeDrag.nodeId) ?? null;
+          if (node) {
+            const offset = activeDrag.nodeOffset ?? { x: 0, y: 0 };
+            onNodeDrag?.(node, {
+              x: worldPoint.x - offset.x,
+              y: worldPoint.y - offset.y,
+            });
+          }
+          setTooltipPosition(null);
+          return;
+        }
+
         if (activeDrag.moved) {
           setTransform((prev) => ({
             ...prev,
@@ -169,7 +215,7 @@ export function useCanvasInteraction({
       setHoveredId(node?.id ?? null);
       setTooltipPosition(node ? { x: point.x, y: point.y } : null);
     },
-    [canvasRef, findNodeAtPoint, transform]
+    [canvasRef, findNodeAtPoint, nodes, onNodeDrag, transform]
   );
 
   const onPointerUp = useCallback<PointerEventHandler<HTMLCanvasElement>>(
@@ -183,6 +229,15 @@ export function useCanvasInteraction({
       setIsPanning(false);
       canvas.releasePointerCapture(event.pointerId);
 
+      if (activeDrag.mode === "node") {
+        const node = nodes.find((item) => item.id === activeDrag.nodeId) ?? null;
+        if (node) {
+          onNodeDragEnd?.(node);
+          setSelectedId(node.id);
+        }
+        return;
+      }
+
       if (activeDrag.moved) return;
 
       const point = getCanvasPoint(event, canvas);
@@ -190,17 +245,32 @@ export function useCanvasInteraction({
       const node = findNodeAtPoint(worldPoint);
       setSelectedId(node?.id ?? null);
     },
-    [canvasRef, findNodeAtPoint, transform]
+    [canvasRef, findNodeAtPoint, nodes, onNodeDragEnd, transform]
   );
 
   const onPointerLeave = useCallback<PointerEventHandler<HTMLCanvasElement>>(() => {
     setHoveredId(null);
     setTooltipPosition(null);
-    if (dragState.current) {
+    const activeDrag = dragState.current;
+    if (activeDrag) {
+      if (activeDrag.mode === "node") {
+        const node = nodes.find((item) => item.id === activeDrag.nodeId) ?? null;
+        if (node) {
+          onNodeDragEnd?.(node);
+        }
+      }
+      const canvas = canvasRef.current;
+      if (canvas) {
+        try {
+          canvas.releasePointerCapture(activeDrag.pointerId);
+        } catch {
+          // Ignore invalid pointer capture release
+        }
+      }
       dragState.current = null;
       setIsPanning(false);
     }
-  }, []);
+  }, [canvasRef, nodes, onNodeDragEnd]);
 
   const onWheel = useCallback<WheelEventHandler<HTMLCanvasElement>>(
     (event) => {

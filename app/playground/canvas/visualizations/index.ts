@@ -1,5 +1,6 @@
 import type { VisualizationDefinition } from "../types";
 import { ActivityPulseVisualization } from "./ActivityPulseViz";
+import { ForceGraphVisualization } from "./ForceGraphViz";
 import { HeatmapGridVisualization } from "./HeatmapGridViz";
 import { OrbitalGravityVisualization } from "./OrbitalGravityViz";
 import { PlaceholderVisualization } from "./PlaceholderViz";
@@ -11,6 +12,12 @@ export const visualizations: VisualizationDefinition[] = [
     name: "Activity Pulse",
     description: "Activity-driven pulse rings with glow.",
     create: () => new ActivityPulseVisualization(),
+  },
+  {
+    id: "force_graph",
+    name: "Force-Directed Graph",
+    description: "Physics-based layout of projects and work orders.",
+    create: () => new ForceGraphVisualization(),
   },
   {
     id: "heatmap_grid",
