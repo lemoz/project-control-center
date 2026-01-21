@@ -111,6 +111,7 @@ export type CostRecord = {
   category: CostCategory;
   input_tokens: number;
   output_tokens: number;
+  is_actual: number;
   model: string;
   input_cost_per_1k: number;
   output_cost_per_1k: number;
@@ -507,6 +508,7 @@ function initSchema(database: Database.Database) {
       category TEXT NOT NULL,
       input_tokens INTEGER NOT NULL,
       output_tokens INTEGER NOT NULL,
+      is_actual INTEGER NOT NULL DEFAULT 0,
       model TEXT NOT NULL,
       input_cost_per_1k REAL NOT NULL,
       output_cost_per_1k REAL NOT NULL,
@@ -962,6 +964,17 @@ function initSchema(database: Database.Database) {
   }
   if (!hasEscalation) {
     database.exec("ALTER TABLE runs ADD COLUMN escalation TEXT;");
+  }
+
+  const costRecordColumns = database
+    .prepare("PRAGMA table_info(cost_records)")
+    .all() as Array<{ name: string }>;
+  const hasCostActual = costRecordColumns.some((c) => c.name === "is_actual");
+  if (!hasCostActual) {
+    database.exec("ALTER TABLE cost_records ADD COLUMN is_actual INTEGER NOT NULL DEFAULT 0;");
+    database.exec(
+      "UPDATE cost_records SET is_actual = 1 WHERE (input_tokens > 0 OR output_tokens > 0) AND (description IS NULL OR description NOT LIKE '%estimated%');"
+    );
   }
 
   // chat_threads migrations
@@ -1442,9 +1455,9 @@ export function createCostRecord(record: CostRecord): void {
   database
     .prepare(
       `INSERT INTO cost_records
-        (id, project_id, run_id, category, input_tokens, output_tokens, model, input_cost_per_1k, output_cost_per_1k, total_cost_usd, description, created_at)
+        (id, project_id, run_id, category, input_tokens, output_tokens, is_actual, model, input_cost_per_1k, output_cost_per_1k, total_cost_usd, description, created_at)
        VALUES
-        (@id, @project_id, @run_id, @category, @input_tokens, @output_tokens, @model, @input_cost_per_1k, @output_cost_per_1k, @total_cost_usd, @description, @created_at)`
+        (@id, @project_id, @run_id, @category, @input_tokens, @output_tokens, @is_actual, @model, @input_cost_per_1k, @output_cost_per_1k, @total_cost_usd, @description, @created_at)`
     )
     .run(record);
 }
