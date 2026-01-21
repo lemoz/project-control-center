@@ -27,9 +27,9 @@ tags:
   - shift
   - context
 estimate_hours: 2
-status: ready
+status: you_review
 created_at: 2026-01-15
-updated_at: 2026-01-15
+updated_at: 2026-01-21
 depends_on:
   - WO-2026-114
 era: v2

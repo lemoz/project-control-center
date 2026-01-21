@@ -5,15 +5,18 @@ import {
   findProjectById,
   getDb,
   getProjectVm,
+  listTracks,
   listRunsByProject,
   type ProjectVmRow,
   type RunRow,
+  type Track,
 } from "./db.js";
 import { getGlobalBudget, getProjectBudget, type BudgetStatus } from "./budgeting.js";
 import { getConstitutionForProject, selectRelevantConstitutionSections } from "./constitution.js";
 import { getProjectCostHistory, getProjectCostSummary } from "./cost_tracking.js";
 import { resolveRunnerSettingsForRepo } from "./settings.js";
 import { readControlMetadata, type ControlSuccessMetric } from "./sidecar.js";
+import type { TrackContext } from "./types.js";
 import { listWorkOrders, type WorkOrder, type WorkOrderStatus } from "./work_orders.js";
 
 type SuccessMetric = {
@@ -29,6 +32,13 @@ export type WorkOrderSummary = {
   tags: string[];
   depends_on: string[];
   deps_satisfied: boolean;
+  track: WorkOrderTrackSummary | null;
+};
+
+type WorkOrderTrackSummary = {
+  id: string;
+  name: string;
+  goal: string | null;
 };
 
 type HandoffDecision = {
@@ -76,6 +86,7 @@ export type ShiftContext = {
     recent_done: WorkOrderSummary[];
     blocked: WorkOrderSummary[];
   };
+  tracks: TrackContext;
   recent_runs: Array<{
     id: string;
     work_order_id: string;
@@ -164,7 +175,9 @@ export function buildShiftContext(
     meta?.success_metrics ?? safeParseSuccessMetrics(project.success_metrics);
 
   const workOrders = listWorkOrders(project.path);
-  const workOrderState = buildWorkOrderState(workOrders);
+  const tracks = listTracks(project.id);
+  const workOrderState = buildWorkOrderState(workOrders, tracks);
+  const trackContext = assembleTrackContext(tracks, workOrders);
 
   const now = new Date();
   const runHistoryLimit = options.runHistoryLimit ?? DEFAULT_RUN_HISTORY_LIMIT;
@@ -214,6 +227,7 @@ export function buildShiftContext(
       success_metrics: normalizeSuccessMetrics(successMetrics),
     },
     work_orders: workOrderState,
+    tracks: trackContext,
     recent_runs: recentRuns,
     constitution,
     last_handoff: lastHandoff,
@@ -269,7 +283,11 @@ function normalizeSuccessMetric(value: unknown): SuccessMetric | null {
   return { name: record.name, target, current };
 }
 
-function buildWorkOrderState(workOrders: WorkOrder[]): ShiftContext["work_orders"] {
+function buildWorkOrderState(
+  workOrders: WorkOrder[],
+  tracks: Track[]
+): ShiftContext["work_orders"] {
+  const trackIndex = new Map(tracks.map((track) => [track.id, track]));
   const byId = new Map(workOrders.map((wo) => [wo.id, wo]));
 
   const depsSatisfied = (wo: WorkOrder): boolean => {
@@ -284,6 +302,7 @@ function buildWorkOrderState(workOrders: WorkOrder[]): ShiftContext["work_orders
     tags: wo.tags,
     depends_on: wo.depends_on,
     deps_satisfied: depsSatisfied(wo),
+    track: resolveWorkOrderTrack(wo, trackIndex),
   });
 
   const summary = {
@@ -320,8 +339,103 @@ function buildWorkOrderState(workOrders: WorkOrder[]): ShiftContext["work_orders
   return { summary, ready, backlog, recent_done, blocked };
 }
 
+function resolveWorkOrderTrack(
+  workOrder: WorkOrder,
+  trackIndex: Map<string, Track>
+): WorkOrderSummary["track"] {
+  if (!workOrder.trackId) return null;
+  const track = trackIndex.get(workOrder.trackId);
+  if (track) {
+    return { id: track.id, name: track.name, goal: track.goal };
+  }
+  const fallbackName = workOrder.track?.name ?? "";
+  if (fallbackName) {
+    return { id: workOrder.trackId, name: fallbackName, goal: null };
+  }
+  return null;
+}
+
 function isInProgressStatus(status: WorkOrderStatus): boolean {
   return status === "building" || status === "ai_review" || status === "you_review";
+}
+
+export function assembleTrackContext(
+  tracks: Track[],
+  workOrders: WorkOrder[]
+): TrackContext {
+  const summaries = tracks.map((track) => {
+    const trackWos = workOrders.filter((wo) => wo.trackId === track.id);
+    const progress = buildTrackProgress(trackWos);
+    return {
+      id: track.id,
+      name: track.name,
+      goal: track.goal,
+      color: track.color,
+      progress,
+      recentActivity: getRecentActivityDate(trackWos),
+    };
+  });
+
+  return {
+    active: summaries.filter(
+      (summary) => summary.progress.ready > 0 || summary.progress.building > 0
+    ),
+    stalled: summaries.filter(
+      (summary) =>
+        summary.progress.ready === 0 &&
+        summary.progress.building === 0 &&
+        summary.progress.backlog > 0
+    ),
+  };
+}
+
+function buildTrackProgress(workOrders: WorkOrder[]): TrackContext["active"][number]["progress"] {
+  const progress = {
+    done: 0,
+    ready: 0,
+    building: 0,
+    backlog: 0,
+    total: workOrders.length,
+  };
+  for (const wo of workOrders) {
+    if (wo.status === "done") {
+      progress.done += 1;
+      continue;
+    }
+    if (wo.status === "ready") {
+      progress.ready += 1;
+      continue;
+    }
+    if (wo.status === "backlog") {
+      progress.backlog += 1;
+      continue;
+    }
+    if (isInProgressStatus(wo.status)) {
+      progress.building += 1;
+    }
+  }
+  return progress;
+}
+
+function getRecentActivityDate(workOrders: WorkOrder[]): string | null {
+  let bestValue: string | null = null;
+  let bestMs = -Infinity;
+  for (const wo of workOrders) {
+    const value = wo.updated_at;
+    if (!value) continue;
+    const ms = Date.parse(value);
+    if (Number.isFinite(ms)) {
+      if (ms > bestMs) {
+        bestMs = ms;
+        bestValue = value;
+      }
+      continue;
+    }
+    if (!bestValue) {
+      bestValue = value;
+    }
+  }
+  return bestValue;
 }
 
 function buildEconomyContext(params: {

@@ -31,7 +31,12 @@ import {
 } from "./work_orders.js";
 import { generateAndStoreHandoff, type RunOutcome } from "./handoff_generator.js";
 import { resolveRunnerSettingsForRepo } from "./settings.js";
-import { parseCodexTokenUsageFromLog, recordCostEntry } from "./cost_tracking.js";
+import {
+  parseCodexTokenUsageFromLog,
+  recordCostEntry,
+  type TokenUsage,
+  type TokenUsageSource,
+} from "./cost_tracking.js";
 import {
   formatConstitutionBlock,
   getConstitutionForProject,
@@ -116,6 +121,7 @@ const RUNNER_KILL_POLL_MS = 200;
 const MERGE_LOCK_POLL_MS = 2000;
 const MERGE_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const TOKEN_CHARS_PER_TOKEN = 4;
 
 const DENY_BASENAME_PREFIXES = [".env"];
 const DENY_BASENAMES = new Set([
@@ -134,29 +140,65 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function estimateTokenCount(text: string): number {
+  const trimmed = text.trim();
+  if (!trimmed) return 0;
+  return Math.max(1, Math.round(trimmed.length / TOKEN_CHARS_PER_TOKEN));
+}
+
+function estimateUsageFromArtifacts(
+  promptPath?: string,
+  outputPath?: string
+): TokenUsage | null {
+  const promptText = promptPath ? readTextIfExists(promptPath) : "";
+  const outputText = outputPath ? readTextIfExists(outputPath) : "";
+  if (!promptText && !outputText) return null;
+  return {
+    inputTokens: estimateTokenCount(promptText),
+    outputTokens: estimateTokenCount(outputText),
+  };
+}
+
 function recordCostFromCodexLog(params: {
   projectId: string;
   runId: string;
   category: CostCategory;
   model: string;
   logPath: string;
+  promptPath?: string;
+  outputPath?: string;
   description?: string;
   log?: (line: string) => void;
 }): void {
-  const usage = parseCodexTokenUsageFromLog(params.logPath);
+  let usage = parseCodexTokenUsageFromLog(params.logPath);
+  let usageSource: TokenUsageSource = "actual";
+  if (!usage) {
+    const estimated = estimateUsageFromArtifacts(
+      params.promptPath,
+      params.outputPath
+    );
+    if (estimated) {
+      usage = estimated;
+      usageSource = "estimated";
+      params.log?.(
+        `[cost] token usage missing for ${params.description ?? params.category}; falling back to estimation`
+      );
+    } else {
+      usageSource = "missing";
+      params.log?.(
+        `[cost] token usage missing for ${params.description ?? params.category}; no estimation data`
+      );
+    }
+  }
   recordCostEntry({
     projectId: params.projectId,
     runId: params.runId,
     category: params.category,
     model: params.model,
     usage,
+    usageSource,
     description: params.description,
   });
-  if (!usage && params.log) {
-    params.log(
-      `[cost] token usage missing for ${params.description ?? params.category}`
-    );
-  }
 }
 
 type RunPhaseMetricMetadata = Record<string, unknown>;
@@ -3097,7 +3139,8 @@ export async function runRun(runId: string) {
           iterationHistory,
           escalationContext,
         });
-        fs.writeFileSync(path.join(builderDir, "prompt.txt"), builderPrompt, "utf8");
+        const builderPromptPath = path.join(builderDir, "prompt.txt");
+        fs.writeFileSync(builderPromptPath, builderPrompt, "utf8");
 
         const runLocalBuilder = async (): Promise<CodexExecResult> => {
           try {
@@ -3142,6 +3185,8 @@ export async function runRun(runId: string) {
               model: builderModel,
               logPath: builderLogPath,
               description: `builder iteration ${iteration}`,
+              promptPath: builderPromptPath,
+              outputPath: builderOutputPath,
               log,
             });
           }
@@ -3182,7 +3227,7 @@ export async function runRun(runId: string) {
                     "builder",
                     `iter-${iteration}`
                   ),
-                  localPromptPath: path.join(builderDir, "prompt.txt"),
+                  localPromptPath: builderPromptPath,
                   localSchemaPath: builderSchemaPath,
                   localOutputPath: builderOutputPath,
                   localLogPath: builderLogPath,
@@ -3201,6 +3246,8 @@ export async function runRun(runId: string) {
                   model: builderModel,
                   logPath: builderLogPath,
                   description: `builder iteration ${iteration}`,
+                  promptPath: builderPromptPath,
+                  outputPath: builderOutputPath,
                   log,
                 });
               }
@@ -3501,11 +3548,8 @@ export async function runRun(runId: string) {
           : undefined,
         vmTestResults: remoteConfig ? buildVmTestResults(tests) : undefined,
       });
-      fs.writeFileSync(
-        path.join(reviewerDir, "prompt.txt"),
-        reviewerPrompt,
-        "utf8"
-      );
+      const reviewerPromptPath = path.join(reviewerDir, "prompt.txt");
+      fs.writeFileSync(reviewerPromptPath, reviewerPrompt, "utf8");
       fs.copyFileSync(workOrderFilePath, path.join(reviewerDir, "work_order.md"));
       fs.writeFileSync(path.join(reviewerDir, "diff.patch"), diffPatch, "utf8");
 
@@ -3533,6 +3577,8 @@ export async function runRun(runId: string) {
               model: reviewerModel,
               logPath: reviewerLogPath,
               description: `reviewer iteration ${iteration}`,
+              promptPath: reviewerPromptPath,
+              outputPath: reviewerOutputPath,
               log,
             });
           }
@@ -3570,7 +3616,7 @@ export async function runRun(runId: string) {
                 runId,
                 workspacePath: remoteConfig.workspacePath,
                 artifactsDir: remoteReviewerDir,
-                localPromptPath: path.join(reviewerDir, "prompt.txt"),
+                localPromptPath: reviewerPromptPath,
                 localSchemaPath: reviewerSchemaPath,
                 localOutputPath: reviewerOutputPath,
                 localLogPath: reviewerLogPath,
@@ -3590,6 +3636,8 @@ export async function runRun(runId: string) {
                 model: reviewerModel,
                 logPath: reviewerLogPath,
                 description: `reviewer iteration ${iteration}`,
+                promptPath: reviewerPromptPath,
+                outputPath: reviewerOutputPath,
                 log,
               });
             }
@@ -3844,7 +3892,8 @@ export async function runRun(runId: string) {
         conflictFiles,
         gitConflictOutput,
       });
-      fs.writeFileSync(path.join(mergeDir, "prompt.txt"), conflictPrompt, "utf8");
+      const mergePromptPath = path.join(mergeDir, "prompt.txt");
+      fs.writeFileSync(mergePromptPath, conflictPrompt, "utf8");
 
       const mergeBuilderOutputPath = path.join(mergeDir, "result.json");
       const mergeBuilderLogPath = path.join(mergeDir, "codex.log");
@@ -3869,6 +3918,8 @@ export async function runRun(runId: string) {
               model: builderModel,
               logPath: mergeBuilderLogPath,
               description: "merge conflict builder",
+              promptPath: mergePromptPath,
+              outputPath: mergeBuilderOutputPath,
               log,
             });
           }
@@ -3895,7 +3946,7 @@ export async function runRun(runId: string) {
                 runId,
                 workspacePath: remoteConfig.workspacePath,
                 artifactsDir: path.posix.join(remoteConfig.artifactsPath, "merge", "builder"),
-                localPromptPath: path.join(mergeDir, "prompt.txt"),
+                localPromptPath: mergePromptPath,
                 localSchemaPath: builderSchemaPath,
                 localOutputPath: mergeBuilderOutputPath,
                 localLogPath: mergeBuilderLogPath,
@@ -3914,6 +3965,8 @@ export async function runRun(runId: string) {
                 model: builderModel,
                 logPath: mergeBuilderLogPath,
                 description: "merge conflict builder",
+                promptPath: mergePromptPath,
+                outputPath: mergeBuilderOutputPath,
                 log,
               });
             }
@@ -4032,11 +4085,8 @@ export async function runRun(runId: string) {
         vmTestResults:
           remoteConfig && mergeVmTests ? buildVmTestResults(mergeVmTests) : undefined,
       });
-      fs.writeFileSync(
-        path.join(mergeReviewerDir, "prompt.txt"),
-        mergeReviewerPrompt,
-        "utf8"
-      );
+      const mergeReviewerPromptPath = path.join(mergeReviewerDir, "prompt.txt");
+      fs.writeFileSync(mergeReviewerPromptPath, mergeReviewerPrompt, "utf8");
       fs.copyFileSync(
         workOrderFilePath,
         path.join(mergeReviewerDir, "work_order.md")
@@ -4071,6 +4121,8 @@ export async function runRun(runId: string) {
               model: reviewerModel,
               logPath: mergeReviewerLogPath,
               description: "merge reviewer",
+              promptPath: mergeReviewerPromptPath,
+              outputPath: mergeReviewerOutputPath,
               log,
             });
           }
@@ -4106,7 +4158,7 @@ export async function runRun(runId: string) {
                 runId,
                 workspacePath: remoteConfig.workspacePath,
                 artifactsDir: remoteMergeReviewerDir,
-                localPromptPath: path.join(mergeReviewerDir, "prompt.txt"),
+                localPromptPath: mergeReviewerPromptPath,
                 localSchemaPath: reviewerSchemaPath,
                 localOutputPath: mergeReviewerOutputPath,
                 localLogPath: mergeReviewerLogPath,
@@ -4126,6 +4178,8 @@ export async function runRun(runId: string) {
                 model: reviewerModel,
                 logPath: mergeReviewerLogPath,
                 description: "merge reviewer",
+                promptPath: mergeReviewerPromptPath,
+                outputPath: mergeReviewerOutputPath,
                 log,
               });
             }
