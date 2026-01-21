@@ -8,8 +8,10 @@ import {
   findProjectById,
   getActiveShift,
   getRunById,
+  listTracks,
   updateShift,
   type ShiftHandoffDecision,
+  type Track,
 } from "./db.js";
 import {
   extractTokenUsageFromClaudeResponse,
@@ -17,7 +19,9 @@ import {
   recordCostEntry,
 } from "./cost_tracking.js";
 import { resolveUtilitySettings } from "./settings.js";
-import { listWorkOrders } from "./work_orders.js";
+import { assembleTrackContext } from "./shift_context.js";
+import type { TrackContext } from "./types.js";
+import { listWorkOrders, type WorkOrder } from "./work_orders.js";
 
 const execFileAsync = promisify(execFile);
 const CLAUDE_TIMEOUT_MS = 60_000;
@@ -28,6 +32,7 @@ const MAX_PROMPT_LOG_CHARS = 8_000;
 const MAX_PROMPT_DIFF_CHARS = 12_000;
 const MAX_PROMPT_TEST_CHARS = 8_000;
 const MAX_LOG_LINES = 200;
+const MAX_TRACKS_IN_HANDOFF = 5;
 
 export type RunOutcome = "approved" | "merged" | "failed";
 
@@ -35,6 +40,7 @@ export type RunArtifacts = {
   run_id: string;
   work_order_id: string;
   work_order_title: string;
+  work_order_track: WorkOrderTrackContext | null;
   outcome: RunOutcome;
   iterations: number;
   duration_minutes: number;
@@ -46,6 +52,7 @@ export type RunArtifacts = {
   files_changed: string[];
   diff_patch: string;
   error: string | null;
+  track_context: TrackContext | null;
 };
 
 type HandoffContent = {
@@ -61,6 +68,12 @@ type TestResult = {
   command: string;
   passed: boolean;
   output?: string;
+};
+
+type WorkOrderTrackContext = {
+  id: string;
+  name: string;
+  goal: string | null;
 };
 
 function ensureDir(dir: string): void {
@@ -231,6 +244,43 @@ function formatList(items: string[], fallback = "(none)"): string {
   return items.map((item) => `- ${item}`).join("\n");
 }
 
+function formatTrackGoal(goal: string | null): string {
+  const trimmed = goal?.trim() ?? "";
+  return trimmed ? trimmed : "none";
+}
+
+function formatActiveTracks(
+  tracks: TrackContext["active"],
+  limit: number
+): string {
+  if (!tracks.length) return "None.";
+  const shown = tracks.slice(0, limit);
+  const lines = shown.map((track) => {
+    const goal = formatTrackGoal(track.goal);
+    return `- ${track.name} (goal: ${goal}) — ${track.progress.done}/${track.progress.total} complete; ready ${track.progress.ready}; building ${track.progress.building}`;
+  });
+  if (tracks.length > limit) {
+    lines.push(`- ...and ${tracks.length - limit} more active tracks`);
+  }
+  return lines.join("\n");
+}
+
+function formatStalledTracks(
+  tracks: TrackContext["stalled"],
+  limit: number
+): string {
+  if (!tracks.length) return "None.";
+  const shown = tracks.slice(0, limit);
+  const lines = shown.map((track) => {
+    const goal = formatTrackGoal(track.goal);
+    return `- ${track.name} (goal: ${goal}) — ${track.progress.backlog} backlog`;
+  });
+  if (tracks.length > limit) {
+    lines.push(`- ...and ${tracks.length - limit} more stalled tracks`);
+  }
+  return lines.join("\n");
+}
+
 function computeDurationMinutes(
   startedAt: string | null,
   finishedAt: string | null,
@@ -256,6 +306,22 @@ function buildTestDetails(tests: TestResult[]): string {
   return lines.join("\n");
 }
 
+function resolveWorkOrderTrack(
+  workOrder: WorkOrder | undefined,
+  tracks: Track[]
+): WorkOrderTrackContext | null {
+  if (!workOrder?.trackId) return null;
+  const track = tracks.find((entry) => entry.id === workOrder.trackId);
+  if (track) {
+    return { id: track.id, name: track.name, goal: track.goal };
+  }
+  const fallbackName = workOrder.track?.name ?? "";
+  if (fallbackName) {
+    return { id: workOrder.trackId, name: fallbackName, goal: null };
+  }
+  return null;
+}
+
 function gatherRunArtifacts(params: {
   runId: string;
   projectId: string;
@@ -277,6 +343,9 @@ function gatherRunArtifacts(params: {
   const workOrders = listWorkOrders(project.path);
   const workOrder = workOrders.find((wo) => wo.id === run.work_order_id);
   const workOrderTitle = workOrder?.title ?? "(unknown work order)";
+  const tracks = listTracks(project.id);
+  const workOrderTrack = resolveWorkOrderTrack(workOrder, tracks);
+  const trackContext = assembleTrackContext(tracks, workOrders);
 
   const iterations = Math.max(1, run.iteration || 0, run.builder_iteration || 0);
   const builderDir = path.join(run.run_dir, "builder", `iter-${iterations}`);
@@ -324,6 +393,7 @@ function gatherRunArtifacts(params: {
     run_id: run.id,
     work_order_id: run.work_order_id,
     work_order_title: workOrderTitle,
+    work_order_track: workOrderTrack,
     outcome: params.outcome,
     iterations,
     duration_minutes: computeDurationMinutes(
@@ -339,11 +409,13 @@ function gatherRunArtifacts(params: {
     files_changed: filesChanged,
     diff_patch: clampText(diffPatch, MAX_PROMPT_DIFF_CHARS),
     error: run.error ?? null,
+    track_context: trackContext,
   };
 }
 
 function buildHandoffPrompt(artifacts: RunArtifacts): string {
-  const sections = [
+  const sections: string[] = [];
+  sections.push(
     "You are generating a shift handoff for the next agent. Analyze this run and create a structured summary.",
     "",
     "## Run Details",
@@ -351,7 +423,36 @@ function buildHandoffPrompt(artifacts: RunArtifacts): string {
     `- Outcome: ${artifacts.outcome}`,
     `- Iterations: ${artifacts.iterations}`,
     `- Duration: ${artifacts.duration_minutes} minutes`,
-    "",
+    ""
+  );
+
+  const trackContext = artifacts.track_context;
+  const hasTrackContext =
+    Boolean(artifacts.work_order_track) ||
+    (trackContext &&
+      (trackContext.active.length > 0 || trackContext.stalled.length > 0));
+
+  if (hasTrackContext) {
+    sections.push("## Track Context");
+    if (artifacts.work_order_track) {
+      sections.push(
+        `- Work order track: ${artifacts.work_order_track.name} (goal: ${formatTrackGoal(
+          artifacts.work_order_track.goal
+        )})`
+      );
+    }
+    if (trackContext) {
+      sections.push("", "Active tracks (ready or in progress):");
+      sections.push(formatActiveTracks(trackContext.active, MAX_TRACKS_IN_HANDOFF));
+      if (trackContext.stalled.length) {
+        sections.push("", "Stalled tracks (backlog only):");
+        sections.push(formatStalledTracks(trackContext.stalled, MAX_TRACKS_IN_HANDOFF));
+      }
+    }
+    sections.push("");
+  }
+
+  sections.push(
     "## Builder Summary",
     formatTextBlock(artifacts.builder_summary),
     "",
@@ -369,8 +470,8 @@ function buildHandoffPrompt(artifacts: RunArtifacts): string {
     formatList(artifacts.files_changed),
     "",
     "## Diff Patch (truncated)",
-    formatTextBlock(artifacts.diff_patch),
-  ];
+    formatTextBlock(artifacts.diff_patch)
+  );
 
   if (artifacts.error) {
     sections.push("", "## Error", artifacts.error);
@@ -387,6 +488,7 @@ function buildHandoffPrompt(artifacts: RunArtifacts): string {
     "- recommendations: Array of suggested next steps",
     "- blockers: Array of any issues or blockers encountered",
     "- next_priorities: Array of WO IDs or tasks to prioritize next",
+    "- When listing priorities or recommendations, reference relevant track goals and why they matter",
     "",
     "Respond with only valid JSON."
   );

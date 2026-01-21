@@ -5,6 +5,8 @@ const MAX_WORK_ORDER_LINES = 10;
 const MAX_RECENT_RUNS = 8;
 const MAX_ENV_VARS = 12;
 const MAX_ACTIVE_RUNS = 8;
+const MAX_ACTIVE_TRACKS = 5;
+const MAX_STALLED_TRACKS = 5;
 
 function formatTextBlock(value: string, emptyLabel: string): string {
   const trimmed = value.trim();
@@ -37,7 +39,10 @@ function formatWorkOrderList(items: WorkOrderSummary[], limit: number): string {
         : item.deps_satisfied
           ? "deps ok"
           : "deps blocked";
-    return `- [P${item.priority}] ${item.id}: ${item.title} (tags: ${tags}; deps: ${deps}; ${depStatus})`;
+    const track = item.track
+      ? `track: ${item.track.name} (goal: ${formatTrackGoal(item.track.goal)})`
+      : "track: none";
+    return `- [P${item.priority}] ${item.id}: ${item.title} (${track}; tags: ${tags}; deps: ${deps}; ${depStatus})`;
   });
   if (items.length > limit) {
     lines.push(`- ...and ${items.length - limit} more`);
@@ -142,6 +147,43 @@ function formatDays(value: number): string {
   return value.toFixed(1);
 }
 
+function formatTrackGoal(goal: string | null): string {
+  const trimmed = goal?.trim() ?? "";
+  return trimmed ? trimmed : "none";
+}
+
+function formatActiveTracks(
+  tracks: ShiftContext["tracks"]["active"],
+  limit: number
+): string {
+  if (!tracks.length) return "None.";
+  const shown = tracks.slice(0, limit);
+  const lines = shown.map((track) => {
+    const goal = formatTrackGoal(track.goal);
+    return `- ${track.name} (goal: ${goal}) — ${track.progress.done}/${track.progress.total} complete; ready ${track.progress.ready}; building ${track.progress.building}`;
+  });
+  if (tracks.length > limit) {
+    lines.push(`- ...and ${tracks.length - limit} more active tracks`);
+  }
+  return lines.join("\n");
+}
+
+function formatStalledTracks(
+  tracks: ShiftContext["tracks"]["stalled"],
+  limit: number
+): string {
+  if (!tracks.length) return "None.";
+  const shown = tracks.slice(0, limit);
+  const lines = shown.map((track) => {
+    const goal = formatTrackGoal(track.goal);
+    return `- ${track.name} (goal: ${goal}) — ${track.progress.backlog} backlog`;
+  });
+  if (tracks.length > limit) {
+    lines.push(`- ...and ${tracks.length - limit} more stalled tracks`);
+  }
+  return lines.join("\n");
+}
+
 function buildBudgetStatusNote(
   economy: ShiftContext["economy"],
   remainingPct: number | null
@@ -240,6 +282,16 @@ export function buildShiftDecisionPrompt(context: ShiftContext): string {
   lines.push("");
   lines.push("Recently completed:");
   lines.push(formatWorkOrderList(context.work_orders.recent_done, MAX_WORK_ORDER_LINES));
+  lines.push("");
+  lines.push("### Active Tracks");
+  lines.push("Tracks with ready or in-progress work:");
+  lines.push(formatActiveTracks(context.tracks.active, MAX_ACTIVE_TRACKS));
+  lines.push("");
+  lines.push("### Stalled Tracks");
+  lines.push("Tracks with backlog but no active work:");
+  lines.push(formatStalledTracks(context.tracks.stalled, MAX_STALLED_TRACKS));
+  lines.push("");
+  lines.push("Use track goals to justify priority choices in your decision rationale.");
   lines.push("");
   lines.push("### Recent History");
   lines.push(formatRecentRuns(context.recent_runs, MAX_RECENT_RUNS));
