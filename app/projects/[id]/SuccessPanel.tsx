@@ -68,7 +68,7 @@ export function SuccessPanel({ repoId }: { repoId: string }) {
     void load();
   }, [load]);
 
-  const metrics = data?.success_metrics ?? [];
+  const metrics = useMemo(() => data?.success_metrics ?? [], [data?.success_metrics]);
   const criteria = data?.success_criteria?.trim() || "";
 
   const metricProgress = useMemo<MetricProgress[]>(() => {

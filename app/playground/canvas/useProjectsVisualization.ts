@@ -603,12 +603,16 @@ export function useProjectsVisualization(): {
   const data = useMemo<VisualizationData>(() => {
     const nodes: ProjectNode[] = [];
     const workOrderNodes: WorkOrderNode[] = [];
+    const projectEdges: VisualizationData["edges"] = [];
+    const projectWorkOrderEdges: VisualizationData["edges"] = [];
+    const workOrderEdges: VisualizationData["edges"] = [];
     const globalProjects = new Map(
       globalContext?.projects.map((project) => [project.id, project]) ?? []
     );
 
     for (const project of projects) {
       const workOrders = workOrdersByProject[project.id] ?? [];
+      const workOrderNodeIds = new Map<string, string>();
       const runs = runsByProject[project.id] ?? [];
       const shiftContext = shiftContexts[project.id] ?? null;
       const summaryFromList = summarizeWorkOrders(workOrders);
@@ -682,13 +686,15 @@ export function useProjectsVisualization(): {
       });
 
       for (const workOrder of workOrders) {
+        const workOrderNodeId = `${project.id}::${workOrder.id}`;
+        workOrderNodeIds.set(workOrder.id, workOrderNodeId);
         const woLastActivity = parseDate(workOrder.updated_at);
         const woActivityLevel = computeWorkOrderActivityLevel(
           workOrder.status,
           woLastActivity
         );
         workOrderNodes.push({
-          id: `${project.id}::${workOrder.id}`,
+          id: workOrderNodeId,
           type: "work_order",
           workOrderId: workOrder.id,
           label: shortWorkOrderLabel(workOrder.id),
@@ -702,16 +708,39 @@ export function useProjectsVisualization(): {
           activityLevel: woActivityLevel,
           isActive: ACTIVE_WORK_ORDER_STATUSES.has(workOrder.status),
         });
+        projectWorkOrderEdges.push({
+          source: project.id,
+          target: workOrderNodeId,
+          type: "project_link",
+        });
+      }
+
+      for (const workOrder of workOrders) {
+        const workOrderNodeId = workOrderNodeIds.get(workOrder.id);
+        if (!workOrderNodeId) continue;
+        for (const dependency of workOrder.depends_on ?? []) {
+          const dependencyNodeId = workOrderNodeIds.get(dependency);
+          if (!dependencyNodeId) continue;
+          workOrderEdges.push({
+            source: dependencyNodeId,
+            target: workOrderNodeId,
+            type: "depends_on",
+          });
+        }
       }
     }
 
-    const edges = nodes.flatMap((node) =>
-      node.dependsOn.map((dependency) => ({
-        source: dependency,
-        target: node.id,
-        type: "depends_on",
-      }))
-    );
+    for (const node of nodes) {
+      for (const dependency of node.dependsOn) {
+        projectEdges.push({
+          source: dependency,
+          target: node.id,
+          type: "depends_on",
+        });
+      }
+    }
+
+    const edges = [...projectEdges, ...projectWorkOrderEdges, ...workOrderEdges];
 
     return {
       nodes,
