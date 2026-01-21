@@ -10,6 +10,8 @@ export type TokenUsage = {
   outputTokens: number;
 };
 
+export type TokenUsageSource = "actual" | "estimated" | "missing";
+
 export type ProjectCostSummary = {
   project_id: string;
   period: CostPeriod;
@@ -60,10 +62,14 @@ export function recordCostEntry(params: {
   category: CostCategory;
   model: string;
   usage: TokenUsage | null;
+  usageSource?: TokenUsageSource;
   description?: string;
   createdAt?: string;
 }): void {
   const usage = normalizeUsage(params.usage);
+  const usageSource =
+    params.usageSource ?? (params.usage ? "actual" : "missing");
+  const isActual = usageSource === "actual";
   const pricing = resolveModelPricing(params.model);
   const inputCostPer1k = pricing?.input_cost_per_1k ?? 0;
   const outputCostPer1k = pricing?.output_cost_per_1k ?? 0;
@@ -72,7 +78,8 @@ export function recordCostEntry(params: {
     (usage.outputTokens / 1000) * outputCostPer1k;
 
   const notes: string[] = [];
-  if (!params.usage) notes.push("token usage missing");
+  if (usageSource === "missing") notes.push("token usage missing");
+  if (usageSource === "estimated") notes.push("token usage estimated");
   if (!pricing) notes.push("pricing missing for model");
   const description = combineDescription(params.description, notes);
 
@@ -84,6 +91,7 @@ export function recordCostEntry(params: {
       category: params.category,
       input_tokens: usage.inputTokens,
       output_tokens: usage.outputTokens,
+      is_actual: isActual ? 1 : 0,
       model: params.model,
       input_cost_per_1k: inputCostPer1k,
       output_cost_per_1k: outputCostPer1k,

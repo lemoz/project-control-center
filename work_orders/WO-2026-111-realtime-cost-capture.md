@@ -24,9 +24,9 @@ tags:
   - infrastructure
   - integration
 estimate_hours: 4
-status: ready
+status: you_review
 created_at: 2026-01-15
-updated_at: 2026-01-15
+updated_at: 2026-01-21
 depends_on:
   - WO-2026-110
 era: v2
