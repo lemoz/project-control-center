@@ -173,16 +173,18 @@ export function ChatWidget() {
     () => (activeThreadId ? threads.find((thread) => thread.id === activeThreadId) ?? null : null),
     [activeThreadId, threads]
   );
+  const activeThreadKey = activeThread?.id ?? null;
+  const activeThreadName = activeThread?.name ?? "";
 
   useEffect(() => {
-    if (!activeThread) {
+    if (!activeThreadKey) {
       setRenameOpen(false);
       setRenameValue("");
       return;
     }
     setRenameOpen(false);
-    setRenameValue(activeThread.name || "");
-  }, [activeThread?.id]);
+    setRenameValue(activeThreadName);
+  }, [activeThreadKey, activeThreadName]);
 
   useEffect(() => {
     setThreadRefreshToken(null);

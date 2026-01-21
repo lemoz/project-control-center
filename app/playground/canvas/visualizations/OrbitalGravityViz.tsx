@@ -1,4 +1,9 @@
-import type { ProjectNode, Visualization, VisualizationData } from "../types";
+import type {
+  ProjectNode,
+  Visualization,
+  VisualizationData,
+  VisualizationNode,
+} from "../types";
 
 type Zone = {
   name: string;
@@ -210,13 +215,17 @@ export class OrbitalGravityVisualization implements Visualization {
     }
   }
 
-  onNodeClick(node: ProjectNode): void {
+  onNodeClick(node: VisualizationNode | null): void {
+    if (!node || node.type !== "project") {
+      this.focusedId = null;
+      return;
+    }
     this.focusedId = node.id;
     this.focusUntil = performance.now() + FOCUS_DURATION_MS;
   }
 
-  onNodeHover(node: ProjectNode | null): void {
-    this.hoveredId = node?.id ?? null;
+  onNodeHover(node: VisualizationNode | null): void {
+    this.hoveredId = node && node.type === "project" ? node.id : null;
   }
 
   render(): void {

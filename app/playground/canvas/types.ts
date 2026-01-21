@@ -113,8 +113,11 @@ export interface Visualization {
   render(): void;
   destroy(): void;
 
-  onNodeClick?(node: VisualizationNode): void;
+  onNodeClick?(node: VisualizationNode | null): void;
   onNodeHover?(node: VisualizationNode | null): void;
+  onNodeDragStart?(node: VisualizationNode, point: { x: number; y: number }): void;
+  onNodeDrag?(node: VisualizationNode, point: { x: number; y: number }): void;
+  onNodeDragEnd?(node: VisualizationNode): void;
 }
 
 export type VisualizationDefinition = {
