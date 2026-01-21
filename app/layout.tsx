@@ -40,6 +40,7 @@ export default function RootLayout({
               </Suspense>
               <nav style={{ display: "flex", gap: 12, fontSize: 14 }}>
                 <a href="/">Portfolio</a>
+                <a href="/observability">Observability</a>
                 <a href="/chat">Chat</a>
                 <a href="/settings">Settings</a>
               </nav>
