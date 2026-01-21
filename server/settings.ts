@@ -4,6 +4,8 @@ import { readControlMetadata } from "./sidecar.js";
 
 export const PROVIDERS = ["codex", "claude_code", "gemini_cli"] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
+export const UTILITY_PROVIDERS = ["codex", "claude_cli"] as const;
+export type UtilityProviderName = (typeof UTILITY_PROVIDERS)[number];
 
 const DEFAULT_TRUSTED_HOSTS = [
   "github.com",
@@ -22,6 +24,12 @@ const DEFAULT_TRUSTED_HOSTS = [
 
 export type ProviderSettings = {
   provider: ProviderName;
+  model: string;
+  cliPath: string;
+};
+
+export type UtilitySettings = {
+  provider: UtilityProviderName;
   model: string;
   cliPath: string;
 };
@@ -47,6 +55,15 @@ export type RunnerSettingsResponse = {
   };
 };
 
+export type UtilitySettingsResponse = {
+  saved: UtilitySettings;
+  effective: UtilitySettings;
+  env_overrides: {
+    utility_provider?: UtilityProviderName;
+    utility_model?: string;
+  };
+};
+
 export type ChatSettingsResponse = {
   saved: ChatSettings;
   effective: ChatSettings;
@@ -58,9 +75,16 @@ export type ChatSettingsResponse = {
 };
 
 const ProviderNameSchema = z.enum(PROVIDERS);
+const UtilityProviderNameSchema = z.enum(UTILITY_PROVIDERS);
 
 const ProviderSettingsSchema = z.object({
   provider: ProviderNameSchema.default("codex"),
+  model: z.string().default(""),
+  cliPath: z.string().default(""),
+});
+
+const UtilitySettingsSchema = z.object({
+  provider: UtilityProviderNameSchema.default("codex"),
   model: z.string().default(""),
   cliPath: z.string().default(""),
 });
@@ -85,6 +109,14 @@ const RunnerSettingsPatchSchema = z
   })
   .strict();
 
+const UtilitySettingsPatchSchema = z
+  .object({
+    provider: UtilityProviderNameSchema.optional(),
+    model: z.string().optional(),
+    cliPath: z.string().optional(),
+  })
+  .strict();
+
 const SidecarRunnerOverrideSchema = z
   .object({
     builder: ProviderSettingsSchema.partial().optional(),
@@ -96,6 +128,8 @@ const SidecarRunnerOverrideSchema = z
 
 const SETTINGS_KEY = "runner_settings";
 const CHAT_SETTINGS_KEY = "chat_settings";
+const UTILITY_SETTINGS_KEY = "utility_settings";
+const UTILITY_PROVIDER_SET = new Set<string>(UTILITY_PROVIDERS);
 
 function defaults(): RunnerSettings {
   return {
@@ -112,6 +146,14 @@ function chatDefaults(): ChatSettings {
     model: "",
     cliPath: "",
     trusted_hosts: [...DEFAULT_TRUSTED_HOSTS],
+  };
+}
+
+function utilityDefaults(): UtilitySettings {
+  return {
+    provider: "codex",
+    model: "",
+    cliPath: "",
   };
 }
 
@@ -158,6 +200,13 @@ function normalizeChatSettings(value: unknown): ChatSettings {
   return ChatSettingsSchema.parse(merged);
 }
 
+function normalizeUtilitySettings(value: unknown): UtilitySettings {
+  const parsed = UtilitySettingsSchema.safeParse(value ?? {});
+  if (parsed.success) return parsed.data;
+  const merged = { ...utilityDefaults(), ...(typeof value === "object" && value ? value : {}) };
+  return UtilitySettingsSchema.parse(merged);
+}
+
 function loadSavedChatSettings(): ChatSettings {
   const row = getSetting(CHAT_SETTINGS_KEY);
   if (!row) return chatDefaults();
@@ -168,9 +217,25 @@ function loadSavedChatSettings(): ChatSettings {
   }
 }
 
+function loadSavedUtilitySettings(): UtilitySettings {
+  const row = getSetting(UTILITY_SETTINGS_KEY);
+  if (!row) return utilityDefaults();
+  try {
+    return normalizeUtilitySettings(JSON.parse(row.value));
+  } catch {
+    return utilityDefaults();
+  }
+}
+
 function saveChatSettings(settings: ChatSettings): ChatSettings {
   const normalized = normalizeChatSettings(settings);
   setSetting(CHAT_SETTINGS_KEY, JSON.stringify(normalized));
+  return normalized;
+}
+
+function saveUtilitySettings(settings: UtilitySettings): UtilitySettings {
+  const normalized = normalizeUtilitySettings(settings);
+  setSetting(UTILITY_SETTINGS_KEY, JSON.stringify(normalized));
   return normalized;
 }
 
@@ -262,6 +327,32 @@ function applyChatEnvOverrides(settings: ChatSettings): ChatSettingsResponse["en
   };
 }
 
+function applyUtilityEnvOverrides(settings: UtilitySettings): UtilitySettingsResponse["env_overrides"] & {
+  effective: UtilitySettings;
+} {
+  const utility_provider_raw = process.env.CONTROL_CENTER_UTILITY_PROVIDER || "";
+  const providerNormalized = utility_provider_raw.trim().toLowerCase();
+  const utility_provider = UTILITY_PROVIDER_SET.has(providerNormalized)
+    ? (providerNormalized as UtilityProviderName)
+    : undefined;
+  const utility_model_raw = process.env.CONTROL_CENTER_UTILITY_MODEL || "";
+  const utility_model = utility_model_raw.trim() ? utility_model_raw.trim() : undefined;
+
+  const provider = utility_provider ?? settings.provider;
+  const model = utility_model ?? settings.model;
+  const cliPath = settings.cliPath;
+
+  return {
+    utility_provider,
+    utility_model,
+    effective: {
+      provider,
+      model,
+      cliPath,
+    },
+  };
+}
+
 function applySidecarOverrides(repoPath: string, settings: RunnerSettings): RunnerSettings {
   const meta = readControlMetadata(repoPath) as unknown;
   if (!meta || typeof meta !== "object") return settings;
@@ -343,6 +434,39 @@ export function resolveRunnerSettingsForRepo(repoPath: string): RunnerSettingsRe
       max_builder_iterations: env.max_builder_iterations,
     },
   };
+}
+
+export function getUtilitySettingsResponse(): UtilitySettingsResponse {
+  const saved = loadSavedUtilitySettings();
+  const env = applyUtilityEnvOverrides(saved);
+  return {
+    saved,
+    effective: env.effective,
+    env_overrides: {
+      utility_provider: env.utility_provider,
+      utility_model: env.utility_model,
+    },
+  };
+}
+
+export function patchUtilitySettings(input: unknown): UtilitySettingsResponse {
+  const saved = loadSavedUtilitySettings();
+  const patch = UtilitySettingsPatchSchema.parse(input ?? {});
+  const merged = normalizeUtilitySettings({ ...saved, ...patch });
+  const stored = saveUtilitySettings(merged);
+  const env = applyUtilityEnvOverrides(stored);
+  return {
+    saved: stored,
+    effective: env.effective,
+    env_overrides: {
+      utility_provider: env.utility_provider,
+      utility_model: env.utility_model,
+    },
+  };
+}
+
+export function resolveUtilitySettings(): UtilitySettingsResponse {
+  return getUtilitySettingsResponse();
 }
 
 export function getChatSettingsResponse(): ChatSettingsResponse {

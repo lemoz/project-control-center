@@ -1,4 +1,7 @@
-import { execFile } from "child_process";
+import crypto from "crypto";
+import { execFile, spawn } from "child_process";
+import fs from "fs";
+import path from "path";
 import { promisify } from "util";
 import { z } from "zod";
 import {
@@ -9,12 +12,19 @@ import {
 } from "./db.js";
 import { buildWorkOrderGenerationPrompt } from "./prompts/wo_generation.js";
 import { listWorkOrders, readyCheck, type WorkOrder } from "./work_orders.js";
-import { recordCostEntry, extractTokenUsageFromClaudeResponse } from "./cost_tracking.js";
+import {
+  extractTokenUsageFromClaudeResponse,
+  parseCodexTokenUsageFromLog,
+  recordCostEntry,
+} from "./cost_tracking.js";
+import { resolveUtilitySettings } from "./settings.js";
 
 const execFileAsync = promisify(execFile);
 
+const DEFAULT_CODEX_MODEL = "gpt-5.2-codex";
 const CLAUDE_WO_MODEL = "claude-3-5-sonnet-20241022";
 const CLAUDE_TIMEOUT_MS = 60_000;
+const CODEX_TIMEOUT_MS = 60_000;
 const MAX_SIMILAR_WOS = 5;
 const MAX_PROMPT_REFERENCES = 12;
 const MIN_DESCRIPTION_TOKENS = 6;
@@ -62,6 +72,51 @@ const LlmDraftSchema = z.object({
   priority: z.coerce.number().optional(),
   suggestions: z.array(z.string()).optional(),
 });
+
+function ensureDir(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true });
+}
+
+function codexCommand(cliPath?: string): string {
+  return cliPath?.trim() || process.env.CONTROL_CENTER_CODEX_PATH || "codex";
+}
+
+function claudeCommand(cliPath?: string): string {
+  return cliPath?.trim() || process.env.CONTROL_CENTER_CLAUDE_PATH || "claude";
+}
+
+function workOrderDraftSchema(): object {
+  return {
+    type: "object",
+    additionalProperties: true,
+    properties: {
+      title: { type: "string" },
+      goal: { type: "string" },
+      context: { type: "array", items: { type: "string" } },
+      acceptance_criteria: { type: "array", items: { type: "string" } },
+      non_goals: { type: "array", items: { type: "string" } },
+      stop_conditions: { type: "array", items: { type: "string" } },
+      tags: { type: "array", items: { type: "string" } },
+      depends_on: { type: "array", items: { type: "string" } },
+      estimate_hours: { type: "number" },
+      priority: { type: "number" },
+      suggestions: { type: "array", items: { type: "string" } },
+    },
+  };
+}
+
+function ensureWorkOrderSchema(baseDir: string): string {
+  ensureDir(baseDir);
+  const schemaPath = path.join(baseDir, "wo_generation.schema.json");
+  fs.writeFileSync(schemaPath, `${JSON.stringify(workOrderDraftSchema(), null, 2)}\n`, "utf8");
+  return schemaPath;
+}
+
+function writeCodexLog(logPath: string, stdout: string, stderr: string): void {
+  const lines = [stdout, stderr].filter(Boolean).join("\n").trimEnd();
+  if (!lines) return;
+  fs.writeFileSync(logPath, `${lines}\n`, "utf8");
+}
 
 function todayIsoDate(): string {
   return new Date().toISOString().slice(0, 10);
@@ -141,15 +196,13 @@ function parseLlmOutput(text: string): LlmDraft | null {
 async function runClaudePrompt(params: {
   prompt: string;
   projectPath: string;
-  claudePath?: string;
+  model: string;
+  cliPath?: string;
 }): Promise<{ text: string; usage: { inputTokens: number; outputTokens: number } | null }> {
-  const command =
-    params.claudePath?.trim() ||
-    (process.env.CONTROL_CENTER_CLAUDE_PATH || "").trim() ||
-    "claude";
+  const command = claudeCommand(params.cliPath);
   const result = await execFileAsync(
     command,
-    ["-p", params.prompt, "--model", CLAUDE_WO_MODEL, "--output-format", "json"],
+    ["-p", params.prompt, "--model", params.model, "--output-format", "json"],
     {
       cwd: params.projectPath,
       timeout: CLAUDE_TIMEOUT_MS,
@@ -167,6 +220,86 @@ async function runClaudePrompt(params: {
   const usage = extractTokenUsageFromClaudeResponse(parsed);
   const text = extractClaudeText(parsed) ?? stdout;
   return { text, usage };
+}
+
+async function runCodexPrompt(params: {
+  prompt: string;
+  projectPath: string;
+  model: string;
+  cliPath?: string;
+}): Promise<{ text: string; usage: { inputTokens: number; outputTokens: number } | null }> {
+  const baseDir = path.join(params.projectPath, ".system", "utility");
+  ensureDir(baseDir);
+  const schemaPath = ensureWorkOrderSchema(baseDir);
+  const id = crypto.randomUUID();
+  const outputPath = path.join(baseDir, `wo-generation-${id}.output.txt`);
+  const logPath = path.join(baseDir, `wo-generation-${id}.codex.jsonl`);
+  const args = [
+    "--ask-for-approval",
+    "never",
+    "exec",
+    "--json",
+    "--model",
+    params.model,
+    "--sandbox",
+    "read-only",
+    "--output-schema",
+    schemaPath,
+    "--output-last-message",
+    outputPath,
+    "--color",
+    "never",
+    "-",
+  ];
+
+  const child = spawn(codexCommand(params.cliPath), args, {
+    cwd: params.projectPath,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env },
+  });
+
+  let stdout = "";
+  let stderr = "";
+  let timedOut = false;
+
+  child.stdout?.on("data", (buf) => {
+    stdout += buf.toString("utf8");
+  });
+  child.stderr?.on("data", (buf) => {
+    stderr += buf.toString("utf8");
+  });
+  child.stdin?.write(params.prompt);
+  child.stdin?.end();
+
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    child.kill("SIGTERM");
+  }, CODEX_TIMEOUT_MS);
+
+  let exitCode: number;
+  try {
+    exitCode = await new Promise((resolve, reject) => {
+      child.on("close", (code) => resolve(code ?? 1));
+      child.on("error", (err) => reject(err));
+    });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    writeCodexLog(logPath, stdout, stderr);
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+  clearTimeout(timeoutId);
+
+  writeCodexLog(logPath, stdout, stderr);
+  if (timedOut) {
+    throw new Error("codex exec timed out");
+  }
+  if (exitCode !== 0) {
+    throw new Error(`codex exec failed (exit ${exitCode})`);
+  }
+  const output = fs.readFileSync(outputPath, "utf8").trim();
+  if (!output) throw new Error("Codex CLI returned empty output");
+  const usage = parseCodexTokenUsageFromLog(logPath);
+  return { text: output, usage };
 }
 
 function extractClaudeText(value: unknown): string | null {
@@ -407,7 +540,6 @@ export async function generateWorkOrderDraft(params: {
   description: string;
   type?: WorkOrderGenerationType;
   priority?: number | null;
-  claudePath?: string;
 }): Promise<GeneratedWO> {
   const description = params.description.trim();
   const workOrders = listWorkOrders(params.project.path);
@@ -439,18 +571,34 @@ export async function generateWorkOrderDraft(params: {
   let llmUsed = false;
   let llmError: string | null = null;
   let usage: { inputTokens: number; outputTokens: number } | null = null;
+  let model = CLAUDE_WO_MODEL;
+  const settings = resolveUtilitySettings().effective;
 
   try {
-    const result = await runClaudePrompt({
-      prompt,
-      projectPath: params.project.path,
-      claudePath: params.claudePath,
-    });
-    usage = result.usage;
-    llmDraft = parseLlmOutput(result.text);
+    if (settings.provider === "codex") {
+      model = settings.model.trim() || DEFAULT_CODEX_MODEL;
+      const result = await runCodexPrompt({
+        prompt,
+        projectPath: params.project.path,
+        model,
+        cliPath: settings.cliPath,
+      });
+      usage = result.usage;
+      llmDraft = parseLlmOutput(result.text);
+    } else {
+      model = settings.model.trim() || CLAUDE_WO_MODEL;
+      const result = await runClaudePrompt({
+        prompt,
+        projectPath: params.project.path,
+        model,
+        cliPath: settings.cliPath,
+      });
+      usage = result.usage;
+      llmDraft = parseLlmOutput(result.text);
+    }
     llmUsed = llmDraft !== null;
     if (!llmDraft) {
-      llmError = "Claude response did not match expected JSON.";
+      llmError = "Utility provider response did not match expected JSON.";
     }
   } catch (err) {
     llmError = err instanceof Error ? err.message : String(err);
@@ -459,7 +607,7 @@ export async function generateWorkOrderDraft(params: {
   recordCostEntry({
     projectId: params.project.id,
     category: "other",
-    model: CLAUDE_WO_MODEL,
+    model,
     usage,
     description: "work order generation",
   });
@@ -548,7 +696,7 @@ export async function generateWorkOrderDraft(params: {
     suggestionsSet.add("Add more detail about scope, success criteria, and exclusions.");
   }
   if (llmError) {
-    suggestionsSet.add("Claude generation failed; provide more detail or retry.");
+    suggestionsSet.add("Utility generation failed; provide more detail or retry.");
   }
 
   const suggestions = Array.from(suggestionsSet);

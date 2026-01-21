@@ -74,8 +74,10 @@ import { generateWorkOrderDraft } from "./wo_generation.js";
 import {
   getChatSettingsResponse,
   getRunnerSettingsResponse,
+  getUtilitySettingsResponse,
   patchChatSettings,
   patchRunnerSettings,
+  patchUtilitySettings,
 } from "./settings.js";
 import {
   type ConstitutionInsightCategory,
@@ -292,6 +294,21 @@ app.patch("/settings", (req, res) => {
   } catch (err) {
     return res.status(400).json({
       error: err instanceof Error ? err.message : "invalid settings",
+    });
+  }
+});
+
+app.get("/settings/utility", (_req, res) => {
+  return res.json(getUtilitySettingsResponse());
+});
+
+app.patch("/settings/utility", (req, res) => {
+  try {
+    const updated = patchUtilitySettings(req.body ?? {});
+    return res.json(updated);
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "invalid utility settings",
     });
   }
 });

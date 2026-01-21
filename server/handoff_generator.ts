@@ -1,4 +1,5 @@
-import { execFile } from "child_process";
+import crypto from "crypto";
+import { execFile, spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { promisify } from "util";
@@ -10,12 +11,19 @@ import {
   updateShift,
   type ShiftHandoffDecision,
 } from "./db.js";
-import { extractTokenUsageFromClaudeResponse, recordCostEntry } from "./cost_tracking.js";
+import {
+  extractTokenUsageFromClaudeResponse,
+  parseCodexTokenUsageFromLog,
+  recordCostEntry,
+} from "./cost_tracking.js";
+import { resolveUtilitySettings } from "./settings.js";
 import { listWorkOrders } from "./work_orders.js";
 
 const execFileAsync = promisify(execFile);
 const CLAUDE_TIMEOUT_MS = 60_000;
 const CLAUDE_HANDOFF_MODEL = "claude-3-5-sonnet-20241022";
+const DEFAULT_CODEX_MODEL = "gpt-5.2-codex";
+const CODEX_TIMEOUT_MS = 60_000;
 const MAX_PROMPT_LOG_CHARS = 8_000;
 const MAX_PROMPT_DIFF_CHARS = 12_000;
 const MAX_PROMPT_TEST_CHARS = 8_000;
@@ -55,6 +63,56 @@ type TestResult = {
   output?: string;
 };
 
+function ensureDir(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true });
+}
+
+function codexCommand(cliPath?: string): string {
+  return cliPath?.trim() || process.env.CONTROL_CENTER_CODEX_PATH || "codex";
+}
+
+function claudeCommand(cliPath?: string): string {
+  return cliPath?.trim() || process.env.CONTROL_CENTER_CLAUDE_PATH || "claude";
+}
+
+function handoffJsonSchema(): object {
+  return {
+    type: "object",
+    additionalProperties: true,
+    properties: {
+      summary: { type: "string" },
+      work_completed: { type: "array", items: { type: "string" } },
+      decisions_made: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: true,
+          properties: {
+            decision: { type: "string" },
+            rationale: { type: "string" },
+          },
+        },
+      },
+      recommendations: { type: "array", items: { type: "string" } },
+      blockers: { type: "array", items: { type: "string" } },
+      next_priorities: { type: "array", items: { type: "string" } },
+    },
+  };
+}
+
+function ensureHandoffSchema(baseDir: string): string {
+  ensureDir(baseDir);
+  const schemaPath = path.join(baseDir, "handoff.schema.json");
+  fs.writeFileSync(schemaPath, `${JSON.stringify(handoffJsonSchema(), null, 2)}\n`, "utf8");
+  return schemaPath;
+}
+
+function writeCodexLog(logPath: string, stdout: string, stderr: string): void {
+  const lines = [stdout, stderr].filter(Boolean).join("\n").trimEnd();
+  if (!lines) return;
+  fs.writeFileSync(logPath, `${lines}\n`, "utf8");
+}
+
 function readTextIfExists(filePath: string): string {
   try {
     return fs.readFileSync(filePath, "utf8");
@@ -76,6 +134,55 @@ function normalizeStringArray(value: unknown): string[] {
   return value
     .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
     .filter(Boolean);
+}
+
+function extractJsonCandidate(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const fencedJson = trimmed.match(/```json\s*([\s\S]*?)```/i);
+  if (fencedJson && fencedJson[1]) return fencedJson[1].trim();
+  const fenced = trimmed.match(/```\s*([\s\S]*?)```/);
+  if (fenced && fenced[1]) return fenced[1].trim();
+  const first = trimmed.indexOf("{");
+  const last = trimmed.lastIndexOf("}");
+  if (first === -1 || last === -1 || last <= first) return null;
+  return trimmed.slice(first, last + 1);
+}
+
+function parseHandoffOutput(text: string): unknown | null {
+  const candidate = extractJsonCandidate(text);
+  if (!candidate) return null;
+  try {
+    return JSON.parse(candidate) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function extractClaudeText(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === "string") return record.text;
+  const content = record.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const item of content) {
+      if (typeof item === "string") {
+        parts.push(item);
+        continue;
+      }
+      if (item && typeof item === "object") {
+        const text = (item as Record<string, unknown>).text;
+        if (typeof text === "string") {
+          parts.push(text);
+        }
+      }
+    }
+    const combined = parts.join("");
+    return combined.trim() ? combined : null;
+  }
+  return null;
 }
 
 function normalizeDecisionArray(value: unknown): ShiftHandoffDecision[] {
@@ -330,22 +437,106 @@ function normalizeHandoffContent(
 async function generateHandoff(params: {
   prompt: string;
   projectPath: string;
-}): Promise<{ content: unknown; usage: { inputTokens: number; outputTokens: number } | null }> {
+  model: string;
+  cliPath?: string;
+}): Promise<{ text: string; usage: { inputTokens: number; outputTokens: number } | null }> {
   const result = await execFileAsync(
-    "claude",
-    ["-p", params.prompt, "--model", CLAUDE_HANDOFF_MODEL, "--output-format", "json"],
+    claudeCommand(params.cliPath),
+    ["-p", params.prompt, "--model", params.model, "--output-format", "json"],
     {
       cwd: params.projectPath,
       timeout: CLAUDE_TIMEOUT_MS,
       maxBuffer: 5 * 1024 * 1024,
     }
   );
-  const stdout = result.stdout.trim();
+  const stdout = typeof result.stdout === "string" ? result.stdout.trim() : "";
   if (!stdout) {
     throw new Error("Claude CLI returned empty output");
   }
   const parsed = JSON.parse(stdout) as unknown;
-  return { content: parsed, usage: extractTokenUsageFromClaudeResponse(parsed) };
+  const usage = extractTokenUsageFromClaudeResponse(parsed);
+  const text = extractClaudeText(parsed) ?? stdout;
+  return { text, usage };
+}
+
+async function runCodexPrompt(params: {
+  prompt: string;
+  projectPath: string;
+  model: string;
+  cliPath?: string;
+}): Promise<{ text: string; usage: { inputTokens: number; outputTokens: number } | null }> {
+  const baseDir = path.join(params.projectPath, ".system", "utility");
+  ensureDir(baseDir);
+  const schemaPath = ensureHandoffSchema(baseDir);
+  const id = crypto.randomUUID();
+  const outputPath = path.join(baseDir, `handoff-${id}.output.txt`);
+  const logPath = path.join(baseDir, `handoff-${id}.codex.jsonl`);
+  const args = [
+    "--ask-for-approval",
+    "never",
+    "exec",
+    "--json",
+    "--model",
+    params.model,
+    "--sandbox",
+    "read-only",
+    "--output-schema",
+    schemaPath,
+    "--output-last-message",
+    outputPath,
+    "--color",
+    "never",
+    "-",
+  ];
+
+  const child = spawn(codexCommand(params.cliPath), args, {
+    cwd: params.projectPath,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env },
+  });
+
+  let stdout = "";
+  let stderr = "";
+  let timedOut = false;
+
+  child.stdout?.on("data", (buf) => {
+    stdout += buf.toString("utf8");
+  });
+  child.stderr?.on("data", (buf) => {
+    stderr += buf.toString("utf8");
+  });
+  child.stdin?.write(params.prompt);
+  child.stdin?.end();
+
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    child.kill("SIGTERM");
+  }, CODEX_TIMEOUT_MS);
+
+  let exitCode: number;
+  try {
+    exitCode = await new Promise((resolve, reject) => {
+      child.on("close", (code) => resolve(code ?? 1));
+      child.on("error", (err) => reject(err));
+    });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    writeCodexLog(logPath, stdout, stderr);
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+  clearTimeout(timeoutId);
+
+  writeCodexLog(logPath, stdout, stderr);
+  if (timedOut) {
+    throw new Error("codex exec timed out");
+  }
+  if (exitCode !== 0) {
+    throw new Error(`codex exec failed (exit ${exitCode})`);
+  }
+  const output = fs.readFileSync(outputPath, "utf8").trim();
+  if (!output) throw new Error("Codex CLI returned empty output");
+  const usage = parseCodexTokenUsageFromLog(logPath);
+  return { text: output, usage };
 }
 
 export async function generateAndStoreHandoff(params: {
@@ -370,24 +561,47 @@ export async function generateAndStoreHandoff(params: {
       return;
     }
 
+    const settings = resolveUtilitySettings().effective;
     const fallback = fallbackHandoff(artifacts);
     let handoffContent = fallback;
     let handoffUsage: { inputTokens: number; outputTokens: number } | null = null;
+    let model = CLAUDE_HANDOFF_MODEL;
 
     try {
       const prompt = buildHandoffPrompt(artifacts);
-      const result = await generateHandoff({ prompt, projectPath: project.path });
-      handoffUsage = result.usage;
-      handoffContent = normalizeHandoffContent(result.content, fallback);
+      let text = "";
+      if (settings.provider === "codex") {
+        model = settings.model.trim() || DEFAULT_CODEX_MODEL;
+        const result = await runCodexPrompt({
+          prompt,
+          projectPath: project.path,
+          model,
+          cliPath: settings.cliPath,
+        });
+        handoffUsage = result.usage;
+        text = result.text;
+      } else {
+        model = settings.model.trim() || CLAUDE_HANDOFF_MODEL;
+        const result = await generateHandoff({
+          prompt,
+          projectPath: project.path,
+          model,
+          cliPath: settings.cliPath,
+        });
+        handoffUsage = result.usage;
+        text = result.text;
+      }
+      const parsed = parseHandoffOutput(text);
+      handoffContent = normalizeHandoffContent(parsed, fallback);
     } catch (err) {
-      log(`handoff: Claude CLI failed, using fallback: ${String(err)}`);
+      log(`handoff: ${settings.provider} failed, using fallback: ${String(err)}`);
       handoffContent = fallback;
     }
     recordCostEntry({
       projectId: params.projectId,
       runId: params.runId,
       category: "handoff",
-      model: CLAUDE_HANDOFF_MODEL,
+      model,
       usage: handoffUsage,
       description: "handoff generation",
     });
