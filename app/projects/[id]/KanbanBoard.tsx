@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import {
+  BudgetRunBlockedCard,
+  isBudgetRunBlockedDetails,
+  type BudgetRunBlockedDetails,
+} from "../../components/BudgetRunBlockedCard";
 
 type WorkOrderStatus =
   | "backlog"
@@ -92,6 +97,8 @@ export function KanbanBoard({ repoId }: { repoId: string }) {
   const [runs, setRuns] = useState<Run[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [blockedDetails, setBlockedDetails] = useState<BudgetRunBlockedDetails | null>(null);
+  const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
   const [pendingIds, setPendingIds] = useState<Record<string, boolean>>({});
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
@@ -253,14 +260,27 @@ export function KanbanBoard({ repoId }: { repoId: string }) {
     async (workOrderId: string) => {
       setStartingRunForId(workOrderId);
       setError(null);
+      setBlockedDetails(null);
+      setBlockedMessage(null);
       try {
         const res = await fetch(
           `/api/repos/${encodeURIComponent(repoId)}/work-orders/${encodeURIComponent(workOrderId)}/runs`,
           { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
         );
-        const json = (await res.json().catch(() => null)) as Run | { error?: string } | null;
+        const json = (await res.json().catch(() => null)) as
+          | Run
+          | { error?: string; details?: unknown }
+          | null;
         if (!res.ok) {
-          throw new Error((json as { error?: string } | null)?.error || "failed to start run");
+          const message =
+            (json as { error?: string } | null)?.error || "failed to start run";
+          const details = (json as { details?: unknown } | null)?.details;
+          if (details && isBudgetRunBlockedDetails(details)) {
+            setBlockedDetails(details);
+            setBlockedMessage(message);
+            return;
+          }
+          throw new Error(message);
         }
         const run = json as Run;
         setRuns((prev) => [run, ...prev]);
@@ -325,6 +345,16 @@ export function KanbanBoard({ repoId }: { repoId: string }) {
         {!!error && (
           <div className="error" style={{ marginTop: 10 }}>
             {error}
+          </div>
+        )}
+        {blockedDetails && (
+          <div style={{ marginTop: 10 }}>
+            <BudgetRunBlockedCard
+              message={blockedMessage}
+              details={blockedDetails}
+              projectId={repoId}
+              budgetHref="#budget-transfer"
+            />
           </div>
         )}
         {loading && (

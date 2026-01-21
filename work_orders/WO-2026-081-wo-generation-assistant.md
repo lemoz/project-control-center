@@ -23,7 +23,7 @@ tags:
   - global-agent
   - tooling
 estimate_hours: 3
-status: you_review
+status: done
 created_at: 2026-01-12
 updated_at: 2026-01-21
 depends_on:

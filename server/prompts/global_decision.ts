@@ -45,7 +45,10 @@ function formatProjectsOverview(params: {
 }): string {
   if (!params.projects.length) return "None.";
   const lines = params.projects.map((project) => {
-    return `- ${project.name} (${project.id}): ${project.health} | ${project.work_orders.ready} ready WOs | ${project.escalations.length} escalations`;
+    const budget = project.budget
+      ? `budget ${project.budget.status} ${formatUsd(project.budget.remaining_usd)}`
+      : "budget n/a";
+    return `- ${project.name} (${project.id}): ${project.health} | ${budget} | ${project.work_orders.ready} ready WOs | ${project.escalations.length} escalations`;
   });
   if (params.omitted > 0) {
     lines.push(`- ...and ${params.omitted} more projects`);
@@ -94,6 +97,26 @@ function formatRecentActivity(context: GlobalContextResponse, limit: number): st
     lines.push(`- ...and ${withActivity.length - limit} more`);
   }
   return lines.join("\n");
+}
+
+function formatBudgetBlocks(projects: GlobalProjectSummary[]): string {
+  const blocked = projects.filter(
+    (project) =>
+      project.budget &&
+      (project.budget.status === "critical" || project.budget.status === "exhausted")
+  );
+  if (!blocked.length) return "None.";
+  return blocked
+    .map((project) => {
+      const budget = project.budget;
+      if (!budget) {
+        return `- ${project.name} (${project.id}): budget data unavailable`;
+      }
+      return `- ${project.name} (${project.id}): ${budget.status.toUpperCase()} ${formatUsd(
+        budget.remaining_usd
+      )} remaining, runway ${formatDays(budget.runway_days)} days`;
+    })
+    .join("\n");
 }
 
 function formatUsd(value: number): string {
@@ -159,6 +182,9 @@ export function buildGlobalDecisionPrompt(
   lines.push("");
   lines.push("## Projects Overview");
   lines.push(formatProjectsOverview({ projects: selected.selected, omitted: selected.omitted }));
+  lines.push("");
+  lines.push("## Budget Blocks");
+  lines.push(formatBudgetBlocks(selected.selected));
   lines.push("");
   lines.push("## Portfolio Economy");
   lines.push(formatPortfolioEconomy(context));

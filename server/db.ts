@@ -119,7 +119,15 @@ export type CostRecord = {
   created_at: string;
 };
 
-export type EscalationType = "need_input" | "blocked" | "decision_required" | "error";
+export type EscalationType =
+  | "need_input"
+  | "blocked"
+  | "decision_required"
+  | "error"
+  | "budget_warning"
+  | "budget_critical"
+  | "budget_exhausted"
+  | "run_blocked";
 
 export type EscalationStatus = "pending" | "claimed" | "resolved" | "escalated_to_user";
 
@@ -136,6 +144,21 @@ export type EscalationRow = {
   resolution: string | null;
   created_at: string;
   resolved_at: string | null;
+};
+
+export type BudgetEnforcementEventType =
+  | "run_blocked"
+  | "warning"
+  | "critical"
+  | "exhausted"
+  | "survival_used";
+
+export type BudgetEnforcementLogRow = {
+  id: string;
+  project_id: string;
+  event_type: BudgetEnforcementEventType;
+  details: string | null;
+  created_at: string;
 };
 
 export type RunPhaseMetricPhase = "setup" | "builder" | "test" | "reviewer" | "merge";
@@ -511,6 +534,18 @@ function initSchema(database: Database.Database) {
       updated_at TEXT NOT NULL,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS budget_enforcement_log (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      details TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_budget_enforcement_project_created
+      ON budget_enforcement_log(project_id, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS escalations (
       id TEXT PRIMARY KEY,
@@ -1251,6 +1286,15 @@ export function setProjectHidden(id: string, hidden: boolean): boolean {
   return result.changes > 0;
 }
 
+export function updateProjectStatus(id: string, status: ProjectRow["status"]): ProjectRow | null {
+  const database = getDb();
+  const now = new Date().toISOString();
+  database
+    .prepare("UPDATE projects SET status = ?, updated_at = ? WHERE id = ?")
+    .run(status, now, id);
+  return findProjectById(id);
+}
+
 export function updateProjectIsolationSettings(
   id: string,
   patch: Partial<Pick<ProjectRow, "isolation_mode" | "vm_size">>
@@ -1503,6 +1547,65 @@ export function getMergeLock(projectId: string): MergeLockRow | null {
     .prepare("SELECT * FROM merge_locks WHERE project_id = ? LIMIT 1")
     .get(projectId) as MergeLockRow | undefined;
   return row || null;
+}
+
+export function createBudgetEnforcementLog(input: {
+  project_id: string;
+  event_type: BudgetEnforcementEventType;
+  details?: string | null;
+  created_at?: string;
+}): BudgetEnforcementLogRow {
+  const database = getDb();
+  const row: BudgetEnforcementLogRow = {
+    id: crypto.randomUUID(),
+    project_id: input.project_id,
+    event_type: input.event_type,
+    details: input.details ?? null,
+    created_at: input.created_at ?? new Date().toISOString(),
+  };
+  database
+    .prepare(
+      `INSERT INTO budget_enforcement_log
+        (id, project_id, event_type, details, created_at)
+       VALUES
+        (@id, @project_id, @event_type, @details, @created_at)`
+    )
+    .run(row);
+  return row;
+}
+
+export function listBudgetEnforcementLog(projectId: string, limit = 50): BudgetEnforcementLogRow[] {
+  const database = getDb();
+  const safeLimit =
+    Number.isFinite(limit) && limit > 0 ? Math.min(200, Math.trunc(limit)) : 50;
+  return database
+    .prepare(
+      `SELECT id, project_id, event_type, details, created_at
+       FROM budget_enforcement_log
+       WHERE project_id = ?
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .all(projectId, safeLimit) as BudgetEnforcementLogRow[];
+}
+
+export function hasBudgetEnforcementEvent(params: {
+  projectId: string;
+  eventType: BudgetEnforcementEventType;
+  since: string;
+}): boolean {
+  const database = getDb();
+  const row = database
+    .prepare(
+      `SELECT 1
+       FROM budget_enforcement_log
+       WHERE project_id = ?
+         AND event_type = ?
+         AND created_at >= ?
+       LIMIT 1`
+    )
+    .get(params.projectId, params.eventType, params.since) as { "1"?: number } | undefined;
+  return Boolean(row);
 }
 
 export type EscalationQuery = {

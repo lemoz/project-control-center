@@ -47,6 +47,13 @@ type GlobalContextProject = {
   name: string;
   status: "active" | "blocked" | "parked";
   health: "healthy" | "attention_needed" | "stalled" | "failing" | "blocked";
+  budget?: {
+    status: "healthy" | "warning" | "critical" | "exhausted";
+    remaining_usd: number;
+    allocation_usd: number;
+    daily_drip_usd: number;
+    runway_days: number;
+  };
   active_shift: { id: string; started_at: string; agent_id: string | null } | null;
   escalations: Array<{ id: string; type: string; summary: string }>;
   work_orders: { ready: number; building: number; blocked: number };

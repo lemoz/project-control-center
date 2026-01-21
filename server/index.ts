@@ -39,6 +39,7 @@ import {
   createTrack,
   deleteTrack,
   getTrackById,
+  listBudgetEnforcementLog,
   type CreateGlobalShiftHandoffInput,
   type CreateShiftHandoffInput,
   type EscalationStatus,
@@ -116,6 +117,7 @@ import {
   setProjectBudget,
   transferProjectBudget,
 } from "./budgeting.js";
+import { BudgetEnforcementError, syncProjectBudgetAlerts } from "./budget_enforcement.js";
 import {
   enqueueChatTurn,
   enqueueChatTurnForThread,
@@ -157,6 +159,10 @@ const ESCALATION_TYPES: EscalationType[] = [
   "blocked",
   "decision_required",
   "error",
+  "budget_warning",
+  "budget_critical",
+  "budget_exhausted",
+  "run_blocked",
 ];
 const ESCALATION_STATUSES: EscalationStatus[] = [
   "pending",
@@ -548,7 +554,14 @@ app.get("/projects/:id/budget", (req, res) => {
   const { id } = req.params;
   const project = findProjectById(id);
   if (!project) return res.status(404).json({ error: "project not found" });
-  return res.json(getProjectBudget(project.id));
+  const budget = getProjectBudget(project.id);
+  syncProjectBudgetAlerts({
+    projectId: project.id,
+    projectName: project.name,
+    projectPath: project.path,
+    projectBudget: budget,
+  });
+  return res.json(budget);
 });
 
 app.put("/projects/:id/budget", (req, res) => {
@@ -594,6 +607,17 @@ app.post("/projects/:id/budget/transfer", (req, res) => {
       error: err instanceof Error ? err.message : "failed to transfer budget",
     });
   }
+});
+
+app.get("/projects/:id/budget/enforcement", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit =
+    Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(200, Math.trunc(limitRaw)) : 50;
+  const events = listBudgetEnforcementLog(project.id, limit);
+  return res.json({ events });
 });
 
 function normalizeStringArrayField(value: unknown): string[] | undefined {
@@ -885,7 +909,8 @@ function parseEscalationCreateInput(
   if (!rawType || !ESCALATION_TYPE_SET.has(rawType as EscalationType)) {
     return {
       ok: false,
-      error: "`type` must be one of need_input, blocked, decision_required, error",
+      error:
+        "`type` must be one of need_input, blocked, decision_required, error, budget_warning, budget_critical, budget_exhausted, run_blocked",
     };
   }
   const summary = typeof record.summary === "string" ? record.summary.trim() : "";
@@ -1205,6 +1230,12 @@ app.post("/escalations/:id/escalate-to-user", (req, res) => {
 app.get("/projects/:id/shift-context", (req, res) => {
   const context = buildShiftContext(req.params.id);
   if (!context) return res.status(404).json({ error: "project not found" });
+  syncProjectBudgetAlerts({
+    projectId: context.project.id,
+    projectName: context.project.name,
+    projectPath: context.project.path,
+    readyWorkOrderIds: context.work_orders.ready.map((wo) => wo.id),
+  });
   return res.json(context);
 });
 
@@ -2206,6 +2237,13 @@ app.post("/repos/:id/work-orders/:workOrderId/runs", (req, res) => {
     const run = enqueueCodexRun(project.id, workOrderId, sourceBranch || null);
     return res.status(201).json(run);
   } catch (err) {
+    if (err instanceof BudgetEnforcementError) {
+      return res.status(409).json({
+        error: err.message,
+        code: err.code,
+        details: err.details,
+      });
+    }
     return res.status(400).json({ error: String(err instanceof Error ? err.message : err) });
   }
 });
