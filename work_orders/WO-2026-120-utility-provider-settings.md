@@ -27,13 +27,12 @@ tags:
   - configuration
   - providers
 estimate_hours: 3
-status: ready
+status: you_review
 created_at: 2026-01-20
 updated_at: 2026-01-21
 depends_on: []
 era: v2
 ---
-
 ## Problem
 
 WO generation and handoff generation use hardcoded Claude CLI while the rest of the system (builder, reviewer, chat) uses configurable providers with codex as default. This is inconsistent and causes issues when Claude CLI isn't available in the server environment.
