@@ -107,6 +107,14 @@ import {
   remoteExecForProject,
   remoteUploadForProject,
 } from "./runner_agent.js";
+import {
+  getBudgetSummary,
+  getVmHealthResponse,
+  listActiveRuns,
+  listObservabilityAlerts,
+  listRunTimeline,
+  tailRunLog,
+} from "./observability.js";
 import { RemoteExecError } from "./remote_exec.js";
 import { readControlMetadata } from "./sidecar.js";
 import { buildShiftContext } from "./shift_context.js";
@@ -281,6 +289,54 @@ app.use(express.json());
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });
+});
+
+app.get("/observability/vm-health", async (req, res) => {
+  const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
+  if (projectId && !findProjectById(projectId)) {
+    return res.status(404).json({ error: "project not found" });
+  }
+  try {
+    const data = await getVmHealthResponse(projectId);
+    return res.json(data);
+  } catch (err) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : "failed to fetch VM health",
+    });
+  }
+});
+
+app.get("/observability/runs/active", (req, res) => {
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit = Number.isFinite(limitRaw)
+    ? Math.max(1, Math.min(100, Math.trunc(limitRaw)))
+    : 20;
+  return res.json(listActiveRuns(limit));
+});
+
+app.get("/observability/runs/timeline", (req, res) => {
+  const hoursRaw = typeof req.query.hours === "string" ? Number(req.query.hours) : NaN;
+  const hours = Number.isFinite(hoursRaw) ? Math.trunc(hoursRaw) : 24;
+  return res.json(listRunTimeline(hours));
+});
+
+app.get("/observability/budget/summary", (_req, res) => {
+  return res.json(getBudgetSummary());
+});
+
+app.get("/observability/alerts", async (req, res) => {
+  const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
+  if (projectId && !findProjectById(projectId)) {
+    return res.status(404).json({ error: "project not found" });
+  }
+  try {
+    const alerts = await listObservabilityAlerts(projectId);
+    return res.json(alerts);
+  } catch (err) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : "failed to fetch alerts",
+    });
+  }
 });
 
 app.get("/settings", (_req, res) => {
@@ -2269,6 +2325,16 @@ app.get("/runs/:runId", (req, res) => {
   const run = getRun(req.params.runId);
   if (!run) return res.status(404).json({ error: "run not found" });
   return res.json(run);
+});
+
+app.get("/runs/:runId/logs/tail", (req, res) => {
+  const linesRaw = typeof req.query.lines === "string" ? Number(req.query.lines) : NaN;
+  const lines = Number.isFinite(linesRaw)
+    ? Math.max(1, Math.min(500, Math.trunc(linesRaw)))
+    : 50;
+  const tail = tailRunLog(req.params.runId, lines);
+  if (!tail) return res.status(404).json({ error: "run not found" });
+  return res.json(tail);
 });
 
 app.get("/runs/:runId/metrics", (req, res) => {

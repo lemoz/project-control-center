@@ -7,7 +7,7 @@ context:
   - Currently debugging requires manual log reading, SSH to VM, DB queries
   - Cost tracking exists but no visualization
   - Budget system exists but not surfaced
-  - "Your team of Claudes needs a platform team"
+  - Your team of Claudes needs a platform team
 acceptance_criteria:
   - VM health panel (disk, memory, CPU, containers)
   - Active runs panel (status, phase, duration)
@@ -28,9 +28,9 @@ tags:
   - observability
   - infrastructure
 estimate_hours: 6
-status: ready
+status: you_review
 created_at: 2026-01-15
-updated_at: 2026-01-15
+updated_at: 2026-01-21
 depends_on:
   - WO-2026-110
 era: v2
