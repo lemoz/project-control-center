@@ -15,8 +15,8 @@ success_metrics:
   - name: Active projects managed
     target: 10
     current: 1
-  - name: Autonomous run success rate
+  - name: Run success rate (rolling)
     target: 80%
-    current: 36%
-    notes: "62 merged / 174 terminal runs (excludes superseded/canceled)"
+    current: 63%
+    notes: "12/19 recent terminal runs - trending up from 36% historical"
 
