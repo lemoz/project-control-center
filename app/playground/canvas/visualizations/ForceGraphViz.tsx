@@ -282,7 +282,7 @@ export class ForceGraphVisualization implements Visualization {
       this.simulation.velocityDecay(0.35);
     } else {
       this.simulation.nodes(this.nodeList);
-      const linkForce = this.simulation.force("link") as
+      const linkForce = this.simulation.force("link") as unknown as
         | { links: (links: ForceLink[]) => void }
         | null;
       linkForce?.links(this.links);
