@@ -4,11 +4,13 @@ import express, { type Response } from "express";
 import cors from "cors";
 import {
   createEscalation,
+  createGlobalPattern,
   createGlobalShiftHandoff,
   createShiftHandoff,
   expireStaleGlobalShifts,
   expireStaleShifts,
   findProjectById,
+  findGlobalPatternById,
   getActiveShift,
   getActiveGlobalShift,
   getEscalationById,
@@ -18,8 +20,10 @@ import {
   getRunPhaseMetricsSummary,
   getGlobalShiftById,
   getShiftByProjectId,
+  listGlobalPatterns,
   listEscalations,
   listGlobalShifts,
+  searchGlobalPatternsByTags,
   listTracks,
   listRunPhaseMetrics,
   listShifts,
@@ -50,6 +54,7 @@ import {
   type ProjectVmSize,
   type Track,
   type ShiftHandoffDecision,
+  type CreateGlobalPatternInput,
 } from "./db.js";
 import {
   deleteVM,
@@ -718,6 +723,13 @@ function normalizeStringArrayField(value: unknown): string[] | undefined {
     .filter(Boolean);
 }
 
+function normalizePatternTags(tags: string[]): string[] {
+  const normalized = tags
+    .map((tag) => tag.trim().toLowerCase())
+    .filter(Boolean);
+  return Array.from(new Set(normalized));
+}
+
 function normalizeDecisionArrayField(value: unknown): ShiftHandoffDecision[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) return [];
@@ -731,6 +743,110 @@ function normalizeDecisionArrayField(value: unknown): ShiftHandoffDecision[] | u
     decisions.push({ decision, rationale });
   }
   return decisions;
+}
+
+function parsePatternTagsQuery(
+  value: unknown
+): { ok: true; tags: string[] } | { ok: false; error: string } {
+  if (value === undefined) {
+    return { ok: false, error: "`tags` query param is required" };
+  }
+  const entries = Array.isArray(value) ? value : [value];
+  const tags: string[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== "string") {
+      return { ok: false, error: "`tags` must be a comma-separated string" };
+    }
+    for (const part of entry.split(",")) {
+      const trimmed = part.trim();
+      if (trimmed) tags.push(trimmed);
+    }
+  }
+  const normalized = normalizePatternTags(tags);
+  if (!normalized.length) {
+    return { ok: false, error: "`tags` must include at least one value" };
+  }
+  return { ok: true, tags: normalized };
+}
+
+function parseCreatePatternInput(
+  payload: unknown
+): { ok: true; input: CreateGlobalPatternInput } | { ok: false; error: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, error: "request body must be an object" };
+  }
+  const record = payload as Record<string, unknown>;
+  const nameRaw = typeof record.name === "string" ? record.name.trim() : "";
+  if (!nameRaw) return { ok: false, error: "`name` must be a non-empty string" };
+  const descriptionRaw =
+    typeof record.description === "string" ? record.description.trim() : "";
+  if (!descriptionRaw) {
+    return { ok: false, error: "`description` must be a non-empty string" };
+  }
+  const tagsRaw = normalizeStringArrayField(record.tags) ?? [];
+  const tags = normalizePatternTags(tagsRaw);
+  if (!tags.length) {
+    return { ok: false, error: "`tags` must include at least one value" };
+  }
+  const sourceProjectRaw =
+    typeof record.source_project === "string" ? record.source_project.trim() : "";
+  if (!sourceProjectRaw) {
+    return { ok: false, error: "`source_project` must be a non-empty string" };
+  }
+  const sourceWoRaw =
+    typeof record.source_wo === "string" ? record.source_wo.trim() : "";
+  if (!sourceWoRaw) {
+    return { ok: false, error: "`source_wo` must be a non-empty string" };
+  }
+
+  const implementationNotes =
+    typeof record.implementation_notes === "string"
+      ? record.implementation_notes.trim()
+      : null;
+  const successMetrics =
+    typeof record.success_metrics === "string" ? record.success_metrics.trim() : null;
+  const createdAt =
+    typeof record.created_at === "string" && record.created_at.trim()
+      ? record.created_at.trim()
+      : undefined;
+
+  return {
+    ok: true,
+    input: {
+      name: nameRaw,
+      description: descriptionRaw,
+      tags,
+      source_project: sourceProjectRaw,
+      source_wo: sourceWoRaw,
+      implementation_notes: implementationNotes,
+      success_metrics: successMetrics,
+      created_at: createdAt,
+    },
+  };
+}
+
+type WorkOrderFromPatternInput = {
+  pattern_id: string;
+  title?: string;
+};
+
+function parseWorkOrderFromPatternInput(
+  payload: unknown
+): { ok: true; input: WorkOrderFromPatternInput } | { ok: false; error: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, error: "request body must be an object" };
+  }
+  const record = payload as Record<string, unknown>;
+  const patternId = typeof record.pattern_id === "string" ? record.pattern_id.trim() : "";
+  if (!patternId) {
+    return { ok: false, error: "`pattern_id` must be a non-empty string" };
+  }
+  const title =
+    typeof record.title === "string" && record.title.trim()
+      ? record.title.trim()
+      : undefined;
+
+  return { ok: true, input: { pattern_id: patternId, title } };
 }
 
 function parseStartShiftInput(
@@ -1093,6 +1209,37 @@ app.get("/global/escalations", (req, res) => {
   return res.json({ escalations });
 });
 
+app.get("/global/patterns", (req, res) => {
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit =
+    Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(200, Math.trunc(limitRaw)) : 100;
+  const patterns = listGlobalPatterns(limit);
+  return res.json({ patterns });
+});
+
+app.get("/global/patterns/search", (req, res) => {
+  const parsedTags = parsePatternTagsQuery(req.query.tags);
+  if (!parsedTags.ok) return res.status(400).json({ error: parsedTags.error });
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit =
+    Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(200, Math.trunc(limitRaw)) : 50;
+  const patterns = searchGlobalPatternsByTags(parsedTags.tags, limit);
+  return res.json({ tags: parsedTags.tags, patterns });
+});
+
+app.post("/global/patterns", (req, res) => {
+  const parsed = parseCreatePatternInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  try {
+    const created = createGlobalPattern(parsed.input);
+    return res.status(201).json(created);
+  } catch (err) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : "failed to create pattern",
+    });
+  }
+});
+
 app.post("/projects", (req, res) => {
   const parsed = parseCreateProjectInput(req.body);
   if (!parsed.ok) return res.status(400).json({ error: parsed.error });
@@ -1376,6 +1523,97 @@ app.post("/projects/:id/work-orders/generate", async (req, res) => {
       error: "failed to generate work order",
       detail: err instanceof Error ? err.message : String(err),
     });
+  }
+});
+
+app.post("/projects/:id/work-orders/from-pattern", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const parsed = parseWorkOrderFromPatternInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+  const pattern = findGlobalPatternById(parsed.input.pattern_id);
+  if (!pattern) return res.status(404).json({ error: "pattern not found" });
+
+  let sourceWorkOrder: WorkOrder | null = null;
+  const sourceProject = findProjectById(pattern.source_project);
+  if (sourceProject) {
+    try {
+      sourceWorkOrder = getWorkOrder(sourceProject.path, pattern.source_wo);
+    } catch {
+      sourceWorkOrder = null;
+    }
+  }
+
+  const baseTitle = parsed.input.title || sourceWorkOrder?.title || pattern.name;
+  const baseTags = sourceWorkOrder?.tags?.length ? sourceWorkOrder.tags : pattern.tags;
+  const mergedTags = Array.from(new Set([...baseTags, ...pattern.tags]));
+  const basePriority = sourceWorkOrder?.priority ?? 3;
+  const baseEra = sourceWorkOrder?.era ?? undefined;
+  const baseBranch = sourceWorkOrder?.base_branch ?? undefined;
+
+  try {
+    const created = createWorkOrder(project.path, {
+      title: baseTitle,
+      priority: basePriority,
+      tags: mergedTags,
+      depends_on: [],
+      era: baseEra ?? undefined,
+      base_branch: baseBranch ?? undefined,
+    });
+
+    const context = [...(sourceWorkOrder?.context ?? [])];
+    context.push(`Adapted from pattern ${pattern.id} (${pattern.name}).`);
+    context.push(`Source project: ${pattern.source_project}.`);
+    context.push(`Source work order: ${pattern.source_wo}.`);
+    if (pattern.implementation_notes) {
+      context.push(`Implementation notes: ${pattern.implementation_notes}`);
+    }
+    if (pattern.success_metrics) {
+      context.push(`Success metrics: ${pattern.success_metrics}`);
+    }
+
+    const acceptanceCriteria =
+      sourceWorkOrder?.acceptance_criteria.length
+        ? sourceWorkOrder.acceptance_criteria
+        : pattern.success_metrics
+          ? [pattern.success_metrics]
+          : [];
+
+    const stopConditions =
+      sourceWorkOrder?.stop_conditions.length
+        ? sourceWorkOrder.stop_conditions
+        : ["Stop and ask for clarification if adaptation needs changes."];
+
+    const updated = patchWorkOrder(project.path, created.id, {
+      goal: sourceWorkOrder?.goal ?? pattern.description,
+      context,
+      acceptance_criteria: acceptanceCriteria,
+      non_goals: sourceWorkOrder?.non_goals ?? [],
+      stop_conditions: stopConditions,
+      estimate_hours: sourceWorkOrder?.estimate_hours ?? null,
+      depends_on: [],
+      status: "backlog",
+      tags: mergedTags,
+    });
+
+    const sourceSummary = sourceWorkOrder
+      ? {
+          project_id: sourceProject?.id ?? pattern.source_project,
+          work_order_id: sourceWorkOrder.id,
+          title: sourceWorkOrder.title,
+        }
+      : null;
+
+    return res.status(201).json({
+      work_order: updated,
+      pattern,
+      source_work_order: sourceSummary,
+    });
+  } catch (err) {
+    return sendWorkOrderError(res, err);
   }
 });
 

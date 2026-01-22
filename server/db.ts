@@ -389,6 +389,41 @@ export type CreateGlobalShiftHandoffInput = {
   duration_minutes?: number;
 };
 
+export type GlobalPatternRow = {
+  id: string;
+  name: string;
+  description: string;
+  tags: string;
+  source_project: string;
+  source_wo: string;
+  implementation_notes: string | null;
+  success_metrics: string | null;
+  created_at: string;
+};
+
+export type GlobalPattern = {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  source_project: string;
+  source_wo: string;
+  implementation_notes: string;
+  success_metrics: string;
+  created_at: string;
+};
+
+export type CreateGlobalPatternInput = {
+  name: string;
+  description: string;
+  tags: string[];
+  source_project: string;
+  source_wo: string;
+  implementation_notes?: string | null;
+  success_metrics?: string | null;
+  created_at?: string;
+};
+
 let db: Database.Database | null = null;
 
 export function getDb() {
@@ -683,6 +718,21 @@ function initSchema(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_global_shifts_status
       ON global_shifts(status);
+
+    CREATE TABLE IF NOT EXISTS global_patterns (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      tags TEXT NOT NULL DEFAULT '[]',
+      source_project TEXT NOT NULL,
+      source_wo TEXT NOT NULL,
+      implementation_notes TEXT,
+      success_metrics TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_global_patterns_created
+      ON global_patterns(created_at DESC);
 
     CREATE TABLE IF NOT EXISTS chat_threads (
       id TEXT PRIMARY KEY,
@@ -2709,4 +2759,102 @@ export function getLatestGlobalShiftHandoff(): GlobalShiftHandoff | null {
     .get() as GlobalShiftHandoffRow | undefined;
   if (!row) return null;
   return toGlobalShiftHandoff(row);
+}
+
+function normalizePatternTags(tags: string[]): string[] {
+  const normalized = tags
+    .map((tag) => tag.trim().toLowerCase())
+    .filter(Boolean);
+  return Array.from(new Set(normalized));
+}
+
+function toGlobalPattern(row: GlobalPatternRow): GlobalPattern {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    tags: normalizePatternTags(parseJsonStringArray(row.tags)),
+    source_project: row.source_project,
+    source_wo: row.source_wo,
+    implementation_notes: row.implementation_notes ?? "",
+    success_metrics: row.success_metrics ?? "",
+    created_at: row.created_at,
+  };
+}
+
+export function listGlobalPatterns(limit = 100): GlobalPattern[] {
+  const database = getDb();
+  const safeLimit = Number.isFinite(limit)
+    ? Math.max(1, Math.min(200, Math.trunc(limit)))
+    : 100;
+  const rows = database
+    .prepare(
+      `SELECT *
+       FROM global_patterns
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .all(safeLimit) as GlobalPatternRow[];
+  return rows.map((row) => toGlobalPattern(row));
+}
+
+export function findGlobalPatternById(id: string): GlobalPattern | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM global_patterns WHERE id = ? LIMIT 1")
+    .get(id) as GlobalPatternRow | undefined;
+  if (!row) return null;
+  return toGlobalPattern(row);
+}
+
+export function searchGlobalPatternsByTags(tags: string[], limit = 50): GlobalPattern[] {
+  const normalizedTags = normalizePatternTags(tags);
+  if (!normalizedTags.length) return [];
+  const safeLimit = Number.isFinite(limit)
+    ? Math.max(1, Math.min(200, Math.trunc(limit)))
+    : 50;
+  const database = getDb();
+  const rows = database
+    .prepare(
+      `SELECT *
+       FROM global_patterns
+       ORDER BY created_at DESC`
+    )
+    .all() as GlobalPatternRow[];
+  const matches = rows
+    .map((row) => toGlobalPattern(row))
+    .filter((pattern) => normalizedTags.some((tag) => pattern.tags.includes(tag)));
+  return matches.slice(0, safeLimit);
+}
+
+export function createGlobalPattern(input: CreateGlobalPatternInput): GlobalPattern {
+  const database = getDb();
+  const id = crypto.randomUUID();
+  const now =
+    typeof input.created_at === "string" && input.created_at.trim()
+      ? input.created_at.trim()
+      : new Date().toISOString();
+  const tags = normalizePatternTags(input.tags);
+  const row: GlobalPatternRow = {
+    id,
+    name: input.name.trim(),
+    description: input.description.trim(),
+    tags: JSON.stringify(tags),
+    source_project: input.source_project.trim(),
+    source_wo: input.source_wo.trim(),
+    implementation_notes: normalizeOptionalString(input.implementation_notes),
+    success_metrics: normalizeOptionalString(input.success_metrics),
+    created_at: now,
+  };
+
+  database
+    .prepare(
+      `INSERT INTO global_patterns
+        (id, name, description, tags, source_project, source_wo, implementation_notes, success_metrics, created_at)
+       VALUES
+        (@id, @name, @description, @tags, @source_project, @source_wo, @implementation_notes, @success_metrics, @created_at)`
+    )
+    .run(row);
+
+  return toGlobalPattern(row);
 }
