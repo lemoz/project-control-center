@@ -4265,13 +4265,25 @@ export async function runRun(runId: string) {
 
     const lockStart = Date.now();
     let mergeLockAcquired = false;
+    let loggedProjectIdChange = false;
+    const resolveMergeLockProjectId = () => {
+      const latestProjectId = getRunById(runId)?.project_id ?? project.id;
+      if (!loggedProjectIdChange && latestProjectId !== project.id) {
+        loggedProjectIdChange = true;
+        log(
+          `Project id changed during run; using ${latestProjectId.slice(0, 8)} for merge lock`
+        );
+      }
+      return latestProjectId;
+    };
     while (!mergeLockAcquired) {
-      mergeLockAcquired = acquireMergeLock(project.id, runId);
+      const currentProjectId = resolveMergeLockProjectId();
+      mergeLockAcquired = acquireMergeLock(currentProjectId, runId);
       if (mergeLockAcquired) {
         log("Merge lock acquired");
         break;
       }
-      const lockInfo = getMergeLock(project.id);
+      const lockInfo = getMergeLock(currentProjectId);
       const lockHolder = lockInfo ? lockInfo.run_id.slice(0, 8) : "unknown";
       const holderLabel = lockInfo ? ` (held by run ${lockHolder})` : "";
       log(`Waiting for merge lock${holderLabel}...`);
@@ -4430,7 +4442,8 @@ export async function runRun(runId: string) {
     } finally {
       if (mergeLockAcquired) {
         try {
-          releaseMergeLock(project.id, runId);
+          const currentProjectId = resolveMergeLockProjectId();
+          releaseMergeLock(currentProjectId, runId);
           log("Merge lock released");
         } catch (err) {
           log(`Merge lock release failed: ${String(err)}`);
