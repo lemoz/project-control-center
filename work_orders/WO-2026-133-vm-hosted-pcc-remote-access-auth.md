@@ -30,6 +30,5 @@ depends_on:
   - WO-2026-132
 era: v2
 ---
-
 ## Notes
 - Start with the simplest secure option; document how to upgrade later.
