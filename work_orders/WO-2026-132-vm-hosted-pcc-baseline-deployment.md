@@ -1,5 +1,5 @@
 ---
-id: WO-2026-129
+id: WO-2026-132
 title: VM-Hosted PCC Baseline Deployment
 goal: Run PCC UI/API/runner on a single VM using Docker Compose for always-on service.
 context:
