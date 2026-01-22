@@ -23,7 +23,7 @@ tags:
   - vm
   - deployment
 estimate_hours: 4
-status: ready
+status: you_review
 created_at: 2026-01-22
 updated_at: 2026-01-22
 depends_on: []

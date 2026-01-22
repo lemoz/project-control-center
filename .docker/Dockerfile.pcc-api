@@ -1,0 +1,33 @@
+FROM node:20-slim AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM node:20-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY --from=deps /app/node_modules ./node_modules
+COPY server ./server
+RUN npm run server:build
+
+FROM node:20-slim AS runtime
+WORKDIR /app
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    docker.io \
+    git \
+    openssh-client \
+    rsync \
+  && rm -rf /var/lib/apt/lists/*
+RUN git config --global --add safe.directory /repos/pcc
+RUN npm install -g @openai/codex
+ENV NODE_ENV=production
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/package.json ./package.json
+COPY --from=build /app/server/dist ./server/dist
+COPY .docker/pcc-api-entrypoint.sh /usr/local/bin/pcc-api-entrypoint.sh
+RUN chmod +x /usr/local/bin/pcc-api-entrypoint.sh
+WORKDIR /repos/pcc
+CMD ["/usr/local/bin/pcc-api-entrypoint.sh"]
