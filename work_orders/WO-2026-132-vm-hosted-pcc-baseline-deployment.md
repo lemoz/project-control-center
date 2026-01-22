@@ -9,7 +9,7 @@ context:
 acceptance_criteria:
   - Docker Compose (or equivalent) config runs UI + API + runner on the VM
   - Services start on boot (systemd or docker compose service)
-  - `control-center.db` persists on the VM disk
+  - control-center.db persists on the VM disk
   - UI reachable locally on the VM and API responds on localhost
   - Basic runbook for start/stop/logs
 non_goals:

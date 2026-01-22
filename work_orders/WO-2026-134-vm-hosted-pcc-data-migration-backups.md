@@ -4,10 +4,10 @@ title: VM-Hosted PCC Data Migration + Backups
 goal: Migrate PCC data to the VM and establish a reliable backup + restore plan.
 context:
   - docs/pcc-vm-service-research-wo-2026-128.md
-  - `control-center.db` at repo root (SQLite)
-  - Work Orders live in `work_orders/`
+  - control-center.db at repo root (SQLite)
+  - Work Orders live in work_orders/
 acceptance_criteria:
-  - Local `control-center.db` migrated to VM and validated
+  - Local control-center.db migrated to VM and validated
   - Work Orders and repo metadata copied to VM
   - Backup strategy implemented (SQLite backups + disk snapshots)
   - Restore procedure documented and tested once
