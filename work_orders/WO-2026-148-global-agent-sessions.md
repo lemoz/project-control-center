@@ -39,7 +39,7 @@ tags:
   - sessions
   - onboarding
 estimate_hours: 12
-status: ready
+status: done
 created_at: 2026-01-22
 updated_at: 2026-01-22
 depends_on:
