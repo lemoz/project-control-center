@@ -26,9 +26,9 @@ tags:
   - evaluation
   - planning
 estimate_hours: 2
-status: you_review
+status: done
 created_at: 2026-01-12
-updated_at: 2026-01-21
+updated_at: 2026-01-22
 depends_on:
   - WO-2026-096
 era: v2

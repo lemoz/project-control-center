@@ -22,7 +22,7 @@ tags:
   - global-agent
   - knowledge
 estimate_hours: 3
-status: you_review
+status: done
 created_at: 2026-01-12
 updated_at: 2026-01-22
 depends_on:
