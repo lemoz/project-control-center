@@ -1,0 +1,16 @@
+.git
+node_modules
+.system
+.next
+out
+dist
+build
+playwright-report
+test-results
+control-center.db
+control-center.db-*
+work_orders
+.env
+.env.*
+*.log
+*.sqlite
