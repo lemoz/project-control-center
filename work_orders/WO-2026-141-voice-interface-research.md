@@ -6,7 +6,7 @@ context:
   - Landing page shows live agent shift + orbital canvas
   - Ambient narration describes what's happening (WO-2026-139)
   - Want visitors to ask questions via voice
-  - "What's happening?" "Why that project?" "How does this work?"
+  - Example questions - What is happening, Why that project, How does this work
   - Answers come from live context + system knowledge
 acceptance_criteria:
   - Survey voice input options (Web Speech API, Whisper, etc.)
@@ -30,9 +30,9 @@ tags:
   - voice
   - ux
 estimate_hours: 2
-status: ready
-created_at: "2026-01-22"
-updated_at: "2026-01-22"
+status: you_review
+created_at: 2026-01-22
+updated_at: 2026-01-22
 depends_on: []
 era: v2
 ---
