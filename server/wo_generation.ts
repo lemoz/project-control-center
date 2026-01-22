@@ -7,7 +7,9 @@ import { z } from "zod";
 import {
   getRunPhaseMetricsSummary,
   getWorkOrderRunDurations,
+  searchGlobalPatternsByTags,
   type ProjectRow,
+  type GlobalPattern,
   type RunPhaseMetricsSummary,
 } from "./db.js";
 import { buildWorkOrderGenerationPrompt } from "./prompts/wo_generation.js";
@@ -27,6 +29,7 @@ const CLAUDE_TIMEOUT_MS = 60_000;
 const CODEX_TIMEOUT_MS = 60_000;
 const MAX_SIMILAR_WOS = 5;
 const MAX_PROMPT_REFERENCES = 12;
+const MAX_PATTERN_MATCHES = 5;
 const MIN_DESCRIPTION_TOKENS = 6;
 
 export type WorkOrderGenerationType = "feature" | "bugfix" | "refactor" | "research";
@@ -43,6 +46,7 @@ export type GeneratedWO = {
   confidence: number;
   suggestions: string[];
   similar_wos: string[];
+  pattern_matches: GlobalPattern[];
 };
 
 type LlmDraft = {
@@ -619,6 +623,10 @@ export async function generateWorkOrderDraft(params: {
     knownTags,
     type: params.type,
   });
+  const patternMatches =
+    selectedTags.length > 0
+      ? searchGlobalPatternsByTags(selectedTags, MAX_PATTERN_MATCHES)
+      : [];
 
   const defaultTitle = deriveTitle(description);
   const title = llmDraft?.title ?? defaultTitle;
@@ -676,6 +684,15 @@ export async function generateWorkOrderDraft(params: {
   }
   if (!similar.length) {
     suggestionsSet.add("No similar work orders found; confirm tags or related areas.");
+  }
+  if (patternMatches.length) {
+    for (const pattern of patternMatches) {
+      const tagList = pattern.tags.length ? pattern.tags.join(", ") : "none";
+      const sourceLabel = `${pattern.source_project}/${pattern.source_wo}`;
+      suggestionsSet.add(
+        `Pattern match: ${pattern.name} (${pattern.id}) from ${sourceLabel} [tags: ${tagList}].`
+      );
+    }
   }
   if (depends_on.length) {
     suggestionsSet.add(`Verify dependencies: ${depends_on.join(", ")}.`);
@@ -735,5 +752,6 @@ export async function generateWorkOrderDraft(params: {
     confidence,
     suggestions,
     similar_wos: similar.map((wo) => wo.id),
+    pattern_matches: patternMatches,
   };
 }
