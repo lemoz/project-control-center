@@ -22,7 +22,7 @@ tags:
   - tracks
   - visualization
 estimate_hours: 1
-status: you_review
+status: done
 depends_on: []
 created_at: 2026-01-22
 updated_at: 2026-01-22
