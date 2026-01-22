@@ -12,15 +12,8 @@ acceptance_criteria:
   - Create ElevenLabs agent with PCC guide persona system prompt
   - Select appropriate voice (professional, clear, friendly)
   - Configure Claude Sonnet 4 as the LLM
-  - Define server tools (webhooks) for PCC API integration
-    - getShiftContext(projectId) -> /projects/:id/shift-context
-    - getWorkOrder(workOrderId) -> /repos/:id/work-orders/:id
-    - getRunStatus(runId) -> /runs/:id
-    - getGlobalContext() -> /global/context
-  - Define client tools for UI actions
-    - focusNode({ nodeId })
-    - highlightWorkOrder({ workOrderId })
-    - toggleDetailPanel({ open })
+  - Define server tools (webhooks) for PCC API integration - getShiftContext(projectId) -> /projects/:id/shift-context - getWorkOrder(workOrderId) -> /repos/:id/work-orders/:id - getRunStatus(runId) -> /runs/:id - getGlobalContext() -> /global/context
+  - Define client tools for UI actions - focusNode({ nodeId }) - highlightWorkOrder({ workOrderId }) - toggleDetailPanel({ open })
   - Set up HMAC webhook verification for server tools
   - Configure data residency (US or appropriate region)
   - Document agent ID and configuration for React integration
@@ -38,7 +31,7 @@ tags:
   - integration
   - elevenlabs
 estimate_hours: 3
-status: ready
+status: you_review
 created_at: 2026-01-22
 updated_at: 2026-01-22
 depends_on:
