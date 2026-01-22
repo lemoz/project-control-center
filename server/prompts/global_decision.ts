@@ -1,4 +1,5 @@
 import type { GlobalContextResponse, GlobalProjectSummary } from "../global_context.js";
+import { isWithinQuietHours } from "../user_preferences.js";
 
 const DEFAULT_MAX_PROJECTS = 6;
 const MAX_PROJECTS_CAP = 30;
@@ -160,6 +161,25 @@ function formatPortfolioEconomy(context: GlobalContextResponse): string {
   return lines.join("\n");
 }
 
+function formatPreferenceList(values: string[]): string {
+  if (!values.length) return "None.";
+  return values.map((value) => `- ${value}`).join("\n");
+}
+
+function formatPatternTime(value: string | null): string {
+  return value ? value : "unknown";
+}
+
+function formatPatternMinutes(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "unknown";
+  return `${Math.max(0, Math.round(value))} minutes`;
+}
+
+function resolveAssembledDate(context: GlobalContextResponse): Date {
+  const parsed = Date.parse(context.assembled_at);
+  return Number.isFinite(parsed) ? new Date(parsed) : new Date();
+}
+
 export function buildGlobalDecisionPrompt(
   context: GlobalContextResponse,
   options: DecisionPromptOptions = {}
@@ -170,9 +190,39 @@ export function buildGlobalDecisionPrompt(
     typeof options.recentActivityLimit === "number" && options.recentActivityLimit > 0
       ? Math.trunc(options.recentActivityLimit)
       : DEFAULT_RECENT_ACTIVITY_LIMIT;
+  const preferences = context.preferences;
+  const assembledAt = resolveAssembledDate(context);
+  const quietNow = isWithinQuietHours(preferences.quiet_hours, assembledAt);
 
   const lines: string[] = [];
   lines.push("You are the Global Agent managing multiple projects.");
+  lines.push("");
+  lines.push("## User Preferences");
+  lines.push(
+    `- Quiet hours: ${preferences.quiet_hours.start}-${preferences.quiet_hours.end} (${quietNow ? "quiet hours active" : "active hours"})`
+  );
+  lines.push(
+    `- Escalation batch window: ${preferences.escalation_batch_minutes} minutes`
+  );
+  lines.push("Priority projects:");
+  lines.push(formatPreferenceList(preferences.priority_projects));
+  lines.push("");
+  lines.push("## Learned Patterns");
+  lines.push(
+    `- Typical active hours: ${
+      preferences.typical_active_hours
+        ? `${preferences.typical_active_hours.start}-${preferences.typical_active_hours.end}`
+        : "unknown"
+    }`
+  );
+  lines.push(
+    `- Avg response time: ${formatPatternMinutes(
+      preferences.avg_response_time_minutes
+    )}`
+  );
+  lines.push(
+    `- Preferred review time: ${formatPatternTime(preferences.preferred_review_time)}`
+  );
   lines.push("");
   lines.push("## Attention Allocation");
   lines.push(`- Max projects in focus: ${attention.maxProjects}`);
@@ -196,6 +246,10 @@ export function buildGlobalDecisionPrompt(
   lines.push(formatRecentActivity(context, recentActivityLimit));
   lines.push("");
   lines.push("---");
+  lines.push("");
+  lines.push(
+    "Respect quiet hours for non-urgent escalations and batch interruptions when possible."
+  );
   lines.push("");
   lines.push("Decide your next action:");
   lines.push("1. DELEGATE - Start shift on a project (specify project_id)");

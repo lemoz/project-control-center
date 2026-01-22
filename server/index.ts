@@ -3,6 +3,7 @@ import fs from "fs";
 import express, { type Response } from "express";
 import cors from "cors";
 import {
+  createUserInteraction,
   createEscalation,
   createGlobalPattern,
   createGlobalShiftHandoff,
@@ -84,6 +85,15 @@ import {
   patchRunnerSettings,
   patchUtilitySettings,
 } from "./settings.js";
+import {
+  getEscalationDeferral,
+  getExplicitPreferences,
+  getLastEscalationAt,
+  getPreferencePatterns,
+  getUserPreferences,
+  parsePreferencesPatch,
+  updateExplicitPreferences,
+} from "./user_preferences.js";
 import {
   type ConstitutionInsightCategory,
   type ConstitutionInsightInput,
@@ -189,6 +199,13 @@ const ESCALATION_STATUSES: EscalationStatus[] = [
 const ESCALATION_TYPE_SET = new Set<EscalationType>(ESCALATION_TYPES);
 const ESCALATION_STATUS_SET = new Set<EscalationStatus>(ESCALATION_STATUSES);
 const ESCALATION_CLAIMANT = "global_agent";
+const NON_URGENT_ESCALATION_TYPES = new Set<EscalationType>([
+  "budget_warning",
+  "decision_required",
+  "need_input",
+  "blocked",
+  "run_blocked",
+]);
 const COST_PERIODS = ["day", "week", "month", "all_time"] as const;
 const COST_CATEGORIES = ["builder", "reviewer", "chat", "handoff", "other", "all"] as const;
 const COST_PERIOD_SET = new Set<string>(COST_PERIODS);
@@ -1195,6 +1212,29 @@ app.get("/global/context", (_req, res) => {
   return res.json(response);
 });
 
+app.get("/global/preferences", (_req, res) => {
+  return res.json(getUserPreferences());
+});
+
+app.patch("/global/preferences", (req, res) => {
+  const parsed = parsePreferencesPatch(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const updated = updateExplicitPreferences(parsed.patch);
+  try {
+    createUserInteraction({
+      action_type: "preferences_updated",
+      context: { scope: "global" },
+    });
+  } catch {
+    // Ignore interaction logging failures.
+  }
+  return res.json(updated);
+});
+
+app.get("/global/preferences/patterns", (_req, res) => {
+  return res.json(getPreferencePatterns());
+});
+
 app.get("/global/escalations", (req, res) => {
   const parsedStatus = parseEscalationStatusQuery(req.query.status);
   if (!parsedStatus.ok) return res.status(400).json({ error: parsedStatus.error });
@@ -1419,6 +1459,18 @@ app.post("/escalations/:id/resolve", (req, res) => {
     resolved_at: resolvedAt,
   });
   if (!updated) return res.status(500).json({ error: "failed to resolve escalation" });
+  try {
+    createUserInteraction({
+      action_type: "escalation_resolved",
+      context: {
+        escalation_id: escalation.id,
+        project_id: escalation.project_id,
+        type: escalation.type,
+      },
+    });
+  } catch {
+    // Ignore interaction logging failures.
+  }
   const refreshed = getEscalationById(escalation.id);
   return res.json(refreshed ?? { ...escalation, status: "resolved", resolved_at: resolvedAt });
 });
@@ -1440,6 +1492,22 @@ app.post("/escalations/:id/escalate-to-user", (req, res) => {
       debounced: true,
       active_escalation_id: active.id,
     });
+  }
+
+  if (NON_URGENT_ESCALATION_TYPES.has(escalation.type)) {
+    const preferences = getExplicitPreferences();
+    const deferral = getEscalationDeferral({
+      preferences,
+      lastEscalationAt: getLastEscalationAt(),
+    });
+    if (deferral) {
+      return res.json({
+        escalation,
+        deferred: true,
+        reason: deferral.reason,
+        retry_after_minutes: deferral.retry_after_minutes,
+      });
+    }
   }
 
   const updated = updateEscalation(escalation.id, {
@@ -2621,12 +2689,28 @@ app.post("/runs/:runId/provide-input", (req, res) => {
   }
   const result = provideRunInput(req.params.runId, inputs);
   if (!result.ok) return res.status(400).json({ error: result.error });
+  try {
+    createUserInteraction({
+      action_type: "run_input_provided",
+      context: { run_id: req.params.runId },
+    });
+  } catch {
+    // Ignore interaction logging failures.
+  }
   return res.json({ ok: true });
 });
 
 app.post("/runs/:runId/resolve", (req, res) => {
   const result = finalizeManualRunResolution(req.params.runId);
   if (!result.ok) return res.status(400).json({ error: result.error });
+  try {
+    createUserInteraction({
+      action_type: "run_resolved",
+      context: { run_id: req.params.runId },
+    });
+  } catch {
+    // Ignore interaction logging failures.
+  }
   return res.json({ ok: true });
 });
 

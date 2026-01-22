@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { getDb, type RunRow } from "./db.js";
+import { createUserInteraction, getDb, type RunRow } from "./db.js";
 import { type ChatAccess, type ChatContextDepth, type ChatSuggestion } from "./chat_contract.js";
 import {
   emitChatActionAppliedEvent,
@@ -533,6 +533,23 @@ export function createChatMessage(params: {
     .get(id) as ChatMessageRow | undefined;
   if (!row) throw new Error("failed to load created chat message");
   emitChatMessageEvent(row);
+  if (row.role === "user") {
+    const thread = getChatThreadById(row.thread_id);
+    try {
+      createUserInteraction({
+        action_type: "chat_message",
+        context: {
+          thread_id: row.thread_id,
+          scope: thread?.scope ?? null,
+          project_id: thread?.project_id ?? null,
+          work_order_id: thread?.work_order_id ?? null,
+        },
+        created_at: row.created_at,
+      });
+    } catch {
+      // Ignore interaction logging failures.
+    }
+  }
   return row;
 }
 
@@ -876,6 +893,23 @@ export function createChatActionLedgerEntry(params: {
       (@id, @thread_id, @run_id, @message_id, @action_index, @action_type, @action_payload_json, @applied_at, @undo_payload_json, @undone_at, @error, @error_at, @work_order_run_id)`
   ).run(row);
   emitChatActionAppliedEvent(row);
+  try {
+    const thread = getChatThreadById(params.threadId);
+    createUserInteraction({
+      action_type: `chat_action:${params.actionType}`,
+      context: {
+        thread_id: params.threadId,
+        scope: thread?.scope ?? null,
+        project_id: thread?.project_id ?? null,
+        work_order_id: thread?.work_order_id ?? null,
+        run_id: params.runId,
+        message_id: params.messageId,
+      },
+      created_at: appliedAt,
+    });
+  } catch {
+    // Ignore interaction logging failures.
+  }
   return row;
 }
 

@@ -20,6 +20,11 @@ import {
 } from "./budgeting.js";
 import { getProjectCostSummary } from "./cost_tracking.js";
 import { listWorkOrders } from "./work_orders.js";
+import {
+  getEscalationDeferral,
+  getExplicitPreferences,
+  getLastEscalationAt,
+} from "./user_preferences.js";
 
 export type SurvivalModeState = {
   daily_drip_used: boolean;
@@ -200,6 +205,17 @@ function writeBudgetAlert(params: {
   periodStart: string;
   needsUserInput: boolean;
 }): void {
+  if (params.eventType === "warning") {
+    const preferences = getExplicitPreferences();
+    const deferral = getEscalationDeferral({
+      preferences,
+      lastEscalationAt: getLastEscalationAt(),
+    });
+    if (deferral) {
+      return;
+    }
+  }
+
   if (
     hasBudgetEnforcementEvent({
       projectId: params.projectId,
@@ -257,8 +273,12 @@ export function syncProjectBudgetAlerts(params: {
 
   const projectBudget = params.projectBudget ?? getProjectBudget(project.id);
   const globalBudget = params.globalBudget ?? getGlobalBudget();
-  const remaining = projectBudget.remaining_usd;
   const allocation = projectBudget.monthly_allocation_usd;
+  const globalMonthly = globalBudget.monthly_budget_usd;
+  if (globalMonthly <= 0 && allocation <= 0) {
+    return;
+  }
+  const remaining = projectBudget.remaining_usd;
   const remainingPct = allocation > 0 ? (remaining / allocation) * 100 : null;
 
   const readyWorkOrderIds =
