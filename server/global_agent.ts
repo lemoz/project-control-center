@@ -26,6 +26,12 @@ import {
 import { syncAndListRepoSummaries, invalidateDiscoveryCache } from "./projects_catalog.js";
 import { provideRunInput } from "./runner_agent.js";
 import { stableRepoId } from "./utils.js";
+import {
+  getEscalationDeferral,
+  getLastGlobalReportAt,
+  getPreferredReviewDeferral,
+  getUserPreferences,
+} from "./user_preferences.js";
 
 const DEFAULT_MAX_ITERATIONS = 1;
 const DEFAULT_ATTENTION_MAX_PROJECTS = 6;
@@ -486,6 +492,28 @@ async function executeDecision(
       };
     }
     case "REPORT": {
+      const preferences = getUserPreferences();
+      const preferredDeferral = getPreferredReviewDeferral({
+        preferredReviewTime: preferences.preferred_review_time,
+      });
+      if (preferredDeferral) {
+        return {
+          action: "REPORT",
+          ok: true,
+          detail: `report deferred (${preferredDeferral.reason}, retry in ${preferredDeferral.retry_after_minutes}m)`,
+        };
+      }
+      const deferral = getEscalationDeferral({
+        preferences,
+        lastEscalationAt: getLastGlobalReportAt(),
+      });
+      if (deferral) {
+        return {
+          action: "REPORT",
+          ok: true,
+          detail: `report deferred (${deferral.reason}, retry in ${deferral.retry_after_minutes}m)`,
+        };
+      }
       const thread = ensureChatThread({ scope: "global" });
       createChatMessage({
         threadId: thread.id,

@@ -2,6 +2,8 @@ import crypto from "crypto";
 import Database from "better-sqlite3";
 import path from "path";
 
+export const LAST_ESCALATION_AT_KEY = "last_escalation_at";
+
 export type ProjectIsolationMode = "local" | "vm" | "vm+container";
 export type ProjectVmSize = "medium" | "large" | "xlarge";
 
@@ -215,6 +217,13 @@ export type SettingRow = {
   key: string;
   value: string; // JSON payload
   updated_at: string;
+};
+
+export type UserInteractionRow = {
+  id: string;
+  action_type: string;
+  context_json: string | null;
+  created_at: string;
 };
 
 export type WorkOrderDepRow = {
@@ -639,6 +648,16 @@ function initSchema(database: Database.Database) {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS user_interactions (
+      id TEXT PRIMARY KEY,
+      action_type TEXT NOT NULL,
+      context_json TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_user_interactions_created
+      ON user_interactions(created_at DESC);
 
     CREATE TABLE IF NOT EXISTS work_order_deps (
       project_id TEXT NOT NULL,
@@ -1808,7 +1827,11 @@ export function updateEscalation(
   const result = database
     .prepare(`UPDATE escalations SET ${sets.join(", ")} WHERE id = @id`)
     .run({ id, ...patch });
-  return result.changes > 0;
+  const updated = result.changes > 0;
+  if (updated && patch.status === "escalated_to_user") {
+    setSetting(LAST_ESCALATION_AT_KEY, new Date().toISOString());
+  }
+  return updated;
 }
 
 export function getOpenEscalationForProject(projectId: string): EscalationRow | null {
@@ -2038,6 +2061,63 @@ export function setSetting(key: string, value: string): SettingRow {
       updated_at: now,
     }
   );
+}
+
+export function createUserInteraction(input: {
+  action_type: string;
+  context?: Record<string, unknown> | null;
+  created_at?: string;
+}): UserInteractionRow {
+  const database = getDb();
+  const actionType = input.action_type.trim();
+  if (!actionType) {
+    throw new Error("action_type is required");
+  }
+  const row: UserInteractionRow = {
+    id: crypto.randomUUID(),
+    action_type: actionType,
+    context_json: input.context ? JSON.stringify(input.context) : null,
+    created_at: input.created_at ?? new Date().toISOString(),
+  };
+  database
+    .prepare(
+      `INSERT INTO user_interactions
+        (id, action_type, context_json, created_at)
+       VALUES
+        (@id, @action_type, @context_json, @created_at)`
+    )
+    .run(row);
+  return row;
+}
+
+export function listUserInteractions(params?: {
+  limit?: number;
+  since?: string;
+}): UserInteractionRow[] {
+  const database = getDb();
+  const limit =
+    Number.isFinite(params?.limit) && (params?.limit ?? 0) > 0
+      ? Math.min(500, Math.trunc(params?.limit ?? 0))
+      : 100;
+  if (params?.since) {
+    return database
+      .prepare(
+        `SELECT id, action_type, context_json, created_at
+         FROM user_interactions
+         WHERE created_at >= ?
+         ORDER BY created_at DESC
+         LIMIT ?`
+      )
+      .all(params.since, limit) as UserInteractionRow[];
+  }
+  return database
+    .prepare(
+      `SELECT id, action_type, context_json, created_at
+       FROM user_interactions
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .all(limit) as UserInteractionRow[];
 }
 
 type TrackCounts = Partial<

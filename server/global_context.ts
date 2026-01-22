@@ -12,6 +12,7 @@ import { syncProjectBudgetAlerts } from "./budget_enforcement.js";
 import { syncAndListRepoSummaries } from "./projects_catalog.js";
 import { getRunsForProject } from "./runner_agent.js";
 import { buildShiftContext, type ShiftContext } from "./shift_context.js";
+import { getUserPreferences, type UserPreferences } from "./user_preferences.js";
 
 type EscalationInput = {
   key: string;
@@ -105,6 +106,7 @@ export type GlobalContextResponse = {
     portfolio_burn_rate_daily_usd: number;
     portfolio_runway_days: number;
   };
+  preferences: UserPreferences;
   assembled_at: string;
 };
 
@@ -367,14 +369,20 @@ function parseBudgetUsedToday(): number {
 
 export function buildGlobalContextResponse(): GlobalContextResponse {
   const now = new Date();
+  const preferences = getUserPreferences();
+  const priorityTokens = new Set(
+    preferences.priority_projects.map((value) => value.trim().toLowerCase()).filter(Boolean)
+  );
   const globalBudget = getGlobalBudget();
   const summaries = syncAndListRepoSummaries();
   const projects: Array<{
     summary: GlobalProjectSummary;
     attentionNeeded: boolean;
     sortPriority: number;
+    priorityRank: number;
   }> = [];
   const escalationQueue: EscalationQueueItem[] = [];
+  const priorityByProjectId = new Map<string, boolean>();
 
   let vmsRunning = 0;
   let vmsAvailable = 0;
@@ -436,6 +444,10 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
     });
     const health = healthSummary.status;
     const attentionNeeded = health !== "healthy" && project.status !== "parked";
+    const isPriority =
+      priorityTokens.size > 0 &&
+      (priorityTokens.has(context.project.id.toLowerCase()) ||
+        priorityTokens.has(context.project.name.toLowerCase()));
 
     const projectSummary: GlobalProjectSummary = {
       id: context.project.id,
@@ -479,7 +491,9 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
       summary: projectSummary,
       attentionNeeded,
       sortPriority: priority,
+      priorityRank: isPriority ? 0 : 1,
     });
+    priorityByProjectId.set(context.project.id, isPriority);
 
     for (const escalation of runEscalations) {
       escalationQueue.push({
@@ -511,6 +525,9 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
   }
 
   projects.sort((a, b) => {
+    if (a.priorityRank !== b.priorityRank) {
+      return a.priorityRank - b.priorityRank;
+    }
     if (a.attentionNeeded !== b.attentionNeeded) {
       return a.attentionNeeded ? -1 : 1;
     }
@@ -521,6 +538,9 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
   });
 
   escalationQueue.sort((a, b) => {
+    const aPriority = priorityByProjectId.get(a.project_id) ? 0 : 1;
+    const bPriority = priorityByProjectId.get(b.project_id) ? 0 : 1;
+    if (aPriority !== bPriority) return aPriority - bPriority;
     if (a.priority !== b.priority) return a.priority - b.priority;
     return a.waiting_since.localeCompare(b.waiting_since);
   });
@@ -557,6 +577,7 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
       portfolio_burn_rate_daily_usd: portfolioBurnRateDaily,
       portfolio_runway_days: portfolioRunwayDays,
     },
+    preferences,
     assembled_at: now.toISOString(),
   };
 }

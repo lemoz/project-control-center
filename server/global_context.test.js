@@ -210,6 +210,9 @@ test("buildGlobalContextResponse aggregates and sorts projects", () => {
     started_at: alphaCreatedAt,
     finished_at: null,
     error: null,
+    failure_category: null,
+    failure_reason: null,
+    failure_detail: null,
     escalation: escalationRecord({
       tried: "Alpha setup attempt",
       need: "Need alpha token",
@@ -238,6 +241,9 @@ test("buildGlobalContextResponse aggregates and sorts projects", () => {
     started_at: betaCreatedAt,
     finished_at: null,
     error: null,
+    failure_category: null,
+    failure_reason: null,
+    failure_detail: null,
     escalation: escalationRecord({
       tried: "Beta setup attempt",
       need: "Need beta token",
