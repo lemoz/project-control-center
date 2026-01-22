@@ -21,6 +21,7 @@ import { loadDiscoveryConfig } from "./discovery.js";
 import { buildGlobalContextResponse, type GlobalContextResponse } from "./global_context.js";
 import {
   buildGlobalDecisionPrompt,
+  type GlobalDecisionSessionContext,
   type GlobalAttentionAllocation,
 } from "./prompts/global_decision.js";
 import { syncAndListRepoSummaries, invalidateDiscoveryCache } from "./projects_catalog.js";
@@ -72,6 +73,7 @@ export type GlobalAgentLoopOptions = {
   attention?: GlobalAttentionAllocation;
   claudePath?: string;
   cwd?: string;
+  session?: GlobalDecisionSessionContext;
   decide?: (prompt: string) => Promise<string | GlobalAgentDecision>;
   onLog?: (line: string) => void;
 };
@@ -550,6 +552,8 @@ export async function runGlobalAgentShift(
     agentType: options.agentType ?? "claude_cli",
     agentId: options.agentId ?? "global-agent",
     timeoutMinutes: options.timeoutMinutes,
+    sessionId: options.session?.session_id,
+    iterationIndex: options.session?.iteration_index ?? null,
   });
   if (!result.ok) {
     return {
@@ -572,7 +576,10 @@ export async function runGlobalAgentShift(
   try {
     for (let i = 0; i < maxIterations; i += 1) {
       const context = buildGlobalContextResponse();
-      const prompt = buildGlobalDecisionPrompt(context, { attention });
+      const prompt = buildGlobalDecisionPrompt(context, {
+        attention,
+        session: options.session,
+      });
       const decider = options.decide
         ? options.decide
         : async (value: string) =>

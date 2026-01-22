@@ -10,9 +10,26 @@ export type GlobalAttentionAllocation = {
   maxProjects?: number;
 };
 
+export type GlobalDecisionSessionConstraints = {
+  max_budget_usd?: number;
+  max_duration_minutes?: number;
+  max_iterations?: number;
+  do_not_touch?: string[];
+};
+
+export type GlobalDecisionSessionContext = {
+  session_id: string;
+  iteration_index: number;
+  goals: string[];
+  priority_projects: string[];
+  constraints: GlobalDecisionSessionConstraints;
+  briefing_summary: string;
+};
+
 type DecisionPromptOptions = {
   attention?: GlobalAttentionAllocation;
   recentActivityLimit?: number;
+  session?: GlobalDecisionSessionContext;
 };
 
 function normalizeAttention(allocation?: GlobalAttentionAllocation): {
@@ -175,6 +192,29 @@ function formatPatternMinutes(value: number | null): string {
   return `${Math.max(0, Math.round(value))} minutes`;
 }
 
+function formatSessionList(values: string[]): string {
+  if (!values.length) return "None.";
+  return values.map((value) => `- ${value}`).join("\n");
+}
+
+function formatSessionConstraints(constraints: GlobalDecisionSessionConstraints): string {
+  const parts: string[] = [];
+  if (typeof constraints.max_iterations === "number") {
+    parts.push(`Max iterations: ${constraints.max_iterations}`);
+  }
+  if (typeof constraints.max_duration_minutes === "number") {
+    parts.push(`Max duration: ${constraints.max_duration_minutes} minutes`);
+  }
+  if (typeof constraints.max_budget_usd === "number") {
+    parts.push(`Max budget: $${constraints.max_budget_usd.toFixed(2)}`);
+  }
+  if (constraints.do_not_touch && constraints.do_not_touch.length) {
+    parts.push(`Do not touch: ${constraints.do_not_touch.join(", ")}`);
+  }
+  if (!parts.length) return "None.";
+  return parts.map((entry) => `- ${entry}`).join("\n");
+}
+
 function resolveAssembledDate(context: GlobalContextResponse): Date {
   const parsed = Date.parse(context.assembled_at);
   return Number.isFinite(parsed) ? new Date(parsed) : new Date();
@@ -197,6 +237,20 @@ export function buildGlobalDecisionPrompt(
   const lines: string[] = [];
   lines.push("You are the Global Agent managing multiple projects.");
   lines.push("");
+  if (options.session) {
+    lines.push("## Session Briefing");
+    lines.push(`Session ID: ${options.session.session_id}`);
+    lines.push(`Iteration: ${options.session.iteration_index + 1}`);
+    lines.push("Briefing summary:");
+    lines.push(options.session.briefing_summary || "None.");
+    lines.push("Goals:");
+    lines.push(formatSessionList(options.session.goals));
+    lines.push("Priority projects:");
+    lines.push(formatSessionList(options.session.priority_projects));
+    lines.push("Constraints:");
+    lines.push(formatSessionConstraints(options.session.constraints));
+    lines.push("");
+  }
   lines.push("## User Preferences");
   lines.push(
     `- Quiet hours: ${preferences.quiet_hours.start}-${preferences.quiet_hours.end} (${quietNow ? "quiet hours active" : "active hours"})`

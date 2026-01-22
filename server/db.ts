@@ -328,6 +328,8 @@ export type GlobalShiftRow = {
   status: ShiftStatus;
   agent_type: string | null;
   agent_id: string | null;
+  session_id: string | null;
+  iteration_index: number | null;
   started_at: string;
   completed_at: string | null;
   expires_at: string | null;
@@ -722,21 +724,63 @@ function initSchema(database: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_global_shift_handoffs_created
       ON global_shift_handoffs(created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS global_agent_sessions (
+      id TEXT PRIMARY KEY,
+      chat_thread_id TEXT,
+      state TEXT NOT NULL,
+      onboarding_rubric TEXT,
+      integrations_configured TEXT,
+      goals TEXT,
+      priority_projects TEXT,
+      constraints TEXT,
+      briefing_summary TEXT,
+      briefing_confirmed_at TEXT,
+      autonomous_started_at TEXT,
+      paused_at TEXT,
+      iteration_count INTEGER NOT NULL DEFAULT 0,
+      decisions_count INTEGER NOT NULL DEFAULT 0,
+      actions_count INTEGER NOT NULL DEFAULT 0,
+      last_check_in_at TEXT,
+      ended_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_global_agent_sessions_state
+      ON global_agent_sessions(state);
+
+    CREATE TABLE IF NOT EXISTS global_agent_session_events (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      payload TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES global_agent_sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_global_agent_session_events_session
+      ON global_agent_session_events(session_id, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS global_shifts (
       id TEXT PRIMARY KEY,
       status TEXT NOT NULL DEFAULT 'active',
       agent_type TEXT,
       agent_id TEXT,
+      session_id TEXT,
+      iteration_index INTEGER,
       started_at TEXT NOT NULL,
       completed_at TEXT,
       expires_at TEXT,
       handoff_id TEXT,
       error TEXT,
-      FOREIGN KEY (handoff_id) REFERENCES global_shift_handoffs(id)
+      FOREIGN KEY (handoff_id) REFERENCES global_shift_handoffs(id),
+      FOREIGN KEY (session_id) REFERENCES global_agent_sessions(id)
     );
 
     CREATE INDEX IF NOT EXISTS idx_global_shifts_status
       ON global_shifts(status);
+    CREATE INDEX IF NOT EXISTS idx_global_shifts_session
+      ON global_shifts(session_id);
 
     CREATE TABLE IF NOT EXISTS global_patterns (
       id TEXT PRIMARY KEY,
@@ -1170,6 +1214,22 @@ function initSchema(database: Database.Database) {
   }
   if (!hasWorkOrderRunId) {
     database.exec("ALTER TABLE chat_action_ledger ADD COLUMN work_order_run_id TEXT;");
+  }
+
+  const globalShiftColumns = database
+    .prepare("PRAGMA table_info(global_shifts)")
+    .all() as Array<{ name: string }>;
+  const hasGlobalSessionId = globalShiftColumns.some((c) => c.name === "session_id");
+  const hasGlobalIterationIndex = globalShiftColumns.some(
+    (c) => c.name === "iteration_index"
+  );
+  if (!hasGlobalSessionId) {
+    database.exec(
+      "ALTER TABLE global_shifts ADD COLUMN session_id TEXT REFERENCES global_agent_sessions(id);"
+    );
+  }
+  if (!hasGlobalIterationIndex) {
+    database.exec("ALTER TABLE global_shifts ADD COLUMN iteration_index INTEGER;");
   }
 }
 
@@ -2635,11 +2695,18 @@ export function startGlobalShift(params: {
   agentType?: string | null;
   agentId?: string | null;
   timeoutMinutes?: number | null;
+  sessionId?: string | null;
+  iterationIndex?: number | null;
 }): StartGlobalShiftResult {
   const database = getDb();
   const now = new Date();
   const agentType = normalizeOptionalString(params.agentType);
   const agentId = normalizeOptionalString(params.agentId);
+  const sessionId = normalizeOptionalString(params.sessionId);
+  const iterationIndex =
+    typeof params.iterationIndex === "number" && Number.isFinite(params.iterationIndex)
+      ? Math.trunc(params.iterationIndex)
+      : null;
   const timeoutMinutes = normalizeTimeoutMinutes(params.timeoutMinutes);
   const startedAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + timeoutMinutes * 60_000).toISOString();
@@ -2659,6 +2726,8 @@ export function startGlobalShift(params: {
       status: "active",
       agent_type: agentType,
       agent_id: agentId,
+      session_id: sessionId,
+      iteration_index: iterationIndex,
       started_at: startedAt,
       completed_at: null,
       expires_at: expiresAt,
@@ -2669,9 +2738,9 @@ export function startGlobalShift(params: {
     database
       .prepare(
         `INSERT INTO global_shifts
-          (id, status, agent_type, agent_id, started_at, completed_at, expires_at, handoff_id, error)
+          (id, status, agent_type, agent_id, session_id, iteration_index, started_at, completed_at, expires_at, handoff_id, error)
          VALUES
-          (@id, @status, @agent_type, @agent_id, @started_at, @completed_at, @expires_at, @handoff_id, @error)`
+          (@id, @status, @agent_type, @agent_id, @session_id, @iteration_index, @started_at, @completed_at, @expires_at, @handoff_id, @error)`
       )
       .run(row);
     return { ok: true, shift: row } as const;
