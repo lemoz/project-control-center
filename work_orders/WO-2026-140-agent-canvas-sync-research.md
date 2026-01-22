@@ -1,13 +1,13 @@
 ---
 id: WO-2026-140
 title: Agent-Canvas Focus Sync Research
-goal: Explore how to connect agent shift decisions to canvas focus, including "follow agent" mode and manual override.
+goal: Explore how to connect agent shift decisions to canvas focus, including follow-agent mode and manual override.
 context:
-  - Landing page canvas should follow agent's attention
+  - Landing page canvas should follow agent attention
   - When agent focuses on a WO, canvas highlights/zooms to it
   - Users can click to explore manually
   - Need graceful handoff between agent-driven and user-driven focus
-  - "Resume following" when user is done exploring
+  - Resume-following option when user is done exploring
 acceptance_criteria:
   - Document how agent decisions are currently exposed
   - Propose focus sync mechanism (polling, events, websocket?)
