@@ -28,3 +28,48 @@ Build a local-first Project Control Center: a Next.js PWA + local runner to mana
 - UI dev server: `npm run dev`
 - Server dev: `npm run server:dev`
 - Tests: `npm test`
+
+## Escalation Handling
+
+When a builder agent cannot complete a task (missing dependencies, needs manual verification, requires user decision), it can request escalation.
+
+### How Escalation Works
+
+1. **Builder requests help** - Emits `<<<NEED_HELP>>>...<<<END_HELP>>>` block with:
+   - `what_i_tried`: What the builder attempted
+   - `what_i_need`: What it needs from the user
+   - `inputs`: Array of `{key, label}` for required user inputs
+
+2. **Run pauses** - Status changes to `waiting_for_input`, escalation record stored in `run.escalation` DB column
+
+3. **User provides input** - Call the API endpoint:
+   ```
+   POST /runs/:runId/provide-input
+   Content-Type: application/json
+
+   {
+     "input_key_1": "value",
+     "input_key_2": "value"
+   }
+   ```
+
+4. **Run resumes** - Status changes to `building`, builder continues with provided inputs
+
+### Finding Escalation Details
+
+- **Run logs**: Check `{run_dir}/run.log` for "Escalation requested" message
+- **Database**: Query `SELECT escalation FROM runs WHERE id = ?` and parse JSON
+- **API**: `GET /runs/:runId` returns escalation details in response
+
+### Common Escalation Scenarios
+
+- Missing API keys or environment variables
+- Manual test verification required
+- Ambiguous requirements needing user clarification
+- External service unavailable
+
+### Important
+
+- Do NOT manually edit the database status to bypass escalation
+- Do NOT create resolution files manually - use the API
+- The builder subprocess is paused and waiting for the API to signal resume
