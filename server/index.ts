@@ -139,6 +139,18 @@ import { buildShiftContext } from "./shift_context.js";
 import { buildGlobalContextResponse } from "./global_context.js";
 import { createProjectFromSpec, type CreateProjectInput } from "./global_agent.js";
 import {
+  completeGlobalAgentOnboarding,
+  createGlobalAgentSession,
+  endGlobalAgentSession,
+  getActiveGlobalAgentSession,
+  listGlobalAgentSessionEvents,
+  pauseAutonomousSessionForUserMessage,
+  pauseGlobalAgentSession,
+  startGlobalAgentSessionAutonomous,
+  stopGlobalAgentSession,
+  updateGlobalAgentSessionDetails,
+} from "./global_agent_sessions.js";
+import {
   getGlobalBudget,
   getProjectBudget,
   setGlobalMonthlyBudget,
@@ -1600,6 +1612,100 @@ app.post("/global/shifts/:shiftId/handoff", (req, res) => {
       error: err instanceof Error ? err.message : "failed to create handoff",
     });
   }
+});
+
+app.get("/global/sessions/active", (req, res) => {
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit = Number.isFinite(limitRaw) ? Math.trunc(limitRaw) : 50;
+  const session = getActiveGlobalAgentSession();
+  if (!session) {
+    return res.json({ session: null, events: [] });
+  }
+  const events = listGlobalAgentSessionEvents({ sessionId: session.id, limit });
+  return res.json({ session, events });
+});
+
+app.get("/global/sessions/:sessionId/events", (req, res) => {
+  const { sessionId } = req.params;
+  if (!sessionId || !sessionId.trim()) {
+    return res.status(400).json({ error: "`sessionId` must be provided" });
+  }
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit = Number.isFinite(limitRaw) ? Math.trunc(limitRaw) : 50;
+  const events = listGlobalAgentSessionEvents({ sessionId, limit });
+  return res.json({ events });
+});
+
+app.post("/global/sessions", (_req, res) => {
+  const created = createGlobalAgentSession();
+  if (!created.ok) {
+    return res.status(409).json({
+      error: created.error,
+      active_session: created.activeSession ?? null,
+    });
+  }
+  return res.status(201).json({ session: created.session });
+});
+
+app.patch("/global/sessions/:sessionId", (req, res) => {
+  const { sessionId } = req.params;
+  if (!sessionId || !sessionId.trim()) {
+    return res.status(400).json({ error: "`sessionId` must be provided" });
+  }
+  const updated = updateGlobalAgentSessionDetails(sessionId, req.body);
+  if (!updated.ok) return res.status(400).json({ error: updated.error });
+  return res.json({ session: updated.session });
+});
+
+app.post("/global/sessions/:sessionId/onboarding/complete", (req, res) => {
+  const { sessionId } = req.params;
+  if (!sessionId || !sessionId.trim()) {
+    return res.status(400).json({ error: "`sessionId` must be provided" });
+  }
+  const result = completeGlobalAgentOnboarding(sessionId);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  return res.json({ session: result.session });
+});
+
+app.post("/global/sessions/:sessionId/start", (req, res) => {
+  const { sessionId } = req.params;
+  if (!sessionId || !sessionId.trim()) {
+    return res.status(400).json({ error: "`sessionId` must be provided" });
+  }
+  const resume = Boolean(req.body && typeof req.body === "object" && "resume" in req.body && req.body.resume);
+  const result = startGlobalAgentSessionAutonomous({ sessionId, resume });
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  return res.json({ session: result.session });
+});
+
+app.post("/global/sessions/:sessionId/pause", (req, res) => {
+  const { sessionId } = req.params;
+  if (!sessionId || !sessionId.trim()) {
+    return res.status(400).json({ error: "`sessionId` must be provided" });
+  }
+  const result = pauseGlobalAgentSession(sessionId, "user_pause");
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  return res.json({ session: result.session });
+});
+
+app.post("/global/sessions/:sessionId/stop", (req, res) => {
+  const { sessionId } = req.params;
+  if (!sessionId || !sessionId.trim()) {
+    return res.status(400).json({ error: "`sessionId` must be provided" });
+  }
+  const result = stopGlobalAgentSession(sessionId, "Stopped by user");
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  return res.json({ session: result.session, summary: result.summary });
+});
+
+app.post("/global/sessions/:sessionId/end", (req, res) => {
+  const { sessionId } = req.params;
+  if (!sessionId || !sessionId.trim()) {
+    return res.status(400).json({ error: "`sessionId` must be provided" });
+  }
+  const result = endGlobalAgentSession(sessionId);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  return res.json({ session: result.session });
 });
 
 app.post("/projects/:id/escalations", (req, res) => {
@@ -3194,6 +3300,10 @@ app.post("/chat/threads/:threadId/messages", (req, res) => {
   const threadId = req.params.threadId;
   try {
     const payload = ChatMessageRequestSchema.parse(req.body ?? {});
+    const thread = getChatThreadById(threadId);
+    if (thread?.scope === "global") {
+      pauseAutonomousSessionForUserMessage();
+    }
     const run = enqueueChatTurnForThread({
       threadId,
       content: payload.content,
@@ -3234,6 +3344,7 @@ app.post("/chat/threads/:threadId/suggestions", async (req, res) => {
 app.post("/chat/global/messages", (req, res) => {
   try {
     const payload = ChatMessageRequestSchema.parse(req.body ?? {});
+    pauseAutonomousSessionForUserMessage();
     const run = enqueueChatTurn({
       scope: "global",
       content: payload.content,

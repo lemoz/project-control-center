@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { ChatOverlayLauncher } from "../components/ChatOverlayLauncher";
+import { GlobalSessionPanel } from "./GlobalSessionPanel";
 
 export default function GlobalChatPage() {
   return (
@@ -11,6 +12,8 @@ export default function GlobalChatPage() {
         </Link>
         <div className="muted" style={{ fontSize: 13 }}>Global</div>
       </section>
+
+      <GlobalSessionPanel />
 
       <Suspense fallback={null}>
         <ChatOverlayLauncher scope={{ scope: "global" }} />
