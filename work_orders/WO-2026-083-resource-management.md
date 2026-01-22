@@ -23,9 +23,9 @@ tags:
   - global-agent
   - infrastructure
 estimate_hours: 2
-status: ready
+status: parked
 created_at: 2026-01-12
-updated_at: 2026-01-13
+updated_at: 2026-01-22
 depends_on:
   - WO-2026-079
 era: v2
