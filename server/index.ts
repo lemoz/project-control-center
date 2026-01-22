@@ -1,6 +1,7 @@
 import "./env.js";
 import fs from "fs";
-import express, { type Response } from "express";
+import crypto from "crypto";
+import express, { type Response, type NextFunction } from "express";
 import cors from "cors";
 import {
   createUserInteraction,
@@ -28,6 +29,7 @@ import {
   listTracks,
   listRunPhaseMetrics,
   listShifts,
+  listProjects,
   markInProgressRunsFailed,
   markWorkOrderRunsMerged,
   setProjectStar,
@@ -222,6 +224,103 @@ const COST_PERIODS = ["day", "week", "month", "all_time"] as const;
 const COST_CATEGORIES = ["builder", "reviewer", "chat", "handoff", "other", "all"] as const;
 const COST_PERIOD_SET = new Set<string>(COST_PERIODS);
 const COST_CATEGORY_SET = new Set<string>(COST_CATEGORIES);
+const VOICE_SIGNATURE_HEADERS = [
+  "x-elevenlabs-signature",
+  "x-elevenlabs-hmac",
+  "x-webhook-signature",
+  "x-signature",
+];
+
+type RawBodyRequest = express.Request & { rawBody?: Buffer };
+
+function captureRawBody(req: express.Request, _res: Response, buf: Buffer): void {
+  (req as RawBodyRequest).rawBody = buf;
+}
+
+function getSignatureHeader(req: express.Request): string | null {
+  for (const header of VOICE_SIGNATURE_HEADERS) {
+    const value = req.header(header);
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+const SIGNATURE_PREFIXES = new Set(["v1", "sha256"]);
+
+function parseSignatureHeader(value: string): string[] {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const eqIndex = entry.indexOf("=");
+      if (eqIndex === -1) {
+        return entry;
+      }
+      const key = entry.slice(0, eqIndex).trim().toLowerCase();
+      const rest = entry.slice(eqIndex + 1).trim();
+      if (SIGNATURE_PREFIXES.has(key)) {
+        return rest;
+      }
+      return entry;
+    })
+    .filter(Boolean);
+}
+
+function normalizeSignature(value: string): string {
+  const trimmed = value.trim();
+  if (/^[0-9a-fA-F]+$/.test(trimmed) && trimmed.length % 2 === 0) {
+    return trimmed.toLowerCase();
+  }
+  return trimmed;
+}
+
+function timingSafeEqualString(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  if (aBuf.length !== bBuf.length) return false;
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+function verifyElevenLabsWebhook(
+  req: RawBodyRequest,
+  res: Response,
+  next: NextFunction
+): void {
+  const secret = process.env.CONTROL_CENTER_ELEVENLABS_WEBHOOK_SECRET;
+  if (!secret) {
+    res.status(500).json({ error: "voice webhook secret not configured" });
+    return;
+  }
+
+  const signatureHeader = getSignatureHeader(req);
+  if (!signatureHeader) {
+    res.status(401).json({ error: "missing webhook signature" });
+    return;
+  }
+
+  const rawBody = req.rawBody ?? Buffer.from("");
+  const computedHex = normalizeSignature(
+    crypto.createHmac("sha256", secret).update(rawBody).digest("hex")
+  );
+  const computedBase64 = normalizeSignature(
+    crypto.createHmac("sha256", secret).update(rawBody).digest("base64")
+  );
+  const computed = [computedHex, computedBase64];
+  const candidates = parseSignatureHeader(signatureHeader).map(normalizeSignature);
+
+  const ok = candidates.some((candidate) =>
+    computed.some((expected) => timingSafeEqualString(candidate, expected))
+  );
+  if (!ok) {
+    res.status(401).json({ error: "invalid webhook signature" });
+    return;
+  }
+
+  next();
+}
 
 function isLoopbackHost(value: string): boolean {
   const normalized = value.trim().toLowerCase();
@@ -320,10 +419,111 @@ app.use(
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
   })
 );
-app.use(express.json());
+app.use(express.json({ verify: captureRawBody }));
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });
+});
+
+app.post("/api/voice/global-context", verifyElevenLabsWebhook, (_req, res) => {
+  const response = buildGlobalContextResponse();
+  return res.json(response);
+});
+
+app.post("/api/voice/shift-context", verifyElevenLabsWebhook, (req, res) => {
+  const projectId =
+    typeof req.body?.projectId === "string" ? req.body.projectId.trim() : "";
+  if (!projectId) {
+    return res.status(400).json({ error: "`projectId` is required" });
+  }
+  const context = buildShiftContext(projectId);
+  if (!context) return res.status(404).json({ error: "project not found" });
+  syncProjectBudgetAlerts({
+    projectId: context.project.id,
+    projectName: context.project.name,
+    projectPath: context.project.path,
+    readyWorkOrderIds: context.work_orders.ready.map((wo) => wo.id),
+  });
+  return res.json(context);
+});
+
+app.post("/api/voice/work-order", verifyElevenLabsWebhook, (req, res) => {
+  const workOrderId =
+    typeof req.body?.workOrderId === "string" ? req.body.workOrderId.trim() : "";
+  if (!workOrderId) {
+    return res.status(400).json({ error: "`workOrderId` is required" });
+  }
+
+  const projectId =
+    typeof req.body?.projectId === "string" ? req.body.projectId.trim() : "";
+  if (projectId) {
+    const project = findProjectById(projectId);
+    if (!project) return res.status(404).json({ error: "project not found" });
+    try {
+      const workOrder = getWorkOrder(project.path, workOrderId);
+      const markdown = readWorkOrderMarkdown(project.path, workOrderId);
+      return res.json({
+        project: { id: project.id, name: project.name, path: project.path },
+        work_order: workOrder,
+        markdown,
+      });
+    } catch (err) {
+      return sendWorkOrderError(res, err);
+    }
+  }
+
+  const matches: Array<{
+    project: ProjectRow;
+    workOrder: WorkOrder;
+    markdown: string;
+  }> = [];
+  for (const project of listProjects()) {
+    try {
+      const workOrder = getWorkOrder(project.path, workOrderId);
+      const markdown = readWorkOrderMarkdown(project.path, workOrderId);
+      matches.push({ project, workOrder, markdown });
+    } catch (err) {
+      if (err instanceof WorkOrderError && err.code === "not_found") {
+        continue;
+      }
+      return sendWorkOrderError(res, err);
+    }
+  }
+
+  if (!matches.length) {
+    return res.status(404).json({ error: "work order not found" });
+  }
+  if (matches.length > 1) {
+    return res.status(409).json({
+      error: "multiple work orders match; provide projectId",
+      matches: matches.map((match) => ({
+        id: match.project.id,
+        name: match.project.name,
+        path: match.project.path,
+      })),
+    });
+  }
+
+  const match = matches[0];
+  return res.json({
+    project: {
+      id: match.project.id,
+      name: match.project.name,
+      path: match.project.path,
+    },
+    work_order: match.workOrder,
+    markdown: match.markdown,
+  });
+});
+
+app.post("/api/voice/run-status", verifyElevenLabsWebhook, (req, res) => {
+  const runId = typeof req.body?.runId === "string" ? req.body.runId.trim() : "";
+  if (!runId) {
+    return res.status(400).json({ error: "`runId` is required" });
+  }
+  const run = getRun(runId);
+  if (!run) return res.status(404).json({ error: "run not found" });
+  return res.json(run);
 });
 
 app.get("/observability/vm-health", async (req, res) => {
