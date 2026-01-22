@@ -1,10 +1,10 @@
 ---
-id: WO-2026-130
+id: WO-2026-133
 title: VM-Hosted PCC Remote Access + Auth
 goal: Expose VM-hosted PCC securely over HTTPS with simple authentication.
 context:
   - docs/pcc-vm-service-research-wo-2026-128.md
-  - WO-2026-129 (baseline VM deployment)
+  - WO-2026-132 (baseline VM deployment)
   - Current local access uses ngrok basic auth
 acceptance_criteria:
   - HTTPS terminates at the VM (Caddy/Nginx or tunnel)
@@ -27,7 +27,7 @@ status: backlog
 created_at: 2026-01-22
 updated_at: 2026-01-22
 depends_on:
-  - WO-2026-129
+  - WO-2026-132
 era: v2
 ---
 
