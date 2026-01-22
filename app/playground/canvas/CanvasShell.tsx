@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEventHandler } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import type { ProjectNode, Visualization, VisualizationNode, WorkOrderNode } from "./types";
 import { EscalationBadge } from "./EscalationBadge";
 import { ProjectPopup } from "./ProjectPopup";
@@ -11,6 +12,7 @@ import { useCanvasInteraction } from "./useCanvasInteraction";
 import { defaultVisualizationId, findVisualization, visualizations } from "./visualizations";
 import type { RiverBubbleDetails } from "./visualizations/TimelineRiverViz";
 import type { HeatmapGrouping } from "./visualizations/HeatmapGridViz";
+import { selectWorkOrderNodes, type WorkOrderFilter } from "./visualizations/OrbitalGravityViz";
 
 const TOOLTIP_OFFSET = 14;
 const CLICK_THRESHOLD = 4;
@@ -34,6 +36,17 @@ function supportsLayoutOptions(
   visualization: Visualization | null
 ): visualization is LayoutConfigurableVisualization {
   return Boolean(visualization && "setLayoutOptions" in visualization);
+}
+
+type WorkOrderFilterVisualization = Visualization & {
+  setWorkOrderFilter?: (filter: WorkOrderFilter) => void;
+  setProjectId?: (projectId: string | null) => void;
+};
+
+function supportsWorkOrderFilter(
+  visualization: Visualization | null
+): visualization is WorkOrderFilterVisualization {
+  return Boolean(visualization && "setWorkOrderFilter" in visualization);
 }
 
 function isWorkOrderNode(node: VisualizationNode | null): node is WorkOrderNode {
@@ -102,11 +115,13 @@ export function CanvasShell() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const vizRef = useRef<Visualization | null>(null);
+  const searchParams = useSearchParams();
   const [selectedVizId, setSelectedVizId] = useState(defaultVisualizationId);
   const [selectedRun, setSelectedRun] = useState<RiverBubbleDetails | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0, dpr: 1 });
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [heatmapGrouping, setHeatmapGrouping] = useState<HeatmapGrouping>("status");
+  const [workOrderFilter, setWorkOrderFilter] = useState<WorkOrderFilter>("active");
   const lastFrame = useRef<number | null>(null);
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
 
@@ -117,13 +132,36 @@ export function CanvasShell() {
     dataRef.current = data;
   }, [data]);
 
+  const projectParam = searchParams.get("project") ?? searchParams.get("projectId");
+  const resolvedProjectId = useMemo(() => {
+    if (!data.nodes.length) return null;
+    if (projectParam) {
+      const match = data.nodes.find((node) => node.id === projectParam);
+      if (match) return match.id;
+    }
+    const activeProject = data.nodes.find((node) => node.isActive);
+    return activeProject?.id ?? data.nodes[0]?.id ?? null;
+  }, [data.nodes, projectParam]);
+
+  const orbitalWorkOrderNodes = useMemo<WorkOrderNode[]>(() => {
+    if (!data.workOrderNodes || data.workOrderNodes.length === 0) return [];
+    return selectWorkOrderNodes({
+      nodes: data.workOrderNodes,
+      filter: workOrderFilter,
+      projectId: resolvedProjectId,
+    });
+  }, [data.workOrderNodes, resolvedProjectId, workOrderFilter]);
+
   const interactionNodes = useMemo<VisualizationNode[]>(() => {
+    if (selectedVizId === "orbital_work_orders") {
+      return orbitalWorkOrderNodes;
+    }
     if (selectedVizId !== "heatmap_grid") return data.nodes;
     if (data.workOrderNodes && data.workOrderNodes.length > 0) {
       return data.workOrderNodes;
     }
     return data.nodes;
-  }, [data.nodes, data.workOrderNodes, selectedVizId]);
+  }, [data.nodes, data.workOrderNodes, orbitalWorkOrderNodes, selectedVizId]);
 
   const combinedNodes = useMemo<VisualizationNode[]>(() => {
     if (!data.workOrderNodes?.length) return data.nodes;
@@ -195,6 +233,14 @@ export function CanvasShell() {
     if (!supportsLayoutOptions(visualization)) return;
     visualization.setLayoutOptions?.({ grouping: heatmapGrouping });
   }, [heatmapGrouping, selectedVizId]);
+
+  useEffect(() => {
+    if (selectedVizId !== "orbital_work_orders") return;
+    const visualization = vizRef.current;
+    if (!supportsWorkOrderFilter(visualization)) return;
+    visualization.setWorkOrderFilter?.(workOrderFilter);
+    visualization.setProjectId?.(resolvedProjectId ?? null);
+  }, [selectedVizId, workOrderFilter, resolvedProjectId]);
 
   useEffect(() => {
     vizRef.current?.update(data);
@@ -409,6 +455,21 @@ export function CanvasShell() {
               </option>
             ))}
           </select>
+          {selectedVizId === "orbital_work_orders" && (
+            <button
+              className="btnSecondary"
+              onClick={() =>
+                setWorkOrderFilter((prev) => (prev === "active" ? "all" : "active"))
+              }
+              title={
+                workOrderFilter === "active"
+                  ? "Show backlog and archive work orders"
+                  : "Show active, ready, and blocked work orders"
+              }
+            >
+              {workOrderFilter === "active" ? "Show all WOs" : "Show active only"}
+            </button>
+          )}
           <button className="btnSecondary" onClick={refresh} disabled={loading}>
             Refresh
           </button>

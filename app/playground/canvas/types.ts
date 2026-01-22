@@ -59,6 +59,9 @@ export type WorkOrderNode = {
   title: string;
   status: WorkOrderStatus;
   priority: number;
+  estimateHours: number | null;
+  trackId: string | null;
+  track: { id: string; name: string; color: string | null } | null;
   era: string | null;
   projectId: string;
   projectName: string;
