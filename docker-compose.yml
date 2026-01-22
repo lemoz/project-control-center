@@ -1,0 +1,40 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: .docker/Dockerfile.pcc-api
+    network_mode: "host"
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      CONTROL_CENTER_DB_PATH: /repos/pcc/control-center.db
+      CONTROL_CENTER_SCAN_ROOTS: /repos
+    volumes:
+      - ./:/repos/pcc
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${PCC_CODEX_HOME:-/home/runner/.codex}:/root/.codex
+
+  ui:
+    build:
+      context: .
+      dockerfile: .docker/Dockerfile.pcc-ui
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:4010
+    network_mode: "host"
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:4010
+      CONTROL_CENTER_INTERNAL_API_BASE_URL: http://localhost:4010
+    depends_on:
+      - api
+
+  runner:
+    build:
+      context: .docker
+      dockerfile: Dockerfile.pcc-runner
+    image: pcc-runner:latest
+    restart: unless-stopped
+    command: ["bash", "-lc", "sleep infinity"]

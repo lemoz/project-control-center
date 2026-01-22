@@ -1,0 +1,29 @@
+FROM node:20-slim AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM node:20-slim AS build
+WORKDIR /app
+ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:4010
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY package.json package-lock.json ./
+COPY --from=deps /app/node_modules ./node_modules
+COPY app ./app
+COPY public ./public
+COPY scripts ./scripts
+COPY next.config.js tsconfig.json next-env.d.ts ./
+RUN npm run build
+
+FROM node:20-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+ENV NEXT_PUBLIC_API_BASE_URL=http://localhost:4010
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/package.json ./package.json
+COPY --from=build /app/.next ./.next
+COPY --from=build /app/public ./public
+COPY --from=build /app/next.config.js ./next.config.js
+CMD ["npm", "run", "start", "--", "-H", "127.0.0.1"]
