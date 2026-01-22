@@ -36,6 +36,29 @@ export type RunTimelineEntry = {
   outcome: "passed" | "failed" | "in_progress";
 };
 
+export type RunFailureBreakdownCategory = {
+  category: string;
+  count: number;
+  percent: number;
+};
+
+export type RunFailurePatternBreakdown = {
+  category: string;
+  pattern: string;
+  count: number;
+  percent: number;
+};
+
+export type RunFailureBreakdown = {
+  total_runs: number;
+  total_terminal: number;
+  total_failed: number;
+  success_rate: number;
+  failure_rate: number;
+  categories: RunFailureBreakdownCategory[];
+  top_patterns: RunFailurePatternBreakdown[];
+};
+
 export type BudgetSummary = {
   monthly_budget: number;
   spent: number;

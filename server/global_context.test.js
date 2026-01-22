@@ -84,6 +84,9 @@ function createRunRow(params) {
     started_at: params.createdAt,
     finished_at: null,
     error: null,
+    failure_category: null,
+    failure_reason: null,
+    failure_detail: null,
     escalation: params.escalation ?? null,
   });
 }

@@ -112,6 +112,7 @@ import {
   getVmHealthResponse,
   listActiveRuns,
   listObservabilityAlerts,
+  listRunFailureBreakdown,
   listRunTimeline,
   tailRunLog,
 } from "./observability.js";
@@ -318,6 +319,18 @@ app.get("/observability/runs/timeline", (req, res) => {
   const hoursRaw = typeof req.query.hours === "string" ? Number(req.query.hours) : NaN;
   const hours = Number.isFinite(hoursRaw) ? Math.trunc(hoursRaw) : 24;
   return res.json(listRunTimeline(hours));
+});
+
+app.get("/observability/runs/failure-breakdown", (req, res) => {
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit = Number.isFinite(limitRaw)
+    ? Math.max(10, Math.min(1000, Math.trunc(limitRaw)))
+    : 200;
+  const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
+  if (projectId && !findProjectById(projectId)) {
+    return res.status(404).json({ error: "project not found" });
+  }
+  return res.json(listRunFailureBreakdown(limit, projectId));
 });
 
 app.get("/observability/budget/summary", (_req, res) => {

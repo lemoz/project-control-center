@@ -52,8 +52,10 @@ import {
   type RemoteSyncOptions,
 } from "./remote_exec.js";
 import { enforceRunBudget } from "./budget_enforcement.js";
+import { buildFailureContext, classifyRunFailure } from "./failure_analysis.js";
 
 const DEFAULT_MAX_BUILDER_ITERATIONS = 10;
+const BASELINE_MAX_ATTEMPTS = 2;
 const MAX_TEST_OUTPUT_LINES = 200;
 const VM_ISOLATION_MODES = new Set(["vm", "vm+container"]);
 const REMOTE_RUN_WORKSPACES_ROOT = ".system/run-workspaces";
@@ -2958,6 +2960,7 @@ export async function runRun(runId: string) {
     const baselineLogPath = path.join(runDir, "tests", "baseline-npm-test.log");
     let baselineTests =
       readJsonIfExists<Array<{ command: string; passed: boolean; output?: string }>>(baselineResultsPath);
+    let baselineAttempts = 0;
     const setupMetadataBase: RunPhaseMetricMetadata = {
       cached: Boolean(baselineTests),
     };
@@ -2978,26 +2981,39 @@ export async function runRun(runId: string) {
           return;
         }
       }
-      try {
-        baselineTests = remoteConfig
-          ? await runRemoteTests({
-              repoPath: worktreePath,
-              runDir,
-              iteration: 0,
-              runId,
-              remote: remoteConfig,
-              logPath: baselineLogPath,
-              labelPrefix: "baseline",
-            })
-          : await runRepoTests(worktreePath, runDir, 0, runId, {
-              logPath: baselineLogPath,
-              label: "baseline npm test",
-            });
-        writeJson(baselineResultsPath, baselineTests);
-      } catch (err) {
-        baselineTests = [{ command: "tests", passed: false, output: String(err) }];
-        writeJson(baselineResultsPath, baselineTests);
+      let baselineFailures: Array<{ command: string; passed: boolean; output?: string }> = [];
+      for (let attempt = 1; attempt <= BASELINE_MAX_ATTEMPTS; attempt++) {
+        baselineAttempts = attempt;
+        try {
+          baselineTests = remoteConfig
+            ? await runRemoteTests({
+                repoPath: worktreePath,
+                runDir,
+                iteration: 0,
+                runId,
+                remote: remoteConfig,
+                logPath: baselineLogPath,
+                labelPrefix: "baseline",
+              })
+            : await runRepoTests(worktreePath, runDir, 0, runId, {
+                logPath: baselineLogPath,
+                label: "baseline npm test",
+              });
+          writeJson(baselineResultsPath, baselineTests);
+        } catch (err) {
+          baselineTests = [{ command: "tests", passed: false, output: String(err) }];
+          writeJson(baselineResultsPath, baselineTests);
+        }
+
+        baselineFailures = baselineTests.filter((test) => !test.passed);
+        if (!baselineFailures.length) break;
+        if (baselineAttempts < BASELINE_MAX_ATTEMPTS) {
+          log(`Baseline tests failed (attempt ${baselineAttempts}); retrying...`);
+          await sleep(1000);
+        }
       }
+
+      setupMetadataBase.baseline_attempts = baselineAttempts;
 
       if (remoteConfig) {
         try {
@@ -3006,13 +3022,7 @@ export async function runRun(runId: string) {
         } catch (err) {
           const message = `remote artifact sync failed: ${String(err)}`;
           log(message);
-          updateRun(runId, {
-            status: "failed",
-            error: message,
-            finished_at: nowIso(),
-          });
-          recordSetupOutcome("failed", setupMetadataBase);
-          return;
+          setupMetadataBase.baseline_artifact_sync_failed = true;
         }
       } else {
         copyLocalTestArtifacts({ worktreePath, runDir, iteration: 0, log });
@@ -3458,13 +3468,6 @@ export async function runRun(runId: string) {
         } catch (err) {
           const message = `remote artifact sync failed: ${String(err)}`;
           log(message);
-          updateRun(runId, {
-            status: "failed",
-            error: message,
-            finished_at: nowIso(),
-          });
-          recordTestOutcome("failed");
-          return;
         }
       } else {
         copyLocalTestArtifacts({ worktreePath, runDir, iteration, log });
@@ -4446,6 +4449,22 @@ export async function runRun(runId: string) {
     const finalRun = getRunById(runId);
     if (
       finalRun &&
+      (finalRun.failure_category === null ||
+        finalRun.failure_reason === null ||
+        finalRun.failure_detail === null)
+    ) {
+      const failureContext = buildFailureContext(finalRun);
+      const failureReason = classifyRunFailure(failureContext);
+      if (failureReason) {
+        updateRun(runId, {
+          failure_category: failureReason.category,
+          failure_reason: failureReason.pattern,
+          failure_detail: failureReason.detail,
+        });
+      }
+    }
+    if (
+      finalRun &&
       (finalRun.status === "failed" ||
         finalRun.status === "you_review" ||
         finalRun.status === "baseline_failed" ||
@@ -4558,6 +4577,9 @@ export function enqueueCodexRun(
     started_at: null,
     finished_at: null,
     error: null,
+    failure_category: null,
+    failure_reason: null,
+    failure_detail: null,
     escalation: null,
   };
 

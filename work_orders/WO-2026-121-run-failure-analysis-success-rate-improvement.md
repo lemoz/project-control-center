@@ -26,13 +26,12 @@ tags:
   - metrics
   - critical
 estimate_hours: 6
-status: ready
+status: you_review
 created_at: 2026-01-21
-updated_at: 2026-01-21
+updated_at: 2026-01-22
 depends_on: []
 era: v2
 ---
-
 ## Analysis Approach
 
 1. Query run logs for failed runs

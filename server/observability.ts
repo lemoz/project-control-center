@@ -6,10 +6,13 @@ import {
   getProjectVm,
   getRunById,
   listProjects,
+  updateRun,
+  type RunFailureCategory,
   type ProjectRow,
   type RunRow,
 } from "./db.js";
 import { remoteExec, RemoteExecError } from "./remote_exec.js";
+import { buildFailureContext, classifyRunFailure } from "./failure_analysis.js";
 
 type VmMetric = {
   used_gb: number;
@@ -47,6 +50,29 @@ export type RunTimelineEntry = {
   started_at: string | null;
   finished_at: string | null;
   outcome: "passed" | "failed" | "in_progress";
+};
+
+export type RunFailureBreakdownCategory = {
+  category: RunFailureCategory;
+  count: number;
+  percent: number;
+};
+
+export type RunFailurePatternBreakdown = {
+  category: RunFailureCategory;
+  pattern: string;
+  count: number;
+  percent: number;
+};
+
+export type RunFailureBreakdownResponse = {
+  total_runs: number;
+  total_terminal: number;
+  total_failed: number;
+  success_rate: number;
+  failure_rate: number;
+  categories: RunFailureBreakdownCategory[];
+  top_patterns: RunFailurePatternBreakdown[];
 };
 
 export type BudgetSummaryResponse = {
@@ -430,6 +456,107 @@ export function listRunTimeline(hours = 24): RunTimelineEntry[] {
     finished_at: run.finished_at,
     outcome: outcomeForStatus(run.status),
   }));
+}
+
+function toPercent(count: number, total: number): number {
+  if (!Number.isFinite(count) || !Number.isFinite(total) || total <= 0) return 0;
+  return Math.round((count / total) * 1000) / 10;
+}
+
+export function listRunFailureBreakdown(
+  limit = 200,
+  projectId?: string | null
+): RunFailureBreakdownResponse {
+  const database = getDb();
+  const safeLimit = Math.max(10, Math.min(1000, Math.trunc(limit)));
+  const rows = projectId
+    ? (database
+        .prepare("SELECT * FROM runs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?")
+        .all(projectId, safeLimit) as RunRow[])
+    : (database
+        .prepare("SELECT * FROM runs ORDER BY created_at DESC LIMIT ?")
+        .all(safeLimit) as RunRow[]);
+
+  const categoryCounts = new Map<RunFailureCategory, number>();
+  const patternCounts = new Map<string, { category: RunFailureCategory; count: number }>();
+  let totalFailed = 0;
+  let totalPassed = 0;
+
+  for (const run of rows) {
+    if (PASSED_STATUSES.has(run.status)) {
+      totalPassed += 1;
+    }
+    if (!FAILED_STATUSES.has(run.status)) continue;
+
+    totalFailed += 1;
+    let category = run.failure_category ?? null;
+    let pattern = run.failure_reason ?? null;
+    let detail = run.failure_detail ?? null;
+
+    if (!category || !pattern) {
+      const context = buildFailureContext(run);
+      const classified = classifyRunFailure(context);
+      if (classified) {
+        category = classified.category;
+        pattern = classified.pattern;
+        detail = classified.detail;
+        if (
+          run.failure_category === null ||
+          run.failure_reason === null ||
+          run.failure_detail === null
+        ) {
+          updateRun(run.id, {
+            failure_category: category,
+            failure_reason: pattern,
+            failure_detail: detail,
+          });
+        }
+      }
+    }
+
+    const resolvedCategory = category ?? "unknown";
+    const resolvedPattern = pattern ?? "unknown";
+    categoryCounts.set(
+      resolvedCategory,
+      (categoryCounts.get(resolvedCategory) ?? 0) + 1
+    );
+    const existing = patternCounts.get(resolvedPattern);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      patternCounts.set(resolvedPattern, { category: resolvedCategory, count: 1 });
+    }
+  }
+
+  const totalRuns = rows.length;
+  const totalTerminal = totalPassed + totalFailed;
+  const categories = Array.from(categoryCounts.entries())
+    .map(([category, count]) => ({
+      category,
+      count,
+      percent: toPercent(count, totalFailed),
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  const topPatterns = Array.from(patternCounts.entries())
+    .map(([pattern, entry]) => ({
+      pattern,
+      category: entry.category,
+      count: entry.count,
+      percent: toPercent(entry.count, totalFailed),
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  return {
+    total_runs: totalRuns,
+    total_terminal: totalTerminal,
+    total_failed: totalFailed,
+    success_rate: toPercent(totalPassed, totalTerminal),
+    failure_rate: toPercent(totalFailed, totalTerminal),
+    categories,
+    top_patterns: topPatterns,
+  };
 }
 
 function daysBetweenInclusive(start: string, end: string): number {

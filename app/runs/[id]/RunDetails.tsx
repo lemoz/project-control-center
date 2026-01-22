@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
+function formatFailureLabel(value: string | null | undefined): string {
+  if (!value) return "";
+  return value.replace(/_/g, " ");
+}
+
 type RunStatus =
   | "queued"
   | "baseline_failed"
@@ -67,6 +72,9 @@ type RunDetails = {
   started_at: string | null;
   finished_at: string | null;
   error: string | null;
+  failure_category?: string | null;
+  failure_reason?: string | null;
+  failure_detail?: string | null;
   escalation?: RunEscalation | null;
   log_tail?: string;
   builder_log_tail?: string;
@@ -379,6 +387,19 @@ export function RunDetails({ runId }: { runId: string }) {
           <div className="muted" style={{ marginTop: 6 }}>
             {run.error || "Unknown error"}
           </div>
+          {(run.failure_category || run.failure_reason) && (
+            <div className="muted" style={{ marginTop: 6 }}>
+              {run.failure_category && (
+                <span>Category: {formatFailureLabel(run.failure_category)}</span>
+              )}
+              {run.failure_reason && (
+                <span>
+                  {run.failure_category ? " · " : ""}
+                  Pattern: {formatFailureLabel(run.failure_reason)}
+                </span>
+              )}
+            </div>
+          )}
         </section>
       )}
 
@@ -390,6 +411,19 @@ export function RunDetails({ runId }: { runId: string }) {
           <div className="muted" style={{ marginTop: 8 }}>
             {run.error || "Unknown error"}
           </div>
+          {(run.failure_category || run.failure_reason) && (
+            <div className="muted" style={{ marginTop: 6 }}>
+              {run.failure_category && (
+                <span>Category: {formatFailureLabel(run.failure_category)}</span>
+              )}
+              {run.failure_reason && (
+                <span>
+                  {run.failure_category ? " · " : ""}
+                  Pattern: {formatFailureLabel(run.failure_reason)}
+                </span>
+              )}
+            </div>
+          )}
         </section>
       )}
 

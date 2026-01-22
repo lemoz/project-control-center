@@ -109,6 +109,9 @@ test("provideRunInput records escalation resolution", () => {
     started_at: now,
     finished_at: null,
     error: null,
+    failure_category: null,
+    failure_reason: null,
+    failure_detail: null,
     escalation: JSON.stringify({
       what_i_tried: "Attempted setup",
       what_i_need: "Need API token",
