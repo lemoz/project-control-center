@@ -32,6 +32,13 @@ export const visualizations: VisualizationDefinition[] = [
     create: () => new OrbitalGravityVisualization(),
   },
   {
+    id: "orbital_work_orders",
+    name: "Orbital Work Orders",
+    description: "Status-ring orbit of work orders.",
+    create: () =>
+      new OrbitalGravityVisualization({ mode: "work-orders", filter: "active" }),
+  },
+  {
     id: "timeline_river",
     name: "Timeline River",
     description: "Runs flow through backlog to done across project lanes.",

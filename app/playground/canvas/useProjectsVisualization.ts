@@ -30,6 +30,9 @@ type WorkOrder = {
   title: string;
   status: WorkOrderStatus;
   priority: number;
+  estimate_hours: number | null;
+  trackId: string | null;
+  track: { id: string; name: string; color: string | null } | null;
   updated_at: string;
   depends_on: string[];
   era: string | null;
@@ -693,6 +696,12 @@ export function useProjectsVisualization(): {
           workOrder.status,
           woLastActivity
         );
+        const estimateHours =
+          typeof workOrder.estimate_hours === "number" &&
+          Number.isFinite(workOrder.estimate_hours)
+            ? workOrder.estimate_hours
+            : null;
+        const trackId = workOrder.trackId ?? workOrder.track?.id ?? null;
         workOrderNodes.push({
           id: workOrderNodeId,
           type: "work_order",
@@ -701,6 +710,9 @@ export function useProjectsVisualization(): {
           title: workOrder.title,
           status: workOrder.status,
           priority: workOrder.priority ?? 3,
+          estimateHours,
+          trackId,
+          track: workOrder.track ?? null,
           era: workOrder.era ?? null,
           projectId: project.id,
           projectName: project.name,

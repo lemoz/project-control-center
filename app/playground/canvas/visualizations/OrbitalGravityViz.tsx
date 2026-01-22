@@ -1,9 +1,24 @@
 import type {
   ProjectNode,
+  RunSummary,
   Visualization,
   VisualizationData,
   VisualizationNode,
+  WorkOrderNode,
+  WorkOrderStatus,
 } from "../types";
+
+type OrbitalMode = "projects" | "work-orders";
+
+export type WorkOrderFilter = "active" | "all";
+
+export type OrbitalGravityOptions = {
+  mode?: OrbitalMode;
+  projectId?: string | null;
+  filter?: WorkOrderFilter;
+};
+
+type OrbitalNode = ProjectNode | WorkOrderNode;
 
 type Zone = {
   name: string;
@@ -38,13 +53,42 @@ type Palette = {
   base: string;
   label: string;
   glow: string;
+  stroke?: string;
 };
 
-const BASE_ZONES: Zone[] = [
+type WorkOrderRunPhase = "waiting" | "testing" | "reviewing" | "building" | null;
+
+type WorkOrderRing = "inner" | "middle" | "outer" | "archive";
+
+const PROJECT_ZONES: Zone[] = [
   { name: "focus", minR: 0, maxR: 80, color: "#fef3c7", label: "Focus" },
   { name: "active", minR: 80, maxR: 180, color: "#fef9c3", label: "Active" },
   { name: "ready", minR: 180, maxR: 280, color: "#f0fdf4", label: "Ready" },
   { name: "idle", minR: 280, maxR: 400, color: "#f8fafc", label: "Idle" },
+];
+
+const WORK_ORDER_ZONES: Zone[] = [
+  {
+    name: "inner",
+    minR: 40,
+    maxR: 140,
+    color: "#fef3c7",
+    label: "In Progress",
+  },
+  {
+    name: "middle",
+    minR: 140,
+    maxR: 260,
+    color: "#dcfce7",
+    label: "Ready",
+  },
+  {
+    name: "outer",
+    minR: 260,
+    maxR: 400,
+    color: "#f8fafc",
+    label: "Backlog",
+  },
 ];
 
 const BASE_OUTER_RADIUS = 400;
@@ -71,7 +115,55 @@ const COLORS = {
   blocked: "#f87171",
   parked: "#94a3b8",
   idle: "#64748b",
+  ready: "#22c55e",
+  backlog: "#64748b",
+  done: "#94a3b8",
 };
+
+const WORK_ORDER_BASE_HEAT: Record<WorkOrderStatus, number> = {
+  building: 0.9,
+  ai_review: 0.88,
+  you_review: 0.88,
+  ready: 0.6,
+  blocked: 0.78,
+  backlog: 0.28,
+  done: 0.12,
+  parked: 0.12,
+};
+
+const WORK_ORDER_STATUS_COLORS: Record<WorkOrderStatus, string> = {
+  building: COLORS.testing,
+  ai_review: COLORS.reviewing,
+  you_review: COLORS.reviewing,
+  ready: COLORS.ready,
+  blocked: COLORS.blocked,
+  backlog: COLORS.backlog,
+  done: COLORS.done,
+  parked: COLORS.parked,
+};
+
+const ACTIVE_WORK_ORDER_FILTER_STATUSES = new Set<WorkOrderStatus>([
+  "building",
+  "ai_review",
+  "you_review",
+  "ready",
+  "blocked",
+]);
+
+const ARCHIVE_WORK_ORDER_STATUSES = new Set<WorkOrderStatus>(["done", "parked"]);
+
+const BACKLOG_WORK_ORDER_STATUSES = new Set<WorkOrderStatus>(["backlog"]);
+
+const TERMINAL_RUN_STATUSES = new Set<RunSummary["status"]>([
+  "merged",
+  "failed",
+  "canceled",
+  "baseline_failed",
+  "merge_conflict",
+]);
+
+const MAX_BACKLOG_NODES = 20;
+const MAX_ARCHIVE_NODES = 20;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -114,13 +206,67 @@ function withAlpha(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${clamp(alpha, 0, 1)})`;
 }
 
+function isHexColor(value: string | null | undefined): value is string {
+  return typeof value === "string" && /^#?[0-9a-fA-F]{6}$/.test(value);
+}
+
+function normalizeHexColor(value: string | null | undefined, fallback: string): string {
+  if (!isHexColor(value)) return fallback;
+  return value.startsWith("#") ? value : `#${value}`;
+}
+
+function toHex(value: number): string {
+  return value.toString(16).padStart(2, "0");
+}
+
+function lightenHex(hex: string, amount: number): string {
+  const { r, g, b } = hexToRgb(hex);
+  const weight = clamp(amount, 0, 1);
+  const mix = (channel: number) => Math.round(channel + (255 - channel) * weight);
+  return `#${toHex(mix(r))}${toHex(mix(g))}${toHex(mix(b))}`;
+}
+
 function radiusFromConsumption(consumptionRate: number): number {
   const scaled = Math.log10(Math.max(1, consumptionRate));
   const radius = 10 + scaled * 8;
   return clamp(radius, 10, 30);
 }
 
-function targetHeatFor(node: ProjectNode): number {
+function workOrderBaseRadius(node: WorkOrderNode): number {
+  if (typeof node.estimateHours === "number" && Number.isFinite(node.estimateHours)) {
+    const estimate = Math.max(0, node.estimateHours);
+    if (estimate > 0) {
+      return clamp(10 + Math.sqrt(estimate) * 4, 10, 28);
+    }
+  }
+  const priority = clamp(node.priority ?? 3, 1, 5);
+  return clamp(10 + (6 - priority) * 3, 10, 26);
+}
+
+function workOrderSizeScale(status: WorkOrderStatus): number {
+  if (ARCHIVE_WORK_ORDER_STATUSES.has(status)) return 0.78;
+  if (BACKLOG_WORK_ORDER_STATUSES.has(status)) return 0.82;
+  if (status === "ready") return 0.92;
+  return 1;
+}
+
+function workOrderSpeedDamp(status: WorkOrderStatus): number {
+  if (ARCHIVE_WORK_ORDER_STATUSES.has(status)) return 0.45;
+  if (BACKLOG_WORK_ORDER_STATUSES.has(status)) return 0.55;
+  if (status === "blocked") return 0.6;
+  if (status === "ready") return 0.7;
+  return 1;
+}
+
+function isProjectNode(node: OrbitalNode): node is ProjectNode {
+  return node.type === "project";
+}
+
+function isWorkOrderNode(node: OrbitalNode): node is WorkOrderNode {
+  return node.type === "work_order";
+}
+
+function targetHeatForProject(node: ProjectNode): number {
   let heat = clamp(node.activityLevel, 0, 1);
   if (node.isActive) heat = Math.max(heat, 0.65);
   if (node.needsHuman || node.status === "blocked") heat = Math.max(heat, 0.78);
@@ -131,7 +277,38 @@ function targetHeatFor(node: ProjectNode): number {
   return clamp(heat, 0, 1);
 }
 
-function paletteForNode(node: ProjectNode): Palette {
+function resolveWorkOrderRunPhase(runs: RunSummary[]): WorkOrderRunPhase {
+  if (!runs.length) return null;
+  if (runs.some((run) => run.status === "waiting_for_input")) return "waiting";
+  if (runs.some((run) => run.status === "testing")) return "testing";
+  if (runs.some((run) => run.status === "ai_review" || run.status === "you_review")) {
+    return "reviewing";
+  }
+  if (runs.some((run) => run.status === "building" || run.status === "queued")) {
+    return "building";
+  }
+  return "building";
+}
+
+function targetHeatForWorkOrder(
+  node: WorkOrderNode,
+  runPhase: WorkOrderRunPhase | null
+): number {
+  let heat = WORK_ORDER_BASE_HEAT[node.status] ?? 0.5;
+  heat += node.activityLevel * 0.2;
+  if (runPhase === "waiting") {
+    heat = Math.max(heat, 0.9);
+  } else if (runPhase === "testing") {
+    heat = Math.max(heat, 0.84);
+  } else if (runPhase === "reviewing") {
+    heat = Math.max(heat, 0.88);
+  } else if (runPhase === "building") {
+    heat = Math.max(heat, 0.82);
+  }
+  return clamp(heat, 0, 1);
+}
+
+function paletteForProject(node: ProjectNode): Palette {
   if (node.needsHuman || node.status === "blocked") {
     return { base: COLORS.blocked, label: "#fecaca", glow: "#fca5a5" };
   }
@@ -153,12 +330,134 @@ function paletteForNode(node: ProjectNode): Palette {
   return { base: COLORS.active, label: "#dbeafe", glow: "#93c5fd" };
 }
 
-function computeOrbitRadius(node: ProjectNode, heat: number, layout: Layout): number {
+function statusAccentColorForWorkOrder(
+  node: WorkOrderNode,
+  runPhase: WorkOrderRunPhase | null
+): string {
+  if (runPhase === "waiting") return COLORS.waiting;
+  if (runPhase === "testing") return COLORS.testing;
+  if (runPhase === "reviewing") return COLORS.reviewing;
+  if (runPhase === "building") return WORK_ORDER_STATUS_COLORS.building;
+  return WORK_ORDER_STATUS_COLORS[node.status] ?? COLORS.backlog;
+}
+
+function paletteForWorkOrder(
+  node: WorkOrderNode,
+  runPhase: WorkOrderRunPhase | null
+): Palette {
+  const accent = statusAccentColorForWorkOrder(node, runPhase);
+  const base = normalizeHexColor(node.track?.color ?? null, accent);
+  const label = lightenHex(base, 0.55);
+  return {
+    base,
+    label,
+    glow: accent,
+    stroke: accent,
+  };
+}
+
+function computeProjectOrbitRadius(node: ProjectNode, heat: number, layout: Layout): number {
   const outerTarget =
     node.status === "parked" || (!node.isActive && node.activityLevel < 0.2)
       ? layout.archiveRadius
       : layout.outerRadius;
   return lerp(outerTarget, layout.innerOrbitRadius, heat);
+}
+
+function workOrderRingForStatus(
+  status: WorkOrderStatus,
+  runPhase: WorkOrderRunPhase | null
+): WorkOrderRing {
+  if (runPhase) return "inner";
+  if (status === "building" || status === "ai_review" || status === "you_review") return "inner";
+  if (status === "ready" || status === "blocked") return "middle";
+  if (status === "backlog") return "outer";
+  return "archive";
+}
+
+function computeWorkOrderOrbitRadius(
+  node: WorkOrderNode,
+  heat: number,
+  layout: Layout,
+  runPhase: WorkOrderRunPhase | null
+): number {
+  const ring = workOrderRingForStatus(node.status, runPhase);
+  if (ring === "archive") return layout.archiveRadius;
+  const index = ring === "inner" ? 0 : ring === "middle" ? 1 : 2;
+  const zone = layout.zones[index] ?? layout.zones[layout.zones.length - 1];
+  return lerp(zone.maxR, zone.minR, clamp(heat, 0, 1));
+}
+
+function sortByRecency(nodes: WorkOrderNode[]): WorkOrderNode[] {
+  return nodes.slice().sort((a, b) => {
+    const aTime = a.lastActivity?.getTime() ?? 0;
+    const bTime = b.lastActivity?.getTime() ?? 0;
+    return bTime - aTime;
+  });
+}
+
+export function selectWorkOrderNodes(params: {
+  nodes: WorkOrderNode[];
+  filter: WorkOrderFilter;
+  projectId?: string | null;
+  maxBacklog?: number;
+  maxArchive?: number;
+}): WorkOrderNode[] {
+  const {
+    nodes,
+    filter,
+    projectId = null,
+    maxBacklog = MAX_BACKLOG_NODES,
+    maxArchive = MAX_ARCHIVE_NODES,
+  } = params;
+
+  let filtered = nodes;
+  if (projectId) {
+    filtered = filtered.filter((node) => node.projectId === projectId);
+  }
+
+  if (filter === "active") {
+    return filtered.filter((node) => ACTIVE_WORK_ORDER_FILTER_STATUSES.has(node.status));
+  }
+
+  const backlogNodes = filtered.filter((node) => BACKLOG_WORK_ORDER_STATUSES.has(node.status));
+  const archiveNodes = filtered.filter((node) => ARCHIVE_WORK_ORDER_STATUSES.has(node.status));
+
+  const backlogIds = new Set(
+    sortByRecency(backlogNodes).slice(0, Math.max(0, maxBacklog)).map((node) => node.id)
+  );
+  const archiveIds = new Set(
+    sortByRecency(archiveNodes).slice(0, Math.max(0, maxArchive)).map((node) => node.id)
+  );
+
+  return filtered.filter((node) => {
+    if (BACKLOG_WORK_ORDER_STATUSES.has(node.status)) {
+      return backlogIds.has(node.id);
+    }
+    if (ARCHIVE_WORK_ORDER_STATUSES.has(node.status)) {
+      return archiveIds.has(node.id);
+    }
+    return true;
+  });
+}
+
+function buildRunMap(
+  runsByProject: VisualizationData["runsByProject"]
+): Map<string, RunSummary[]> {
+  const map = new Map<string, RunSummary[]>();
+  if (!runsByProject) return map;
+  for (const [projectId, runs] of Object.entries(runsByProject)) {
+    for (const run of runs) {
+      const key = `${projectId}::${run.work_order_id}`;
+      const existing = map.get(key);
+      if (existing) {
+        existing.push(run);
+      } else {
+        map.set(key, [run]);
+      }
+    }
+  }
+  return map;
 }
 
 export class OrbitalGravityVisualization implements Visualization {
@@ -170,10 +469,34 @@ export class OrbitalGravityVisualization implements Visualization {
   private ctx: CanvasRenderingContext2D | null = null;
   private data: VisualizationData = { nodes: [], edges: [], timestamp: new Date() };
   private nodeStates = new Map<string, OrbitalNodeState>();
+  private runPhaseByNode = new Map<string, WorkOrderRunPhase>();
   private lastFrame = 0;
   private focusedId: string | null = null;
   private focusUntil = 0;
   private hoveredId: string | null = null;
+  private mode: OrbitalMode;
+  private projectId: string | null;
+  private workOrderFilter: WorkOrderFilter;
+  private visibleNodes: OrbitalNode[] = [];
+
+  constructor(options: OrbitalGravityOptions = {}) {
+    this.mode = options.mode ?? "projects";
+    this.projectId = options.projectId ?? null;
+    this.workOrderFilter =
+      options.filter ?? (this.mode === "work-orders" ? "active" : "all");
+  }
+
+  setWorkOrderFilter(filter: WorkOrderFilter): void {
+    if (this.workOrderFilter === filter) return;
+    this.workOrderFilter = filter;
+    this.update(this.data);
+  }
+
+  setProjectId(projectId: string | null): void {
+    if (this.projectId === projectId) return;
+    this.projectId = projectId;
+    this.update(this.data);
+  }
 
   init(canvas: HTMLCanvasElement, data: VisualizationData): void {
     this.canvas = canvas;
@@ -186,12 +509,40 @@ export class OrbitalGravityVisualization implements Visualization {
     this.data = data;
     const layout = this.getLayout();
     const seen = new Set<string>();
+    const nodes = this.resolveNodes(data);
+    this.visibleNodes = nodes;
 
-    for (const node of data.nodes) {
-      const baseRadius = radiusFromConsumption(node.consumptionRate);
-      const targetHeat = targetHeatFor(node);
+    if (this.mode === "work-orders") {
+      const runMap = buildRunMap(data.runsByProject ?? undefined);
+      this.runPhaseByNode.clear();
+      for (const node of nodes) {
+        if (!isWorkOrderNode(node)) continue;
+        const runs = runMap.get(node.id) ?? [];
+        const activeRuns = runs.filter(
+          (run) => !TERMINAL_RUN_STATUSES.has(run.status)
+        );
+        this.runPhaseByNode.set(node.id, resolveWorkOrderRunPhase(activeRuns));
+      }
+    } else {
+      this.runPhaseByNode.clear();
+    }
+
+    for (const node of nodes) {
+      const baseRadius = isProjectNode(node)
+        ? radiusFromConsumption(node.consumptionRate)
+        : workOrderBaseRadius(node);
+      const runPhase = isWorkOrderNode(node)
+        ? this.runPhaseByNode.get(node.id) ?? null
+        : null;
+      const targetHeat = isProjectNode(node)
+        ? targetHeatForProject(node)
+        : targetHeatForWorkOrder(node, runPhase);
       const radialOffset = (seededFloat(`${node.id}-radius`) - 0.5) * RADIAL_JITTER * 2;
-      const initialRadius = computeOrbitRadius(node, targetHeat, layout) + radialOffset;
+      const initialRadius =
+        (isProjectNode(node)
+          ? computeProjectOrbitRadius(node, targetHeat, layout)
+          : computeWorkOrderOrbitRadius(node, targetHeat, layout, runPhase)) +
+        radialOffset;
       const existing = this.nodeStates.get(node.id);
       if (existing) {
         existing.baseRadius = baseRadius;
@@ -213,10 +564,25 @@ export class OrbitalGravityVisualization implements Visualization {
     for (const id of this.nodeStates.keys()) {
       if (!seen.has(id)) this.nodeStates.delete(id);
     }
+
+    if (this.focusedId && !seen.has(this.focusedId)) {
+      this.focusedId = null;
+    }
+    if (this.hoveredId && !seen.has(this.hoveredId)) {
+      this.hoveredId = null;
+    }
   }
 
   onNodeClick(node: VisualizationNode | null): void {
-    if (!node || node.type !== "project") {
+    if (!node) {
+      this.focusedId = null;
+      return;
+    }
+    if (this.mode === "projects" && node.type !== "project") {
+      this.focusedId = null;
+      return;
+    }
+    if (this.mode === "work-orders" && node.type !== "work_order") {
       this.focusedId = null;
       return;
     }
@@ -225,7 +591,19 @@ export class OrbitalGravityVisualization implements Visualization {
   }
 
   onNodeHover(node: VisualizationNode | null): void {
-    this.hoveredId = node && node.type === "project" ? node.id : null;
+    if (!node) {
+      this.hoveredId = null;
+      return;
+    }
+    if (this.mode === "projects" && node.type === "project") {
+      this.hoveredId = node.id;
+      return;
+    }
+    if (this.mode === "work-orders" && node.type === "work_order") {
+      this.hoveredId = node.id;
+      return;
+    }
+    this.hoveredId = null;
   }
 
   render(): void {
@@ -243,15 +621,24 @@ export class OrbitalGravityVisualization implements Visualization {
     this.drawZones(ctx, layout);
     this.drawSun(ctx, layout);
 
-    for (const node of this.data.nodes) {
+    for (const node of this.visibleNodes) {
       const state = this.nodeStates.get(node.id);
       if (!state) continue;
 
-      const targetHeat = targetHeatFor(node);
+      const runPhase = isWorkOrderNode(node)
+        ? this.runPhaseByNode.get(node.id) ?? null
+        : null;
+      const targetHeat = isProjectNode(node)
+        ? targetHeatForProject(node)
+        : targetHeatForWorkOrder(node, runPhase);
       const heatRate = targetHeat > state.heat ? HEAT_GAIN_RATE : HEAT_DECAY_RATE;
       state.heat = lerp(state.heat, targetHeat, smoothFactor(delta, heatRate));
 
-      const baseTargetRadius = computeOrbitRadius(node, state.heat, layout) + state.radialOffset;
+      const baseTargetRadius =
+        (isProjectNode(node)
+          ? computeProjectOrbitRadius(node, state.heat, layout)
+          : computeWorkOrderOrbitRadius(node, state.heat, layout, runPhase)) +
+        state.radialOffset;
       let focusBlend = 0;
       if (this.focusedId === node.id && now < this.focusUntil) {
         const remaining = this.focusUntil - now;
@@ -263,9 +650,10 @@ export class OrbitalGravityVisualization implements Visualization {
 
       const speedFactor = layout.outerRadius / Math.max(state.radius, layout.focusRadius);
       const focusSpeedDamp = lerp(1, 0.4, focusBlend);
+      const speedDamp = isWorkOrderNode(node) ? workOrderSpeedDamp(node.status) : 1;
       state.angularVelocity = clamp(
-        BASE_ORBIT_SPEED * speedFactor * focusSpeedDamp,
-        MIN_ORBIT_SPEED,
+        BASE_ORBIT_SPEED * speedFactor * focusSpeedDamp * speedDamp,
+        MIN_ORBIT_SPEED * speedDamp,
         MAX_ORBIT_SPEED
       );
       state.angle += state.angularVelocity * delta;
@@ -274,31 +662,39 @@ export class OrbitalGravityVisualization implements Visualization {
       const orbitY = Math.sin(state.angle) * state.radius;
       const hoverBoost = this.hoveredId === node.id ? 0.12 : 0;
       const focusBoost = focusBlend > 0 ? 0.18 : 0;
-      const size = state.baseRadius * (1 + state.heat * 0.25 + hoverBoost + focusBoost);
+      const sizeScale = isWorkOrderNode(node) ? workOrderSizeScale(node.status) : 1;
+      const size =
+        state.baseRadius * sizeScale * (1 + state.heat * 0.25 + hoverBoost + focusBoost);
 
       node.x = orbitX;
       node.y = orbitY;
       node.radius = size;
 
-      const palette = paletteForNode(node);
-      const idleDimming = node.isActive ? 1 : 0.7;
+      const palette = isProjectNode(node)
+        ? paletteForProject(node)
+        : paletteForWorkOrder(node, runPhase);
+      const idleDimming = isProjectNode(node) ? (node.isActive ? 1 : 0.7) : 1;
       const glow = clamp(0.25 + state.heat * 0.65, 0.2, 0.95) * idleDimming;
       const fillAlpha = clamp(0.28 + state.heat * 0.5, 0.2, 0.85) * idleDimming;
       const strokeAlpha = clamp(0.35 + state.heat * 0.45, 0.25, 0.9) * idleDimming;
+      const strokeColor = palette.stroke ?? palette.base;
 
       ctx.save();
       ctx.shadowBlur = 10 + state.heat * 24;
       ctx.shadowColor = withAlpha(palette.glow, glow * 0.6);
       ctx.fillStyle = withAlpha(palette.base, fillAlpha);
-      ctx.strokeStyle = withAlpha(palette.base, strokeAlpha);
-      ctx.lineWidth = node.isActive ? 1.6 : 1;
+      ctx.strokeStyle = withAlpha(strokeColor, strokeAlpha);
+      ctx.lineWidth = isProjectNode(node) && node.isActive ? 1.6 : 1.2;
+      if (isWorkOrderNode(node) && node.status === "blocked") {
+        ctx.lineWidth = 1.6;
+      }
       ctx.beginPath();
       ctx.arc(orbitX, orbitY, size, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
       ctx.restore();
 
-      if (node.needsHuman) {
+      if (isProjectNode(node) && node.needsHuman) {
         const dotRadius = 6;
         ctx.fillStyle = "#ff5c6a";
         ctx.beginPath();
@@ -318,12 +714,20 @@ export class OrbitalGravityVisualization implements Visualization {
         }
       }
 
-      const labelAlpha = clamp(0.25 + state.heat * 0.6, 0.2, 0.9) * idleDimming;
-      ctx.fillStyle = withAlpha(palette.label, labelAlpha);
-      ctx.font = "12px system-ui";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "top";
-      ctx.fillText(node.label, orbitX, orbitY + size + LABEL_OFFSET);
+      const showLabel =
+        isProjectNode(node) ||
+        this.hoveredId === node.id ||
+        this.focusedId === node.id ||
+        state.heat >= 0.7;
+
+      if (showLabel) {
+        const labelAlpha = clamp(0.25 + state.heat * 0.6, 0.2, 0.9) * idleDimming;
+        ctx.fillStyle = withAlpha(palette.label, labelAlpha);
+        ctx.font = isWorkOrderNode(node) ? "11px system-ui" : "12px system-ui";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.fillText(node.label, orbitX, orbitY + size + LABEL_OFFSET);
+      }
     }
   }
 
@@ -331,6 +735,19 @@ export class OrbitalGravityVisualization implements Visualization {
     this.canvas = null;
     this.ctx = null;
     this.nodeStates.clear();
+    this.runPhaseByNode.clear();
+    this.visibleNodes = [];
+  }
+
+  private resolveNodes(data: VisualizationData): OrbitalNode[] {
+    if (this.mode === "work-orders") {
+      return selectWorkOrderNodes({
+        nodes: data.workOrderNodes ?? [],
+        filter: this.workOrderFilter,
+        projectId: this.projectId,
+      });
+    }
+    return data.nodes;
   }
 
   private getLayout(): Layout {
@@ -338,16 +755,18 @@ export class OrbitalGravityVisualization implements Visualization {
     const minDimension = rect ? Math.min(rect.width, rect.height) : 520;
     const maxRadius = minDimension * 0.45;
     const scale = maxRadius / BASE_OUTER_RADIUS;
-    const zones = BASE_ZONES.map((zone) => ({
+    const baseZones = this.mode === "work-orders" ? WORK_ORDER_ZONES : PROJECT_ZONES;
+    const zones = baseZones.map((zone) => ({
       ...zone,
       minR: zone.minR * scale,
       maxR: zone.maxR * scale,
     }));
     const outerRadius = zones[zones.length - 1].maxR;
     const archiveRadius = outerRadius + ARCHIVE_EXTENSION * scale;
-    const activeZone = zones[1] ?? zones[0];
-    const innerOrbitRadius = (activeZone.minR + activeZone.maxR) / 2;
-    const focusRadius = Math.max(activeZone.minR * 0.5, BASE_FOCUS_RADIUS * scale);
+    const anchorIndex = this.mode === "work-orders" ? 0 : 1;
+    const anchorZone = zones[anchorIndex] ?? zones[0];
+    const innerOrbitRadius = (anchorZone.minR + anchorZone.maxR) / 2;
+    const focusRadius = Math.max(anchorZone.minR * 0.5, BASE_FOCUS_RADIUS * scale);
     const sunRadius = Math.max(BASE_SUN_RADIUS * scale, focusRadius * 0.45);
     return {
       zones,
@@ -391,6 +810,14 @@ export class OrbitalGravityVisualization implements Visualization {
     ctx.arc(0, 0, layout.archiveRadius, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
+
+    if (this.mode === "work-orders") {
+      ctx.fillStyle = "rgba(148, 163, 184, 0.6)";
+      ctx.font = "11px system-ui";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("Archive", 0, -layout.archiveRadius + 14);
+    }
   }
 
   private drawSun(ctx: CanvasRenderingContext2D, layout: Layout): void {
