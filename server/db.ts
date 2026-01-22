@@ -60,6 +60,16 @@ export type ProjectVmRow = {
 
 export type ProjectVmPatch = Partial<Omit<ProjectVmRow, "project_id">>;
 
+export type RunFailureCategory =
+  | "baseline_failure"
+  | "test_failure"
+  | "merge_conflict"
+  | "build_error"
+  | "timeout_or_resource"
+  | "agent_error"
+  | "canceled"
+  | "unknown";
+
 export type RunRow = {
   id: string;
   project_id: string;
@@ -93,6 +103,9 @@ export type RunRow = {
   started_at: string | null;
   finished_at: string | null;
   error: string | null;
+  failure_category: RunFailureCategory | null;
+  failure_reason: string | null;
+  failure_detail: string | null;
   escalation: string | null;
 };
 
@@ -522,6 +535,9 @@ function initSchema(database: Database.Database) {
       started_at TEXT,
       finished_at TEXT,
       error TEXT,
+      failure_category TEXT,
+      failure_reason TEXT,
+      failure_detail TEXT,
       escalation TEXT,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
     );
@@ -997,6 +1013,9 @@ function initSchema(database: Database.Database) {
   const hasConflictWithRunId = runColumns.some((c) => c.name === "conflict_with_run_id");
   const hasBuilderIteration = runColumns.some((c) => c.name === "builder_iteration");
   const hasEscalation = runColumns.some((c) => c.name === "escalation");
+  const hasFailureCategory = runColumns.some((c) => c.name === "failure_category");
+  const hasFailureReason = runColumns.some((c) => c.name === "failure_reason");
+  const hasFailureDetail = runColumns.some((c) => c.name === "failure_detail");
   if (!hasBranchName) {
     database.exec("ALTER TABLE runs ADD COLUMN branch_name TEXT;");
   }
@@ -1011,6 +1030,15 @@ function initSchema(database: Database.Database) {
   }
   if (!hasBuilderIteration) {
     database.exec("ALTER TABLE runs ADD COLUMN builder_iteration INTEGER NOT NULL DEFAULT 1;");
+  }
+  if (!hasFailureCategory) {
+    database.exec("ALTER TABLE runs ADD COLUMN failure_category TEXT;");
+  }
+  if (!hasFailureReason) {
+    database.exec("ALTER TABLE runs ADD COLUMN failure_reason TEXT;");
+  }
+  if (!hasFailureDetail) {
+    database.exec("ALTER TABLE runs ADD COLUMN failure_detail TEXT;");
   }
   if (!hasEscalation) {
     database.exec("ALTER TABLE runs ADD COLUMN escalation TEXT;");
@@ -1493,9 +1521,9 @@ export function createRun(run: RunRow): void {
   database
     .prepare(
       `INSERT INTO runs
-        (id, project_id, work_order_id, provider, status, iteration, builder_iteration, reviewer_verdict, reviewer_notes, summary, branch_name, source_branch, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error, escalation)
+        (id, project_id, work_order_id, provider, status, iteration, builder_iteration, reviewer_verdict, reviewer_notes, summary, branch_name, source_branch, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error, failure_category, failure_reason, failure_detail, escalation)
        VALUES
-        (@id, @project_id, @work_order_id, @provider, @status, @iteration, @builder_iteration, @reviewer_verdict, @reviewer_notes, @summary, @branch_name, @source_branch, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error, @escalation)`
+        (@id, @project_id, @work_order_id, @provider, @status, @iteration, @builder_iteration, @reviewer_verdict, @reviewer_notes, @summary, @branch_name, @source_branch, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error, @failure_category, @failure_reason, @failure_detail, @escalation)`
     )
     .run(run);
 }
@@ -1529,6 +1557,9 @@ export function updateRun(
       | "started_at"
       | "finished_at"
       | "error"
+      | "failure_category"
+      | "failure_reason"
+      | "failure_detail"
       | "escalation"
     >
   >
@@ -1547,6 +1578,9 @@ export function updateRun(
     { key: "started_at", column: "started_at" },
     { key: "finished_at", column: "finished_at" },
     { key: "error", column: "error" },
+    { key: "failure_category", column: "failure_category" },
+    { key: "failure_reason", column: "failure_reason" },
+    { key: "failure_detail", column: "failure_detail" },
     { key: "escalation", column: "escalation" },
   ];
   const sets = fields

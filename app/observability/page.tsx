@@ -4,12 +4,14 @@ import { useEffect, useMemo, useState } from "react";
 import { ActiveRunsPanel } from "./components/ActiveRunsPanel";
 import { AlertsBanner } from "./components/AlertsBanner";
 import { BudgetPanel } from "./components/BudgetPanel";
+import { FailureBreakdownPanel } from "./components/FailureBreakdownPanel";
 import { LiveLogs } from "./components/LiveLogs";
 import { RunTimeline } from "./components/RunTimeline";
 import { VMHealthPanel } from "./components/VMHealthPanel";
 import { useActiveRuns } from "./hooks/useActiveRuns";
 import { useAlerts } from "./hooks/useAlerts";
 import { useBudgetSummary } from "./hooks/useBudgetSummary";
+import { useFailureBreakdown } from "./hooks/useFailureBreakdown";
 import { useRunTimeline } from "./hooks/useRunTimeline";
 import { useVMHealth } from "./hooks/useVMHealth";
 
@@ -40,6 +42,7 @@ export default function ObservabilityPage() {
   const vmHealth = useVMHealth(refreshToken);
   const activeRuns = useActiveRuns(refreshToken);
   const budget = useBudgetSummary(refreshToken);
+  const failures = useFailureBreakdown(refreshToken);
   const timeline = useRunTimeline(refreshToken, TIMELINE_HOURS);
   const alerts = useAlerts(refreshToken);
 
@@ -75,6 +78,7 @@ export default function ObservabilityPage() {
       <section className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
         <VMHealthPanel data={vmHealth.data} loading={vmHealth.loading} error={vmHealth.error} />
         <BudgetPanel data={budget.data} loading={budget.loading} error={budget.error} />
+        <FailureBreakdownPanel data={failures.data} loading={failures.loading} error={failures.error} />
         <ActiveRunsPanel
           data={activeRuns.data}
           loading={activeRuns.loading}
