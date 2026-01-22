@@ -31,9 +31,9 @@ tags:
   - agent
   - ux
 estimate_hours: 2
-status: ready
-created_at: "2026-01-22"
-updated_at: "2026-01-22"
+status: you_review
+created_at: 2026-01-22
+updated_at: 2026-01-22
 depends_on: []
 era: v2
 ---
