@@ -2561,6 +2561,8 @@ app.get("/repos/:id/tech-tree", (req, res) => {
     era: string | null;
     dependsOn: string[];
     dependents: string[];
+    trackId: string | null;
+    track: { id: string; name: string; color: string | null } | null;
   };
 
   const nodes: DependencyNode[] = workOrders.map((wo) => ({
@@ -2571,6 +2573,8 @@ app.get("/repos/:id/tech-tree", (req, res) => {
     era: wo.era,
     dependsOn: wo.depends_on,
     dependents: dependentsMap.get(wo.id) ?? [],
+    trackId: wo.trackId,
+    track: wo.track,
   }));
 
   // Collect unique eras
