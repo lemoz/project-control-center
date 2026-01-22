@@ -22,12 +22,11 @@ tags:
   - tracks
   - visualization
 estimate_hours: 1
-status: ready
+status: you_review
 depends_on: []
-created_at: "2026-01-22"
-updated_at: "2026-01-22"
+created_at: 2026-01-22
+updated_at: 2026-01-22
 ---
-
 ## Summary
 
 The tech tree API currently returns work order nodes with basic info (id, title, status, depends_on). This WO adds track information to each node so the UI can visualize groupings.
