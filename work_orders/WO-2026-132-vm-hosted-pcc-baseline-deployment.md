@@ -23,13 +23,12 @@ tags:
   - vm
   - deployment
 estimate_hours: 4
-status: backlog
+status: ready
 created_at: 2026-01-22
 updated_at: 2026-01-22
 depends_on: []
 era: v2
 ---
-
 ## Notes
 - Prefer Docker Compose for repeatable deployment.
 - Keep the config minimal and scoped to PCC services only.
