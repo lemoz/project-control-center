@@ -33,6 +33,16 @@ updated_at: "YYYY-MM-DD"
 
 Optional fields (can be added to the frontmatter as needed):
 - `base_branch`: default base branch for runs when no run-level override is provided.
+- `depends_on`: array of Work Order IDs. Use `WO-YYYY-NNN` for same-project deps or
+  `project_id:WO-YYYY-NNN` for cross-project deps.
+
+### Dependencies
+Example:
+```yaml
+depends_on:
+  - "WO-2026-050"
+  - "videonest-api:WO-2026-001"
+```
 
 Everything below the frontmatter is free-form detail/spec.
 

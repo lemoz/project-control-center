@@ -24,6 +24,9 @@ type DependencyNode = {
   dependents: string[];
   trackId: string | null;
   track: { id: string; name: string; color: string | null } | null;
+  projectId: string;
+  projectName: string;
+  isExternal: boolean;
 };
 
 type TechTreeResponse = {
@@ -459,16 +462,19 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
 
   const focusId = selectedId || hoveredId;
   const selectedNode = data?.nodes.find((n) => n.id === selectedId) ?? null;
+  const nodeIndex = useMemo(() => {
+    if (!data) return new Map<string, DependencyNode>();
+    return new Map(data.nodes.map((node) => [node.id, node]));
+  }, [data]);
 
   // Compute blocked by (unmet dependencies)
   const blockedBy = useMemo(() => {
     if (!selectedNode || !data) return [];
-    const nodeMap = new Map(data.nodes.map((n) => [n.id, n]));
     return selectedNode.dependsOn.filter((depId) => {
-      const dep = nodeMap.get(depId);
+      const dep = nodeIndex.get(depId);
       return dep && dep.status !== "done";
     });
-  }, [selectedNode, data]);
+  }, [selectedNode, nodeIndex, data]);
 
   const scaledWidth = svgWidth * scale;
   const scaledHeight = svgHeight * scale;
@@ -613,6 +619,10 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
               return node.dependsOn.map((depId) => {
                 const from = nodePositions.get(depId);
                 if (!from) return null;
+                const depNode = nodeIndex.get(depId);
+                const isCrossProject = depNode
+                  ? depNode.projectId !== repoId
+                  : depId.includes(":");
 
                 const isHighlightedDep = focusId === node.id && highlightedDeps.has(depId);
                 const isHighlightedDependent = focusId === depId && highlightedDependents.has(node.id);
@@ -627,7 +637,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
                 const midX = (x1 + x2) / 2;
                 const path = `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
 
-                let stroke = "#555";
+                let stroke = isCrossProject ? "#3b82f6" : "#555";
                 if (isHighlightedDep) stroke = "#22c55e";
                 if (isHighlightedDependent) stroke = "#3b82f6";
 
@@ -638,6 +648,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
                     fill="none"
                     stroke={stroke}
                     strokeWidth={isHighlighted ? 3 : 1.5}
+                    strokeDasharray={isCrossProject ? "6 4" : undefined}
                     opacity={isDimmed ? 0.2 : 1}
                     markerEnd={isHighlighted ? "url(#arrowhead)" : undefined}
                   />
@@ -663,6 +674,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
               const isHighlighted = highlightedDeps.has(node.id) || highlightedDependents.has(node.id);
               const isDimmed = focusId && !isFocus && !isHighlighted;
               const inCycle = nodesInCycles.has(node.id);
+              const showProjectName = node.isExternal && (isHovered || isSelected);
 
               const statusColor = STATUS_COLORS[node.status];
 
@@ -727,6 +739,12 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
                     {node.era ? `${node.era} - ` : ""}
                     {node.dependsOn.length} deps - {node.dependents.length} unlocks
                   </text>
+
+                  {showProjectName && (
+                    <text x={14} y={72} fill="#60a5fa" fontSize={10}>
+                      {node.projectName}
+                    </text>
+                  )}
 
                   {/* Cycle warning icon */}
                   {inCycle && (
@@ -904,6 +922,11 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
               <div>
                 <div className="muted" style={{ fontSize: 12 }}>{selectedNode.id}</div>
                 <div style={{ fontWeight: 700, fontSize: 15, marginTop: 4 }}>{selectedNode.title}</div>
+                {selectedNode.isExternal && (
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    Project: {selectedNode.projectName}
+                  </div>
+                )}
               </div>
               <button
                 className="btnSecondary"
@@ -988,14 +1011,30 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
             )}
 
             <div style={{ marginTop: 16 }}>
-              <Link
-                href={`/projects/${encodeURIComponent(repoId)}/work-orders/${encodeURIComponent(selectedNode.id)}`}
-                className="btn"
-                style={{ width: "100%", textAlign: "center", display: "block" }}
-                onClick={onClose}
-              >
-                Open Work Order
-              </Link>
+              {(() => {
+                const rawId = selectedNode.id;
+                const colonIndex = rawId.indexOf(":");
+                const workOrderId =
+                  selectedNode.isExternal && colonIndex >= 0
+                    ? rawId.slice(colonIndex + 1)
+                    : rawId;
+                const targetProjectId = selectedNode.isExternal
+                  ? selectedNode.projectId
+                  : repoId;
+                const label = selectedNode.isExternal
+                  ? "Open External Work Order"
+                  : "Open Work Order";
+                return (
+                  <Link
+                    href={`/projects/${encodeURIComponent(targetProjectId)}/work-orders/${encodeURIComponent(workOrderId)}`}
+                    className="btn"
+                    style={{ width: "100%", textAlign: "center", display: "block" }}
+                    onClick={onClose}
+                  >
+                    {label}
+                  </Link>
+                );
+              })()}
             </div>
           </section>
         )}

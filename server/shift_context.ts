@@ -18,6 +18,14 @@ import { resolveRunnerSettingsForRepo } from "./settings.js";
 import { readControlMetadata, type ControlSuccessMetric } from "./sidecar.js";
 import type { TrackContext } from "./types.js";
 import { listWorkOrders, type WorkOrder, type WorkOrderStatus } from "./work_orders.js";
+import {
+  buildDependencyLookups,
+  resolveWorkOrderDependencies,
+  summarizeResolvedDependencies,
+  type DependencyBlocker,
+  type ResolvedDependency,
+  type WorkOrderLookup,
+} from "./work_order_dependencies.js";
 
 type SuccessMetric = {
   name: string;
@@ -32,6 +40,9 @@ export type WorkOrderSummary = {
   tags: string[];
   depends_on: string[];
   deps_satisfied: boolean;
+  resolved_dependencies: ResolvedDependency[];
+  blocked_by: DependencyBlocker[];
+  blocked_by_cross_project: boolean;
   track: WorkOrderTrackSummary | null;
 };
 
@@ -176,7 +187,13 @@ export function buildShiftContext(
 
   const workOrders = listWorkOrders(project.path);
   const tracks = listTracks(project.id);
-  const workOrderState = buildWorkOrderState(workOrders, tracks);
+  const dependencyLookups = buildDependencyLookups(project, workOrders);
+  const workOrderState = buildWorkOrderState(
+    workOrders,
+    tracks,
+    project.id,
+    dependencyLookups
+  );
   const trackContext = assembleTrackContext(tracks, workOrders);
 
   const now = new Date();
@@ -285,25 +302,44 @@ function normalizeSuccessMetric(value: unknown): SuccessMetric | null {
 
 function buildWorkOrderState(
   workOrders: WorkOrder[],
-  tracks: Track[]
+  tracks: Track[],
+  projectId: string,
+  dependencyLookups: Map<string, WorkOrderLookup>
 ): ShiftContext["work_orders"] {
   const trackIndex = new Map(tracks.map((track) => [track.id, track]));
-  const byId = new Map(workOrders.map((wo) => [wo.id, wo]));
+  const dependencyCache = new Map<
+    string,
+    { resolved: ResolvedDependency[]; summary: ReturnType<typeof summarizeResolvedDependencies> }
+  >();
 
-  const depsSatisfied = (wo: WorkOrder): boolean => {
-    if (!wo.depends_on.length) return true;
-    return wo.depends_on.every((depId) => byId.get(depId)?.status === "done");
+  const resolveDependenciesFor = (wo: WorkOrder) => {
+    const cached = dependencyCache.get(wo.id);
+    if (cached) return cached;
+    const resolved = resolveWorkOrderDependencies(wo, projectId, dependencyLookups);
+    const summary = summarizeResolvedDependencies(resolved);
+    const entry = { resolved, summary };
+    dependencyCache.set(wo.id, entry);
+    return entry;
   };
 
-  const toSummary = (wo: WorkOrder): WorkOrderSummary => ({
-    id: wo.id,
-    title: wo.title,
-    priority: wo.priority,
-    tags: wo.tags,
-    depends_on: wo.depends_on,
-    deps_satisfied: depsSatisfied(wo),
-    track: resolveWorkOrderTrack(wo, trackIndex),
-  });
+  const depsSatisfied = (wo: WorkOrder): boolean =>
+    resolveDependenciesFor(wo).summary.depsSatisfied;
+
+  const toSummary = (wo: WorkOrder): WorkOrderSummary => {
+    const dependencySummary = resolveDependenciesFor(wo);
+    return {
+      id: wo.id,
+      title: wo.title,
+      priority: wo.priority,
+      tags: wo.tags,
+      depends_on: wo.depends_on,
+      deps_satisfied: dependencySummary.summary.depsSatisfied,
+      resolved_dependencies: dependencySummary.resolved,
+      blocked_by: dependencySummary.summary.blockers,
+      blocked_by_cross_project: dependencySummary.summary.blockedByCrossProject,
+      track: resolveWorkOrderTrack(wo, trackIndex),
+    };
+  };
 
   const summary = {
     ready: 0,
