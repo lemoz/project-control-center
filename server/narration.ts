@@ -28,7 +28,7 @@ const RATE_LIMIT_MS = 30_000;
 const MAX_EVENTS = 6;
 const MAX_ACTIVE_RUNS = 6;
 const MAX_RECENT_NARRATIONS = 6;
-const MAX_NARRATION_CHARS = 320;
+const MAX_NARRATION_CHARS = 600;
 
 let lastNarrationAt = 0;
 let narrationInFlight = false;
@@ -145,7 +145,7 @@ function normalizeNarrationOutput(raw: string): string | null {
     cleaned = cleaned.slice(1, -1).trim();
   }
   cleaned = cleaned.replace(/\s+/g, " ").trim();
-  const withSentences = clampSentences(cleaned, 2);
+  const withSentences = clampSentences(cleaned, 4);
   const clamped = clampText(withSentences, MAX_NARRATION_CHARS);
   return clamped.trim() ? clamped : null;
 }
