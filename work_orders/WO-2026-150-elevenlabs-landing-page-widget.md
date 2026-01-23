@@ -11,25 +11,11 @@ context:
 acceptance_criteria:
   - Install @elevenlabs/react SDK
   - Create VoiceWidget component with mic button and speaking indicator
-  - Implement useConversation hook integration
-    - Connect to agent via signedUrl (not public agentId)
-    - Handle onConnect, onDisconnect, onMessage, onError
-    - Show status and isSpeaking state in UI
-  - Implement client tools that interact with canvas
-    - focusNode -> call canvas focus function
-    - highlightWorkOrder -> highlight WO node
-    - toggleDetailPanel -> show/hide detail panel
-  - Use sendContextualUpdate to feed live canvas state to agent
-    - Current focused node
-    - Visible projects/WOs
-    - Any selected items
-  - Create server endpoint to mint signed URLs
-    - POST /api/voice/session -> returns signedUrl
-    - Short-lived tokens (e.g., 5 minutes)
-  - Add visual indicators
-    - Listening state (pulsing mic)
-    - Speaking state (waveform or animation)
-    - Transcript display (optional, for accessibility)
+  - Implement useConversation hook integration - Connect to agent via signedUrl (not public agentId) - Handle onConnect, onDisconnect, onMessage, onError - Show status and isSpeaking state in UI
+  - Implement client tools that interact with canvas - focusNode -> call canvas focus function - highlightWorkOrder -> highlight WO node - toggleDetailPanel -> show/hide detail panel
+  - Use sendContextualUpdate to feed live canvas state to agent - Current focused node - Visible projects/WOs - Any selected items
+  - Create server endpoint to mint signed URLs - POST /api/voice/session -> returns signedUrl - Short-lived tokens (e.g., 5 minutes)
+  - Add visual indicators - Listening state (pulsing mic) - Speaking state (waveform or animation) - Transcript display (optional, for accessibility)
   - Handle errors gracefully (mic permission denied, connection failed)
   - Add text-only fallback for users who can't use voice
 non_goals:
@@ -47,9 +33,9 @@ tags:
   - landing-page
   - react
 estimate_hours: 6
-status: blocked
+status: ready
 created_at: 2026-01-22
-updated_at: 2026-01-22
+updated_at: 2026-01-23
 depends_on:
   - WO-2026-149
   - WO-2026-145
