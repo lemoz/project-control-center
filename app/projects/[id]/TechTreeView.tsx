@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { MouseEvent, WheelEvent } from "react";
 import Link from "next/link";
 
 type WorkOrderStatus =
@@ -65,6 +66,12 @@ const RIGHT_PADDING = 120;
 const TOP_PADDING = 50;
 const BOTTOM_PADDING = 50;
 const UNASSIGNED_LANE_ID = "unassigned";
+const MIN_SCALE = 0.1;
+const MAX_SCALE = 2.5;
+const SCALE_STEP = 1.15;
+const FIT_PADDING = 0.94;
+const MINIMAP_WIDTH = 220;
+const MINIMAP_HEIGHT = 160;
 
 type LaneLayout = {
   id: string;
@@ -77,6 +84,13 @@ type LaneLayout = {
   isCollapsed: boolean;
 };
 
+type Viewport = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: () => void }) {
   const [data, setData] = useState<TechTreeResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -84,10 +98,125 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [collapsedLanes, setCollapsedLanes] = useState<Record<string, boolean>>({});
+  const [scale, setScale] = useState(1);
+  const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, width: 0, height: 0 });
+  const [isScaleReady, setIsScaleReady] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const scaleRef = useRef(scale);
+  const zoomStorageKey = `pcc.techTree.zoom.${repoId}`;
 
   const toggleLane = useCallback((laneId: string) => {
     setCollapsedLanes((prev) => ({ ...prev, [laneId]: !prev[laneId] }));
   }, []);
+
+  const clampScale = useCallback((value: number) => {
+    return Math.min(MAX_SCALE, Math.max(MIN_SCALE, value));
+  }, []);
+
+  const updateViewport = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const nextScale = scaleRef.current;
+    setViewport({
+      x: container.scrollLeft / nextScale,
+      y: container.scrollTop / nextScale,
+      width: container.clientWidth / nextScale,
+      height: container.clientHeight / nextScale,
+    });
+  }, []);
+
+  const applyScale = useCallback(
+    (nextScale: number, anchor?: { x: number; y: number }) => {
+      const container = containerRef.current;
+      const prevScale = scaleRef.current;
+      const clamped = clampScale(nextScale);
+      setScale(clamped);
+
+      if (!container) return;
+
+      const { scrollLeft, scrollTop, clientWidth, clientHeight } = container;
+      const anchorX = anchor
+        ? (scrollLeft + anchor.x) / prevScale
+        : (scrollLeft + clientWidth / 2) / prevScale;
+      const anchorY = anchor
+        ? (scrollTop + anchor.y) / prevScale
+        : (scrollTop + clientHeight / 2) / prevScale;
+
+      requestAnimationFrame(() => {
+        container.scrollLeft = Math.max(0, anchorX * clamped - (anchor ? anchor.x : clientWidth / 2));
+        container.scrollTop = Math.max(0, anchorY * clamped - (anchor ? anchor.y : clientHeight / 2));
+        updateViewport();
+      });
+    },
+    [clampScale, updateViewport],
+  );
+
+  const zoomIn = useCallback(() => {
+    applyScale(scaleRef.current * SCALE_STEP);
+  }, [applyScale]);
+
+  const zoomOut = useCallback(() => {
+    applyScale(scaleRef.current / SCALE_STEP);
+  }, [applyScale]);
+
+  const resetZoom = useCallback(() => {
+    applyScale(1);
+  }, [applyScale]);
+
+  useEffect(() => {
+    scaleRef.current = scale;
+  }, [scale]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.sessionStorage.getItem(zoomStorageKey);
+    const parsed = stored ? Number.parseFloat(stored) : Number.NaN;
+    if (Number.isFinite(parsed)) {
+      setScale(clampScale(parsed));
+    } else {
+      setScale(1);
+    }
+    setIsScaleReady(true);
+  }, [zoomStorageKey, clampScale]);
+
+  useEffect(() => {
+    if (!isScaleReady || typeof window === "undefined") return;
+    window.sessionStorage.setItem(zoomStorageKey, scale.toFixed(3));
+  }, [isScaleReady, scale, zoomStorageKey]);
+
+  useEffect(() => {
+    const handleResize = () => updateViewport();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [updateViewport]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (event.key === "+" || event.key === "=") {
+        event.preventDefault();
+        zoomIn();
+      } else if (event.key === "-" || event.key === "_") {
+        event.preventDefault();
+        zoomOut();
+      } else if (event.key === "0") {
+        event.preventDefault();
+        resetZoom();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [resetZoom, zoomIn, zoomOut]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -240,6 +369,66 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
     };
   }, [data, collapsedLanes]);
 
+  const fitToScreen = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const scaleX = container.clientWidth / svgWidth;
+    const scaleY = container.clientHeight / svgHeight;
+    const nextScale = clampScale(Math.min(scaleX, scaleY) * FIT_PADDING);
+    setScale(nextScale);
+
+    requestAnimationFrame(() => {
+      const scaledWidth = svgWidth * nextScale;
+      const scaledHeight = svgHeight * nextScale;
+      container.scrollLeft = Math.max(0, (scaledWidth - container.clientWidth) / 2);
+      container.scrollTop = Math.max(0, (scaledHeight - container.clientHeight) / 2);
+      updateViewport();
+    });
+  }, [clampScale, svgWidth, svgHeight, updateViewport]);
+
+  useEffect(() => {
+    updateViewport();
+  }, [scale, svgWidth, svgHeight, updateViewport]);
+
+  const handleWheel = useCallback(
+    (event: WheelEvent<HTMLDivElement>) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const factor = event.deltaY < 0 ? SCALE_STEP : 1 / SCALE_STEP;
+      const rect = event.currentTarget.getBoundingClientRect();
+      applyScale(scaleRef.current * factor, {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+      });
+    },
+    [applyScale],
+  );
+
+  const handleMinimapClick = useCallback(
+    (event: MouseEvent<SVGSVGElement>) => {
+      const container = containerRef.current;
+      if (!container) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const clickX = event.clientX - rect.left;
+      const clickY = event.clientY - rect.top;
+      const targetX = (clickX / rect.width) * svgWidth;
+      const targetY = (clickY / rect.height) * svgHeight;
+      const nextScale = scaleRef.current;
+      const maxScrollLeft = Math.max(0, svgWidth * nextScale - container.clientWidth);
+      const maxScrollTop = Math.max(0, svgHeight * nextScale - container.clientHeight);
+      const nextLeft = Math.min(
+        maxScrollLeft,
+        Math.max(0, targetX * nextScale - container.clientWidth / 2),
+      );
+      const nextTop = Math.min(
+        maxScrollTop,
+        Math.max(0, targetY * nextScale - container.clientHeight / 2),
+      );
+      container.scrollTo({ left: nextLeft, top: nextTop, behavior: "smooth" });
+    },
+    [svgWidth, svgHeight],
+  );
+
   // Determine which nodes are in cycles
   const nodesInCycles = useMemo(() => {
     if (!data) return new Set<string>();
@@ -281,6 +470,19 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
     });
   }, [selectedNode, data]);
 
+  const scaledWidth = svgWidth * scale;
+  const scaledHeight = svgHeight * scale;
+  const zoomPercent = Math.round(scale * 100);
+  const minimapScale = Math.min(1, MINIMAP_WIDTH / svgWidth, MINIMAP_HEIGHT / svgHeight);
+  const minimapWidth = svgWidth * minimapScale;
+  const minimapHeight = svgHeight * minimapScale;
+  const viewportRect = {
+    x: Math.max(0, Math.min(viewport.x, svgWidth)),
+    y: Math.max(0, Math.min(viewport.y, svgHeight)),
+    width: Math.min(viewport.width, svgWidth),
+    height: Math.min(viewport.height, svgHeight),
+  };
+
   if (loading) {
     return (
       <div className="card">
@@ -303,7 +505,15 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
   if (!data) return null;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", width: "100%" }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        width: "100%",
+        position: "relative",
+      }}
+    >
       {/* Floating header */}
       <div
         style={{
@@ -356,6 +566,9 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
 
       {/* Full-screen SVG Graph */}
       <div
+        ref={containerRef}
+        onScroll={updateViewport}
+        onWheel={handleWheel}
         style={{
           flex: 1,
           overflow: "auto",
@@ -364,7 +577,18 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
           backgroundSize: "20px 20px",
         }}
       >
-          <svg width={svgWidth} height={svgHeight} style={{ display: "block" }}>
+        <div style={{ width: scaledWidth, height: scaledHeight }}>
+          <svg
+            width={svgWidth}
+            height={svgHeight}
+            style={{
+              display: "block",
+              transform: `scale(${scale})`,
+              transformOrigin: "top left",
+              transition: "transform 160ms ease-out",
+              willChange: "transform",
+            }}
+          >
             {/* Lane backgrounds */}
             {lanes.map((lane) => {
               const laneColor = lane.color ?? "#334155";
@@ -550,6 +774,116 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
               );
             })}
           </svg>
+        </div>
+      </div>
+
+      {/* Zoom + Minimap */}
+      <div
+        style={{
+          position: "absolute",
+          right: 16,
+          bottom: 16,
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+          zIndex: 9,
+          pointerEvents: "auto",
+        }}
+      >
+        <div className="card" style={{ padding: 8, minWidth: 200 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+            <button
+              className="btnSecondary"
+              onClick={zoomOut}
+              style={{ padding: "6px 10px", minWidth: 32 }}
+              aria-label="Zoom out"
+              title="Zoom out (-)"
+            >
+              -
+            </button>
+            <div style={{ fontSize: 12, color: "#e5e7eb", minWidth: 54, textAlign: "center" }}>
+              {zoomPercent}%
+            </div>
+            <button
+              className="btnSecondary"
+              onClick={zoomIn}
+              style={{ padding: "6px 10px", minWidth: 32 }}
+              aria-label="Zoom in"
+              title="Zoom in (+)"
+            >
+              +
+            </button>
+            <button
+              className="btnSecondary"
+              onClick={fitToScreen}
+              style={{ padding: "6px 10px" }}
+              title="Fit to screen"
+            >
+              Fit
+            </button>
+            <button
+              className="btnSecondary"
+              onClick={resetZoom}
+              style={{ padding: "6px 10px" }}
+              title="Reset zoom (0)"
+            >
+              Reset
+            </button>
+          </div>
+          <div style={{ fontSize: 11, color: "#9ca3af" }}>Ctrl/Cmd + Scroll to zoom</div>
+        </div>
+
+        <div className="card" style={{ padding: 8 }}>
+          <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 6 }}>Overview</div>
+          <div
+            style={{
+              width: MINIMAP_WIDTH,
+              height: MINIMAP_HEIGHT,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "#0f1320",
+              borderRadius: 10,
+              border: "1px solid #232a3d",
+            }}
+          >
+            <svg
+              width={minimapWidth}
+              height={minimapHeight}
+              viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+              onClick={handleMinimapClick}
+              style={{ cursor: "pointer" }}
+            >
+              {data.nodes.map((node) => {
+                const pos = nodePositions.get(node.id);
+                if (!pos) return null;
+                return (
+                  <rect
+                    key={`minimap-${node.id}`}
+                    x={pos.x}
+                    y={pos.y}
+                    width={NODE_WIDTH}
+                    height={NODE_HEIGHT}
+                    rx={6}
+                    fill={STATUS_COLORS[node.status]}
+                    opacity={0.65}
+                  />
+                );
+              })}
+              {viewportRect.width > 0 && viewportRect.height > 0 && (
+                <rect
+                  x={viewportRect.x}
+                  y={viewportRect.y}
+                  width={viewportRect.width}
+                  height={viewportRect.height}
+                  fill="none"
+                  stroke="#38bdf8"
+                  strokeWidth={3}
+                />
+              )}
+            </svg>
+          </div>
+        </div>
       </div>
 
         {/* Detail Panel - Floating */}
