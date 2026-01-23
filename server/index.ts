@@ -78,6 +78,16 @@ import {
   WorkOrderError,
   type WorkOrder,
 } from "./work_orders.js";
+import {
+  buildDependencyLookups,
+  buildGlobalWorkOrderLookups,
+  findWorkOrderFromLookups,
+  normalizeDependencyId,
+  parseDependencyRef,
+  resolveWorkOrderDependencies,
+  summarizeResolvedDependencies,
+  type WorkOrderLookup,
+} from "./work_order_dependencies.js";
 import { generateWorkOrderDraft } from "./wo_generation.js";
 import {
   getChatSettingsResponse,
@@ -1420,9 +1430,121 @@ function parseEscalationStatusQuery(
   return { ok: true, statuses: Array.from(new Set(statuses)) };
 }
 
+type BlockedChainNode = {
+  project: string;
+  wo: string;
+  status: string;
+};
+
+type BlockedChain = {
+  chain: BlockedChainNode[];
+  blocking_wo: { project: string; wo: string };
+};
+
+function buildDependencyChains(
+  projectId: string,
+  workOrder: WorkOrder,
+  lookups: Map<string, WorkOrderLookup>,
+  path: BlockedChainNode[],
+  visited: Set<string>
+): BlockedChainNode[][] {
+  const resolved = resolveWorkOrderDependencies(workOrder, projectId, lookups);
+  if (!resolved.length) return [path];
+
+  const chains: BlockedChainNode[][] = [];
+  for (const dep of resolved) {
+    const node: BlockedChainNode = {
+      project: dep.project_id,
+      wo: dep.work_order_id,
+      status: dep.status,
+    };
+    const key = `${dep.project_id}:${dep.work_order_id}`;
+    if (visited.has(key)) {
+      chains.push([...path, node]);
+      continue;
+    }
+    const depWorkOrder = findWorkOrderFromLookups(
+      lookups,
+      dep.project_id,
+      dep.work_order_id
+    );
+    if (!depWorkOrder || depWorkOrder.depends_on.length === 0) {
+      chains.push([...path, node]);
+      continue;
+    }
+    const nextVisited = new Set(visited);
+    nextVisited.add(key);
+    const nextChains = buildDependencyChains(
+      dep.project_id,
+      depWorkOrder,
+      lookups,
+      [...path, node],
+      nextVisited
+    );
+    chains.push(...nextChains);
+  }
+
+  return chains;
+}
+
+function hasCrossProjectChain(chain: BlockedChainNode[]): boolean {
+  const projects = new Set(chain.map((node) => node.project));
+  return projects.size > 1;
+}
+
+function buildGlobalBlockedChains(): BlockedChain[] {
+  const lookups = buildGlobalWorkOrderLookups();
+  const chains: BlockedChain[] = [];
+
+  for (const lookup of lookups.values()) {
+    for (const workOrder of lookup.workOrders) {
+      if (workOrder.status === "done") continue;
+      if (!workOrder.depends_on.length) continue;
+      const resolved = resolveWorkOrderDependencies(
+        workOrder,
+        lookup.project.id,
+        lookups
+      );
+      const summary = summarizeResolvedDependencies(resolved);
+      if (summary.depsSatisfied) continue;
+
+      const rootNode: BlockedChainNode = {
+        project: lookup.project.id,
+        wo: workOrder.id,
+        status: workOrder.status,
+      };
+      const rootKey = `${lookup.project.id}:${workOrder.id}`;
+      const paths = buildDependencyChains(
+        lookup.project.id,
+        workOrder,
+        lookups,
+        [rootNode],
+        new Set([rootKey])
+      );
+      for (const chain of paths) {
+        if (!hasCrossProjectChain(chain)) continue;
+        const blocker = chain
+          .slice(1)
+          .find((node) => node.status !== "done");
+        if (!blocker) continue;
+        chains.push({
+          chain,
+          blocking_wo: { project: blocker.project, wo: blocker.wo },
+        });
+      }
+    }
+  }
+
+  return chains;
+}
+
 app.get("/global/context", (_req, res) => {
   const response = buildGlobalContextResponse();
   return res.json(response);
+});
+
+app.get("/global/blocked-chains", (_req, res) => {
+  return res.json(buildGlobalBlockedChains());
 });
 
 app.get("/global/preferences", (_req, res) => {
@@ -2626,9 +2748,20 @@ app.get("/repos/:id/work-orders", (req, res) => {
   if (!project) return res.status(404).json({ error: "project not found" });
 
   const workOrders = listWorkOrders(project.path);
+  const dependencyLookups = buildDependencyLookups(project, workOrders);
+  const workOrdersWithDeps = workOrders.map((wo) => {
+    const resolved = resolveWorkOrderDependencies(wo, project.id, dependencyLookups);
+    const summary = summarizeResolvedDependencies(resolved);
+    return {
+      ...wo,
+      resolved_dependencies: resolved,
+      blocked_by_cross_project: summary.blockedByCrossProject,
+      deps_satisfied: summary.depsSatisfied,
+    };
+  });
   return res.json({
     project: { id: project.id, name: project.name, path: project.path },
-    work_orders: workOrders,
+    work_orders: workOrdersWithDeps,
   });
 });
 
@@ -2638,11 +2771,23 @@ app.get("/repos/:id/work-orders/:workOrderId", (req, res) => {
   if (!project) return res.status(404).json({ error: "project not found" });
 
   try {
-    const workOrder = getWorkOrder(project.path, workOrderId);
+    const workOrders = listWorkOrders(project.path);
+    const workOrder = workOrders.find((wo) => wo.id === workOrderId);
+    if (!workOrder) {
+      throw new WorkOrderError("Work Order not found", "not_found");
+    }
+    const dependencyLookups = buildDependencyLookups(project, workOrders);
+    const resolved = resolveWorkOrderDependencies(workOrder, project.id, dependencyLookups);
+    const summary = summarizeResolvedDependencies(resolved);
     const markdown = readWorkOrderMarkdown(project.path, workOrderId);
     return res.json({
       project: { id: project.id, name: project.name, path: project.path },
-      work_order: workOrder,
+      work_order: {
+        ...workOrder,
+        resolved_dependencies: resolved,
+        blocked_by_cross_project: summary.blockedByCrossProject,
+        deps_satisfied: summary.depsSatisfied,
+      },
       markdown,
     });
   } catch (err) {
@@ -2878,14 +3023,13 @@ app.get("/repos/:id/tech-tree", (req, res) => {
   if (!project) return res.status(404).json({ error: "project not found" });
 
   const workOrders = listWorkOrders(project.path);
+  const dependencyLookups = buildDependencyLookups(project, workOrders);
 
   // Sync dependencies from file frontmatter to database
   for (const wo of workOrders) {
     syncWorkOrderDeps(id, wo.id, wo.depends_on);
   }
 
-  // Build lookup maps
-  const woMap = new Map(workOrders.map((wo) => [wo.id, wo]));
   const deps = listAllWorkOrderDeps(id);
 
   // Build dependents map (reverse lookup)
@@ -2894,6 +3038,54 @@ app.get("/repos/:id/tech-tree", (req, res) => {
     const list = dependentsMap.get(dep.depends_on_id) ?? [];
     list.push(dep.work_order_id);
     dependentsMap.set(dep.depends_on_id, list);
+  }
+
+  type DependencyNode = {
+    id: string;
+    title: string;
+    status: string;
+    priority: number;
+    era: string | null;
+    dependsOn: string[];
+    dependents: string[];
+    trackId: string | null;
+    track: { id: string; name: string; color: string | null } | null;
+    projectId: string;
+    projectName: string;
+    isExternal: boolean;
+  };
+
+  const normalizedDependsOn = new Map<string, string[]>();
+  const externalNodes = new Map<string, DependencyNode>();
+
+  for (const wo of workOrders) {
+    const normalized = wo.depends_on
+      .map((dep) => normalizeDependencyId(dep, project.id))
+      .filter(Boolean);
+    normalizedDependsOn.set(wo.id, normalized);
+
+    for (const dep of wo.depends_on) {
+      const parsed = parseDependencyRef(dep, project.id);
+      if (!parsed.isCrossProject) continue;
+      const nodeId = normalizeDependencyId(dep, project.id);
+      if (!nodeId || externalNodes.has(nodeId)) continue;
+      const lookup = dependencyLookups.get(parsed.projectId);
+      const depWorkOrder = lookup?.byId.get(parsed.workOrderId) ?? null;
+      externalNodes.set(nodeId, {
+        id: nodeId,
+        title: depWorkOrder?.title ?? parsed.workOrderId,
+        status: depWorkOrder?.status ?? "blocked",
+        priority: depWorkOrder?.priority ?? 3,
+        era: depWorkOrder?.era ?? null,
+        dependsOn: [],
+        dependents: [],
+        trackId: null,
+        track: null,
+        projectId: parsed.projectId,
+        projectName: lookup?.project.name ?? parsed.projectId,
+        isExternal: true,
+      });
+    }
   }
 
   // Detect cycles using DFS with white/gray/black coloring
@@ -2913,11 +3105,9 @@ app.get("/repos/:id/tech-tree", (req, res) => {
       return;
     }
     color.set(nodeId, "gray");
-    const wo = woMap.get(nodeId);
-    if (wo) {
-      for (const depId of wo.depends_on) {
-        dfs(depId, [...path, nodeId]);
-      }
+    const depsForNode = normalizedDependsOn.get(nodeId) ?? [];
+    for (const depId of depsForNode) {
+      dfs(depId, [...path, nodeId]);
     }
     color.set(nodeId, "black");
   }
@@ -2928,30 +3118,27 @@ app.get("/repos/:id/tech-tree", (req, res) => {
     }
   }
 
-  // Build nodes with dependents included
-  type DependencyNode = {
-    id: string;
-    title: string;
-    status: string;
-    priority: number;
-    era: string | null;
-    dependsOn: string[];
-    dependents: string[];
-    trackId: string | null;
-    track: { id: string; name: string; color: string | null } | null;
-  };
-
-  const nodes: DependencyNode[] = workOrders.map((wo) => ({
+  const localNodes: DependencyNode[] = workOrders.map((wo) => ({
     id: wo.id,
     title: wo.title,
     status: wo.status,
     priority: wo.priority,
     era: wo.era,
-    dependsOn: wo.depends_on,
+    dependsOn: normalizedDependsOn.get(wo.id) ?? [],
     dependents: dependentsMap.get(wo.id) ?? [],
     trackId: wo.trackId,
     track: wo.track,
+    projectId: project.id,
+    projectName: project.name,
+    isExternal: false,
   }));
+
+  const externalNodesList = Array.from(externalNodes.values()).map((node) => ({
+    ...node,
+    dependents: dependentsMap.get(node.id) ?? [],
+  }));
+
+  const nodes: DependencyNode[] = [...localNodes, ...externalNodesList];
 
   // Collect unique eras
   const erasSet = new Set<string>();
