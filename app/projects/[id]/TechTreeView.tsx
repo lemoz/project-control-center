@@ -21,6 +21,8 @@ type DependencyNode = {
   era: string | null;
   dependsOn: string[];
   dependents: string[];
+  trackId: string | null;
+  track: { id: string; name: string; color: string | null } | null;
 };
 
 type TechTreeResponse = {
@@ -55,6 +57,25 @@ const NODE_WIDTH = 220;
 const NODE_HEIGHT = 80;
 const HORIZONTAL_GAP = 100;
 const VERTICAL_GAP = 30;
+const LANE_HEADER_HEIGHT = 32;
+const LANE_PADDING_Y = 16;
+const LANE_GAP = 24;
+const LEFT_PADDING = 60;
+const RIGHT_PADDING = 120;
+const TOP_PADDING = 50;
+const BOTTOM_PADDING = 50;
+const UNASSIGNED_LANE_ID = "unassigned";
+
+type LaneLayout = {
+  id: string;
+  name: string;
+  color: string | null;
+  nodes: DependencyNode[];
+  isUnassigned: boolean;
+  top: number;
+  height: number;
+  isCollapsed: boolean;
+};
 
 export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: () => void }) {
   const [data, setData] = useState<TechTreeResponse | null>(null);
@@ -62,6 +83,11 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [collapsedLanes, setCollapsedLanes] = useState<Record<string, boolean>>({});
+
+  const toggleLane = useCallback((laneId: string) => {
+    setCollapsedLanes((prev) => ({ ...prev, [laneId]: !prev[laneId] }));
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -86,9 +112,15 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
     void load();
   }, [load]);
 
-  // Calculate node positions based on dependency depth
-  const { nodePositions, svgWidth, svgHeight } = useMemo(() => {
-    if (!data) return { nodePositions: new Map<string, { x: number; y: number }>(), svgWidth: 800, svgHeight: 600 };
+  // Calculate node positions based on dependency depth + track lanes
+  const { nodePositions, svgWidth, svgHeight, lanes } = useMemo(() => {
+    if (!data)
+      return {
+        nodePositions: new Map<string, { x: number; y: number }>(),
+        svgWidth: 800,
+        svgHeight: 600,
+        lanes: [] as LaneLayout[],
+      };
 
     const nodes = data.nodes;
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
@@ -122,52 +154,91 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       getDepth(node.id, new Set());
     }
 
-    // Group nodes by depth
-    const nodesByDepth = new Map<number, DependencyNode[]>();
+    const maxDepth = Math.max(...Array.from(depths.values()), 0);
+
+    const lanesById = new Map<string, { id: string; name: string; color: string | null; nodes: DependencyNode[]; isUnassigned: boolean }>();
+
     for (const node of nodes) {
-      const d = depths.get(node.id) ?? 0;
-      const list = nodesByDepth.get(d) ?? [];
-      list.push(node);
-      nodesByDepth.set(d, list);
+      const trackId = node.track?.id ?? node.trackId ?? null;
+      const isUnassigned = !trackId;
+      const laneId = trackId ?? UNASSIGNED_LANE_ID;
+      const laneName = isUnassigned ? "Unassigned" : node.track?.name ?? trackId ?? "Unknown track";
+      const laneColor = isUnassigned ? "#334155" : node.track?.color ?? "#334155";
+
+      const existing = lanesById.get(laneId);
+      if (existing) {
+        if (!existing.isUnassigned) {
+          if (node.track?.name) existing.name = node.track.name;
+          if (node.track?.color) existing.color = node.track.color;
+        }
+        existing.nodes.push(node);
+      } else {
+        lanesById.set(laneId, {
+          id: laneId,
+          name: laneName,
+          color: laneColor,
+          nodes: [node],
+          isUnassigned,
+        });
+      }
     }
 
-    // Sort each depth column by priority, then by title
-    for (const [d, list] of nodesByDepth) {
-      list.sort((a, b) => {
+    const laneList = Array.from(lanesById.values()).sort((a, b) => {
+      if (a.isUnassigned !== b.isUnassigned) return a.isUnassigned ? 1 : -1;
+      return a.name.localeCompare(b.name);
+    });
+
+    for (const lane of laneList) {
+      lane.nodes.sort((a, b) => {
+        const depthA = depths.get(a.id) ?? 0;
+        const depthB = depths.get(b.id) ?? 0;
+        if (depthA !== depthB) return depthA - depthB;
         if (a.priority !== b.priority) return a.priority - b.priority;
         return a.title.localeCompare(b.title);
       });
-      nodesByDepth.set(d, list);
     }
 
-    // Calculate positions
-    const maxDepth = Math.max(...Array.from(depths.values()), 0);
-    let totalHeight = 0;
+    let yOffset = TOP_PADDING;
+    const laneLayouts: LaneLayout[] = [];
 
-    for (let d = 0; d <= maxDepth; d++) {
-      const list = nodesByDepth.get(d) ?? [];
-      const columnHeight = list.length * (NODE_HEIGHT + VERTICAL_GAP);
-      totalHeight = Math.max(totalHeight, columnHeight);
-    }
+    for (const lane of laneList) {
+      const isCollapsed = collapsedLanes[lane.id] ?? false;
+      const visibleNodes = isCollapsed ? [] : lane.nodes;
+      const nodeCount = visibleNodes.length;
+      const nodesHeight =
+        nodeCount === 0 ? 0 : nodeCount * NODE_HEIGHT + (nodeCount - 1) * VERTICAL_GAP;
+      const laneHeight = isCollapsed
+        ? LANE_HEADER_HEIGHT + LANE_PADDING_Y
+        : LANE_HEADER_HEIGHT + LANE_PADDING_Y + nodesHeight + LANE_PADDING_Y;
+      const laneTop = yOffset;
 
-    for (let d = 0; d <= maxDepth; d++) {
-      const list = nodesByDepth.get(d) ?? [];
-      const columnHeight = list.length * (NODE_HEIGHT + VERTICAL_GAP);
-      const startY = (totalHeight - columnHeight) / 2 + 50;
+      laneLayouts.push({
+        ...lane,
+        top: laneTop,
+        height: laneHeight,
+        isCollapsed,
+      });
 
-      list.forEach((node, idx) => {
+      visibleNodes.forEach((node, idx) => {
         positions.set(node.id, {
-          x: 50 + d * (NODE_WIDTH + HORIZONTAL_GAP),
-          y: startY + idx * (NODE_HEIGHT + VERTICAL_GAP),
+          x: LEFT_PADDING + (depths.get(node.id) ?? 0) * (NODE_WIDTH + HORIZONTAL_GAP),
+          y: laneTop + LANE_HEADER_HEIGHT + LANE_PADDING_Y + idx * (NODE_HEIGHT + VERTICAL_GAP),
         });
       });
+
+      yOffset += laneHeight + LANE_GAP;
     }
 
-    const width = 100 + (maxDepth + 1) * (NODE_WIDTH + HORIZONTAL_GAP);
-    const height = totalHeight + 100;
+    const width = LEFT_PADDING + (maxDepth + 1) * (NODE_WIDTH + HORIZONTAL_GAP) + RIGHT_PADDING;
+    const height = Math.max(400, yOffset - LANE_GAP + BOTTOM_PADDING);
 
-    return { nodePositions: positions, svgWidth: Math.max(800, width), svgHeight: Math.max(400, height) };
-  }, [data]);
+    return {
+      nodePositions: positions,
+      svgWidth: Math.max(800, width),
+      svgHeight: height,
+      lanes: laneLayouts,
+    };
+  }, [data, collapsedLanes]);
 
   // Determine which nodes are in cycles
   const nodesInCycles = useMemo(() => {
@@ -294,6 +365,22 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
         }}
       >
           <svg width={svgWidth} height={svgHeight} style={{ display: "block" }}>
+            {/* Lane backgrounds */}
+            {lanes.map((lane) => {
+              const laneColor = lane.color ?? "#334155";
+              return (
+                <rect
+                  key={`lane-bg-${lane.id}`}
+                  x={0}
+                  y={lane.top}
+                  width={svgWidth}
+                  height={lane.height}
+                  fill={laneColor}
+                  opacity={0.08}
+                />
+              );
+            })}
+
             {/* Edges */}
             {data.nodes.map((node) => {
               const to = nodePositions.get(node.id);
@@ -423,6 +510,42 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
                       !
                     </text>
                   )}
+                </g>
+              );
+            })}
+
+            {/* Lane headers */}
+            {lanes.map((lane) => {
+              const laneColor = lane.color ?? "#334155";
+              const nodeCount = lane.nodes.length;
+              const indicator = lane.isCollapsed ? ">" : "v";
+              return (
+                <g
+                  key={`lane-header-${lane.id}`}
+                  onClick={() => toggleLane(lane.id)}
+                  style={{ cursor: "pointer" }}
+                >
+                  <rect
+                    x={0}
+                    y={lane.top}
+                    width={svgWidth}
+                    height={LANE_HEADER_HEIGHT}
+                    fill="#111827"
+                    opacity={0.9}
+                  />
+                  <rect x={16} y={lane.top + 9} width={10} height={10} rx={2} fill={laneColor} />
+                  <text x={32} y={lane.top + 20} fill="#e5e7eb" fontSize={12} fontWeight={600}>
+                    {lane.name} - {nodeCount} {nodeCount === 1 ? "node" : "nodes"}
+                  </text>
+                  <text
+                    x={svgWidth - 16}
+                    y={lane.top + 20}
+                    textAnchor="end"
+                    fill="#9ca3af"
+                    fontSize={12}
+                  >
+                    {indicator}
+                  </text>
                 </g>
               );
             })}
