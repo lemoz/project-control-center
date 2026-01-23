@@ -2,8 +2,12 @@ import {
   getActiveShift,
   getProjectVm,
   listEscalations,
+  listProjectCommunications,
   type EscalationRow,
   type EscalationStatus,
+  type ProjectCommunicationIntent,
+  type ProjectCommunicationRow,
+  type ProjectCommunicationScope,
   type ProjectRow,
   type RunRow,
 } from "./db.js";
@@ -78,6 +82,27 @@ export type GlobalProjectSummary = {
   last_activity: string | null;
 };
 
+export type CommunicationQueueItem = {
+  project_id: string;
+  communication_id: string;
+  intent: ProjectCommunicationIntent;
+  type: string | null;
+  summary: string;
+  priority: number;
+  waiting_since: string;
+  from_scope: ProjectCommunicationScope;
+  from_project_id: string | null;
+  to_scope: ProjectCommunicationScope;
+  to_project_id: string | null;
+  status: EscalationStatus;
+};
+
+export type CommunicationQueueGroup = {
+  intent: ProjectCommunicationIntent;
+  items: CommunicationQueueItem[];
+  total: number;
+};
+
 export type EscalationQueueItem = {
   project_id: string;
   escalation_id: string;
@@ -88,6 +113,7 @@ export type EscalationQueueItem = {
 
 export type GlobalContextResponse = {
   projects: GlobalProjectSummary[];
+  communications_queue: CommunicationQueueGroup[];
   escalation_queue: EscalationQueueItem[];
   resources: {
     vms_running: number;
@@ -120,6 +146,13 @@ const ROUTING_ESCALATION_STATUSES: EscalationStatus[] = [
   "pending",
   "claimed",
   "escalated_to_user",
+];
+const COMMUNICATION_INTENT_ORDER: ProjectCommunicationIntent[] = [
+  "escalation",
+  "request",
+  "message",
+  "suggestion",
+  "status",
 ];
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const STALLED_RUN_DAYS = 3;
@@ -375,12 +408,29 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
   );
   const globalBudget = getGlobalBudget();
   const summaries = syncAndListRepoSummaries();
+  const globalCommunications = listProjectCommunications({
+    toScope: "global",
+    statuses: ROUTING_ESCALATION_STATUSES,
+    order: "asc",
+    limit: 200,
+    unacknowledgedOnly: true,
+  });
+  const communicationsByProjectId = new Map<string, ProjectCommunicationRow[]>();
+  for (const communication of globalCommunications) {
+    const list = communicationsByProjectId.get(communication.project_id);
+    if (list) {
+      list.push(communication);
+    } else {
+      communicationsByProjectId.set(communication.project_id, [communication]);
+    }
+  }
   const projects: Array<{
     summary: GlobalProjectSummary;
     attentionNeeded: boolean;
     sortPriority: number;
     priorityRank: number;
   }> = [];
+  const communicationQueue: CommunicationQueueItem[] = [];
   const escalationQueue: EscalationQueueItem[] = [];
   const priorityByProjectId = new Map<string, boolean>();
 
@@ -426,6 +476,7 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
       (entry) => entry.status === "escalated_to_user"
     );
     const escalations = runEscalations.concat(routingEscalations);
+    const projectCommunications = communicationsByProjectId.get(project.id) ?? [];
     const lastActivity = selectLatestTimestamp([
       activeShift?.started_at,
       context.last_handoff?.created_at,
@@ -503,6 +554,20 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
         priority,
         waiting_since: escalation.waiting_since,
       });
+      communicationQueue.push({
+        project_id: context.project.id,
+        communication_id: escalation.id,
+        intent: "escalation",
+        type: escalation.type,
+        summary: escalation.summary,
+        priority,
+        waiting_since: escalation.waiting_since,
+        from_scope: "project",
+        from_project_id: context.project.id,
+        to_scope: "global",
+        to_project_id: null,
+        status: "pending",
+      });
     }
 
     for (const escalation of userRoutingEscalations) {
@@ -512,6 +577,23 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
         type: escalation.type,
         priority,
         waiting_since: escalation.waiting_since,
+      });
+    }
+
+    for (const communication of projectCommunications) {
+      communicationQueue.push({
+        project_id: communication.project_id,
+        communication_id: communication.id,
+        intent: communication.intent,
+        type: communication.type,
+        summary: communication.summary,
+        priority,
+        waiting_since: communication.created_at,
+        from_scope: communication.from_scope,
+        from_project_id: communication.from_project_id,
+        to_scope: communication.to_scope,
+        to_project_id: communication.to_project_id,
+        status: communication.status,
       });
     }
 
@@ -545,6 +627,21 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
     return a.waiting_since.localeCompare(b.waiting_since);
   });
 
+  communicationQueue.sort((a, b) => {
+    const aPriority = priorityByProjectId.get(a.project_id) ? 0 : 1;
+    const bPriority = priorityByProjectId.get(b.project_id) ? 0 : 1;
+    if (aPriority !== bPriority) return aPriority - bPriority;
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return a.waiting_since.localeCompare(b.waiting_since);
+  });
+
+  const communicationsQueue: CommunicationQueueGroup[] = COMMUNICATION_INTENT_ORDER.map(
+    (intent) => {
+      const items = communicationQueue.filter((entry) => entry.intent === intent);
+      return { intent, items, total: items.length };
+    }
+  );
+
   const periodEnd = new Date(globalBudget.current_period_end);
   const periodDaysRemaining = Number.isFinite(periodEnd.getTime())
     ? Math.max(1, diffDaysInclusive(now, periodEnd))
@@ -559,6 +656,7 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
 
   return {
     projects: projects.map((entry) => entry.summary),
+    communications_queue: communicationsQueue,
     escalation_queue: escalationQueue,
     resources: {
       vms_running: vmsRunning,

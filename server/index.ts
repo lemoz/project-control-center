@@ -6,6 +6,7 @@ import cors from "cors";
 import {
   createUserInteraction,
   createEscalation,
+  createProjectCommunication,
   createGlobalPattern,
   createGlobalShiftHandoff,
   createShiftHandoff,
@@ -17,6 +18,7 @@ import {
   getActiveGlobalShift,
   getEscalationById,
   getOpenEscalationForProject,
+  getProjectCommunicationById,
   getProjectVm,
   getRunById,
   getRunPhaseMetricsSummary,
@@ -24,6 +26,7 @@ import {
   getShiftByProjectId,
   listGlobalPatterns,
   listEscalations,
+  listProjectCommunications,
   listGlobalShifts,
   searchGlobalPatternsByTags,
   listTracks,
@@ -37,6 +40,7 @@ import {
   startGlobalShift,
   updateProjectIsolationSettings,
   updateEscalation,
+  updateProjectCommunication,
   updateShift,
   updateGlobalShift,
   updateTrack,
@@ -51,6 +55,8 @@ import {
   type CreateShiftHandoffInput,
   type EscalationStatus,
   type EscalationType,
+  type ProjectCommunicationIntent,
+  type ProjectCommunicationScope,
   type ProjectIsolationMode,
   type ProjectRow,
   type ProjectVmRow,
@@ -231,6 +237,16 @@ const NON_URGENT_ESCALATION_TYPES = new Set<EscalationType>([
   "blocked",
   "run_blocked",
 ]);
+const COMMUNICATION_INTENTS: ProjectCommunicationIntent[] = [
+  "escalation",
+  "request",
+  "message",
+  "suggestion",
+  "status",
+];
+const COMMUNICATION_INTENT_SET = new Set<ProjectCommunicationIntent>(COMMUNICATION_INTENTS);
+const COMMUNICATION_SCOPES: ProjectCommunicationScope[] = ["project", "global", "user"];
+const COMMUNICATION_SCOPE_SET = new Set<ProjectCommunicationScope>(COMMUNICATION_SCOPES);
 const COST_PERIODS = ["day", "week", "month", "all_time"] as const;
 const COST_CATEGORIES = ["builder", "reviewer", "chat", "handoff", "other", "all"] as const;
 const COST_PERIOD_SET = new Set<string>(COST_PERIODS);
@@ -1300,6 +1316,18 @@ type EscalationCreateInput = {
   shift_id: string | null;
 };
 
+type ProjectCommunicationCreateInput = {
+  intent: ProjectCommunicationIntent;
+  type: EscalationType | null;
+  summary: string;
+  body: string | null;
+  payload: string | null;
+  run_id: string | null;
+  shift_id: string | null;
+  to_scope: ProjectCommunicationScope;
+  to_project_id: string | null;
+};
+
 function serializeOptionalJson(
   value: unknown,
   fieldName: string
@@ -1382,6 +1410,91 @@ function parseEscalationCreateInput(
       payload: payloadValue.value,
       run_id: typeof record.run_id === "string" ? record.run_id.trim() : null,
       shift_id: typeof record.shift_id === "string" ? record.shift_id.trim() : null,
+    },
+  };
+}
+
+function parseProjectCommunicationCreateInput(
+  payload: unknown
+): { ok: true; input: ProjectCommunicationCreateInput } | { ok: false; error: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, error: "request body must be an object" };
+  }
+  const record = payload as Record<string, unknown>;
+  const rawIntent = typeof record.intent === "string" ? record.intent.trim() : "";
+  if (!rawIntent || !COMMUNICATION_INTENT_SET.has(rawIntent as ProjectCommunicationIntent)) {
+    return {
+      ok: false,
+      error: "`intent` must be one of escalation, request, message, suggestion, status",
+    };
+  }
+  const intent = rawIntent as ProjectCommunicationIntent;
+  const summary = typeof record.summary === "string" ? record.summary.trim() : "";
+  if (!summary) {
+    return { ok: false, error: "`summary` must be a non-empty string" };
+  }
+  const bodyRaw = typeof record.body === "string" ? record.body.trim() : "";
+  if ("body" in record && record.body !== null && typeof record.body !== "string") {
+    return { ok: false, error: "`body` must be a string" };
+  }
+  if ("run_id" in record) {
+    if (typeof record.run_id !== "string" || !record.run_id.trim()) {
+      return { ok: false, error: "`run_id` must be a non-empty string" };
+    }
+  }
+  if ("shift_id" in record) {
+    if (typeof record.shift_id !== "string" || !record.shift_id.trim()) {
+      return { ok: false, error: "`shift_id` must be a non-empty string" };
+    }
+  }
+
+  const rawToScope = typeof record.to_scope === "string" ? record.to_scope.trim() : "";
+  const to_scope = (rawToScope || "global") as ProjectCommunicationScope;
+  if (rawToScope && !COMMUNICATION_SCOPE_SET.has(to_scope)) {
+    return { ok: false, error: "`to_scope` must be project, global, or user" };
+  }
+  let to_project_id: string | null = null;
+  if ("to_project_id" in record) {
+    if (record.to_project_id === null) {
+      to_project_id = null;
+    } else if (typeof record.to_project_id === "string" && record.to_project_id.trim()) {
+      to_project_id = record.to_project_id.trim();
+    } else {
+      return { ok: false, error: "`to_project_id` must be a non-empty string" };
+    }
+  }
+  if (to_scope === "project" && !to_project_id) {
+    return { ok: false, error: "`to_project_id` is required when to_scope=project" };
+  }
+
+  let type: EscalationType | null = null;
+  if (intent === "escalation") {
+    const rawType = typeof record.type === "string" ? record.type.trim() : "";
+    if (!rawType || !ESCALATION_TYPE_SET.has(rawType as EscalationType)) {
+      return {
+        ok: false,
+        error:
+          "`type` must be one of need_input, blocked, decision_required, error, budget_warning, budget_critical, budget_exhausted, run_blocked",
+      };
+    }
+    type = rawType as EscalationType;
+  }
+
+  const payloadValue = serializeOptionalJson(record.payload, "payload");
+  if (!payloadValue.ok) return { ok: false, error: payloadValue.error };
+
+  return {
+    ok: true,
+    input: {
+      intent,
+      type,
+      summary,
+      body: bodyRaw ? bodyRaw : null,
+      payload: payloadValue.value,
+      run_id: typeof record.run_id === "string" ? record.run_id.trim() : null,
+      shift_id: typeof record.shift_id === "string" ? record.shift_id.trim() : null,
+      to_scope,
+      to_project_id,
     },
   };
 }
@@ -1851,6 +1964,58 @@ app.post("/projects/:id/escalations", (req, res) => {
   return res.status(201).json(escalation);
 });
 
+app.post("/projects/:id/communications", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const parsed = parseProjectCommunicationCreateInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+  if (parsed.input.to_project_id) {
+    const target = findProjectById(parsed.input.to_project_id);
+    if (!target) {
+      return res.status(404).json({ error: "recipient project not found" });
+    }
+  }
+
+  const communication = createProjectCommunication({
+    project_id: project.id,
+    intent: parsed.input.intent,
+    type: parsed.input.type,
+    summary: parsed.input.summary,
+    body: parsed.input.body,
+    payload: parsed.input.payload,
+    run_id: parsed.input.run_id,
+    shift_id: parsed.input.shift_id,
+    from_scope: "project",
+    from_project_id: project.id,
+    to_scope: parsed.input.to_scope,
+    to_project_id: parsed.input.to_project_id,
+  });
+
+  return res.status(201).json(communication);
+});
+
+app.get("/projects/:id/communications/inbox", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit =
+    Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(200, Math.trunc(limitRaw)) : 100;
+  const communications = listProjectCommunications({
+    toScope: "project",
+    toProjectId: project.id,
+    statuses: ["pending", "claimed", "escalated_to_user"],
+    order: "asc",
+    limit,
+  });
+
+  return res.json({ communications });
+});
+
 app.post("/escalations/:id/claim", (req, res) => {
   const escalation = getEscalationById(req.params.id);
   if (!escalation) return res.status(404).json({ error: "escalation not found" });
@@ -1954,6 +2119,55 @@ app.post("/escalations/:id/escalate-to-user", (req, res) => {
         status: "escalated_to_user",
         claimed_by: escalation.claimed_by ?? ESCALATION_CLAIMANT,
       } as const)
+  );
+});
+
+app.post("/communications/:id/read", (req, res) => {
+  const communication = getProjectCommunicationById(req.params.id);
+  if (!communication) {
+    return res.status(404).json({ error: "communication not found" });
+  }
+  if (communication.intent === "escalation") {
+    return res.status(409).json({ error: "escalations use escalation endpoints" });
+  }
+  if (communication.read_at) {
+    return res.json(communication);
+  }
+  const readAt = new Date().toISOString();
+  const updated = updateProjectCommunication(communication.id, { read_at: readAt });
+  if (!updated) return res.status(500).json({ error: "failed to mark read" });
+  const refreshed = getProjectCommunicationById(communication.id);
+  return res.json(refreshed ?? { ...communication, read_at: readAt });
+});
+
+app.post("/communications/:id/acknowledge", (req, res) => {
+  const communication = getProjectCommunicationById(req.params.id);
+  if (!communication) {
+    return res.status(404).json({ error: "communication not found" });
+  }
+  if (communication.intent === "escalation") {
+    return res.status(409).json({ error: "escalations use escalation endpoints" });
+  }
+  if (communication.acknowledged_at) {
+    return res.json(communication);
+  }
+  const acknowledgedAt = new Date().toISOString();
+  const updated = updateProjectCommunication(communication.id, {
+    acknowledged_at: acknowledgedAt,
+    read_at: communication.read_at ?? acknowledgedAt,
+    status: "resolved",
+    resolved_at: acknowledgedAt,
+  });
+  if (!updated) return res.status(500).json({ error: "failed to acknowledge communication" });
+  const refreshed = getProjectCommunicationById(communication.id);
+  return res.json(
+    refreshed ?? {
+      ...communication,
+      acknowledged_at: acknowledgedAt,
+      read_at: communication.read_at ?? acknowledgedAt,
+      status: "resolved",
+      resolved_at: acknowledgedAt,
+    }
   );
 });
 
