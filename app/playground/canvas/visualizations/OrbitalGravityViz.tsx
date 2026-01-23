@@ -16,6 +16,7 @@ export type OrbitalGravityOptions = {
   mode?: OrbitalMode;
   projectId?: string | null;
   filter?: WorkOrderFilter;
+  pinnedWorkOrderIds?: string[];
 };
 
 type OrbitalNode = ProjectNode | WorkOrderNode;
@@ -402,6 +403,7 @@ export function selectWorkOrderNodes(params: {
   projectId?: string | null;
   maxBacklog?: number;
   maxArchive?: number;
+  includeIds?: string[];
 }): WorkOrderNode[] {
   const {
     nodes,
@@ -409,6 +411,7 @@ export function selectWorkOrderNodes(params: {
     projectId = null,
     maxBacklog = MAX_BACKLOG_NODES,
     maxArchive = MAX_ARCHIVE_NODES,
+    includeIds = [],
   } = params;
 
   let filtered = nodes;
@@ -416,8 +419,23 @@ export function selectWorkOrderNodes(params: {
     filtered = filtered.filter((node) => node.projectId === projectId);
   }
 
+  const includeIdSet = new Set(includeIds);
+  const appendPinnedNodes = (selected: WorkOrderNode[]) => {
+    if (includeIdSet.size === 0) return selected;
+    const seen = new Set(selected.map((node) => node.id));
+    for (const node of filtered) {
+      if (!includeIdSet.has(node.id) || seen.has(node.id)) continue;
+      selected.push(node);
+      seen.add(node.id);
+    }
+    return selected;
+  };
+
   if (filter === "active") {
-    return filtered.filter((node) => ACTIVE_WORK_ORDER_FILTER_STATUSES.has(node.status));
+    const activeNodes = filtered.filter((node) =>
+      ACTIVE_WORK_ORDER_FILTER_STATUSES.has(node.status)
+    );
+    return appendPinnedNodes(activeNodes);
   }
 
   const backlogNodes = filtered.filter((node) => BACKLOG_WORK_ORDER_STATUSES.has(node.status));
@@ -430,7 +448,7 @@ export function selectWorkOrderNodes(params: {
     sortByRecency(archiveNodes).slice(0, Math.max(0, maxArchive)).map((node) => node.id)
   );
 
-  return filtered.filter((node) => {
+  const selected = filtered.filter((node) => {
     if (BACKLOG_WORK_ORDER_STATUSES.has(node.status)) {
       return backlogIds.has(node.id);
     }
@@ -439,6 +457,8 @@ export function selectWorkOrderNodes(params: {
     }
     return true;
   });
+
+  return appendPinnedNodes(selected);
 }
 
 function buildRunMap(
@@ -477,6 +497,7 @@ export class OrbitalGravityVisualization implements Visualization {
   private mode: OrbitalMode;
   private projectId: string | null;
   private workOrderFilter: WorkOrderFilter;
+  private pinnedWorkOrderIds: Set<string>;
   private visibleNodes: OrbitalNode[] = [];
 
   constructor(options: OrbitalGravityOptions = {}) {
@@ -484,6 +505,7 @@ export class OrbitalGravityVisualization implements Visualization {
     this.projectId = options.projectId ?? null;
     this.workOrderFilter =
       options.filter ?? (this.mode === "work-orders" ? "active" : "all");
+    this.pinnedWorkOrderIds = new Set(options.pinnedWorkOrderIds ?? []);
   }
 
   setWorkOrderFilter(filter: WorkOrderFilter): void {
@@ -495,6 +517,22 @@ export class OrbitalGravityVisualization implements Visualization {
   setProjectId(projectId: string | null): void {
     if (this.projectId === projectId) return;
     this.projectId = projectId;
+    this.update(this.data);
+  }
+
+  setPinnedWorkOrderIds(ids: string[]): void {
+    const next = new Set(ids.filter(Boolean));
+    if (next.size === this.pinnedWorkOrderIds.size) {
+      let unchanged = true;
+      for (const id of next) {
+        if (!this.pinnedWorkOrderIds.has(id)) {
+          unchanged = false;
+          break;
+        }
+      }
+      if (unchanged) return;
+    }
+    this.pinnedWorkOrderIds = next;
     this.update(this.data);
   }
 
@@ -745,6 +783,7 @@ export class OrbitalGravityVisualization implements Visualization {
         nodes: data.workOrderNodes ?? [],
         filter: this.workOrderFilter,
         projectId: this.projectId,
+        includeIds: Array.from(this.pinnedWorkOrderIds),
       });
     }
     return data.nodes;
