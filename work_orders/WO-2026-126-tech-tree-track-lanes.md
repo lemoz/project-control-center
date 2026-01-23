@@ -25,13 +25,12 @@ tags:
   - tracks
   - visualization
 estimate_hours: 3
-status: backlog
+status: you_review
 depends_on:
   - WO-2026-125
-created_at: "2026-01-22"
-updated_at: "2026-01-22"
+created_at: 2026-01-22
+updated_at: 2026-01-23
 ---
-
 ## Summary
 
 The tech tree currently displays all 112 nodes in a flat dependency graph which gets visually chaotic. This WO organizes nodes into horizontal swim lanes based on their track assignment.
