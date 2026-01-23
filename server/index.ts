@@ -135,6 +135,7 @@ import {
 } from "./observability.js";
 import { RemoteExecError } from "./remote_exec.js";
 import { readControlMetadata } from "./sidecar.js";
+import { spawnShiftAgent, tailShiftLog } from "./shift_agent.js";
 import { buildShiftContext } from "./shift_context.js";
 import { buildGlobalContextResponse } from "./global_context.js";
 import { createProjectFromSpec, type CreateProjectInput } from "./global_agent.js";
@@ -1991,6 +1992,57 @@ app.post("/projects/:id/work-orders/from-pattern", (req, res) => {
   }
 });
 
+app.post("/projects/:id/shifts/spawn", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const parsed = parseStartShiftInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+  const agentType = parsed.input.agentType ?? "claude_cli";
+  if (agentType !== "claude_cli") {
+    return res.status(400).json({ error: "only claude_cli is supported" });
+  }
+  const agentId = parsed.input.agentId ?? "shift-agent";
+
+  const result = startShift({
+    projectId: project.id,
+    agentType,
+    agentId,
+    timeoutMinutes: parsed.input.timeoutMinutes,
+  });
+
+  if (!result.ok) {
+    return res.status(409).json({
+      error: "shift already active",
+      active_shift: result.activeShift,
+    });
+  }
+
+  const shift = result.shift;
+  try {
+    const spawned = spawnShiftAgent({
+      projectId: project.id,
+      projectPath: project.path,
+      shift,
+    });
+    return res.status(201).json({
+      shift,
+      pid: spawned.pid,
+      log_path: spawned.log_path,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "failed to spawn shift agent";
+    updateShift(shift.id, {
+      status: "failed",
+      completed_at: new Date().toISOString(),
+      error: message,
+    });
+    return res.status(500).json({ error: message });
+  }
+});
+
 app.post("/projects/:id/shifts", (req, res) => {
   const { id } = req.params;
   const project = findProjectById(id);
@@ -2034,6 +2086,24 @@ app.get("/projects/:id/shifts", (req, res) => {
   const limit = Number.isFinite(limitRaw) ? Math.trunc(limitRaw) : 10;
   const shifts = listShifts(project.id, limit);
   return res.json(shifts);
+});
+
+app.get("/projects/:id/shifts/:shiftId/logs", (req, res) => {
+  const { id, shiftId } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  if (!shiftId || !shiftId.trim()) {
+    return res.status(400).json({ error: "`shiftId` must be provided" });
+  }
+  const shift = getShiftByProjectId(project.id, shiftId);
+  if (!shift) return res.status(404).json({ error: "shift not found" });
+
+  const tailRaw = typeof req.query.tail === "string" ? Number(req.query.tail) : NaN;
+  const tail = Number.isFinite(tailRaw)
+    ? Math.max(1, Math.min(500, Math.trunc(tailRaw)))
+    : 100;
+  const log = tailShiftLog(project.path, shiftId, tail);
+  return res.json(log);
 });
 
 app.post("/projects/:id/shifts/:shiftId/complete", (req, res) => {
