@@ -4,7 +4,7 @@ import { isWithinQuietHours } from "../user_preferences.js";
 const DEFAULT_MAX_PROJECTS = 6;
 const MAX_PROJECTS_CAP = 30;
 const DEFAULT_RECENT_ACTIVITY_LIMIT = 6;
-const MAX_ESCALATIONS = 12;
+const MAX_COMMUNICATIONS_PER_INTENT = 6;
 
 export type GlobalAttentionAllocation = {
   maxProjects?: number;
@@ -74,30 +74,32 @@ function formatProjectsOverview(params: {
   return lines.join("\n");
 }
 
-function buildEscalationSummaryMap(
-  projects: GlobalProjectSummary[]
-): Map<string, { projectId: string; summary: string }> {
-  const map = new Map<string, { projectId: string; summary: string }>();
-  for (const project of projects) {
-    for (const escalation of project.escalations) {
-      if (!escalation.id || map.has(escalation.id)) continue;
-      map.set(escalation.id, { projectId: project.id, summary: escalation.summary });
+const COMMUNICATION_INTENT_LABELS: Record<string, string> = {
+  escalation: "Escalations",
+  request: "Requests",
+  message: "Messages",
+  suggestion: "Suggestions",
+  status: "Status Updates",
+};
+
+function formatCommunications(context: GlobalContextResponse): string {
+  if (!context.communications_queue.length) return "None.";
+  const lines: string[] = [];
+  for (const group of context.communications_queue) {
+    if (!group.items.length) continue;
+    const label = COMMUNICATION_INTENT_LABELS[group.intent] ?? group.intent;
+    lines.push(`### ${label} (${group.total})`);
+    const shown = group.items.slice(0, MAX_COMMUNICATIONS_PER_INTENT);
+    for (const entry of shown) {
+      const typeLabel =
+        entry.type && entry.type !== entry.intent ? `${entry.type}: ` : "";
+      lines.push(`- [${entry.project_id}] ${typeLabel}${entry.summary}`);
+    }
+    if (group.total > shown.length) {
+      lines.push(`- ...and ${group.total - shown.length} more`);
     }
   }
-  return map;
-}
-
-function formatEscalations(context: GlobalContextResponse): string {
-  if (!context.escalation_queue.length) return "None.";
-  const summaryMap = buildEscalationSummaryMap(context.projects);
-  const shown = context.escalation_queue.slice(0, MAX_ESCALATIONS);
-  const lines = shown.map((entry) => {
-    const summary = summaryMap.get(entry.escalation_id)?.summary ?? "summary unavailable";
-    return `- [${entry.project_id}] ${entry.type}: ${summary}`;
-  });
-  if (context.escalation_queue.length > MAX_ESCALATIONS) {
-    lines.push(`- ...and ${context.escalation_queue.length - MAX_ESCALATIONS} more`);
-  }
+  if (!lines.length) return "None.";
   return lines.join("\n");
 }
 
@@ -293,8 +295,8 @@ export function buildGlobalDecisionPrompt(
   lines.push("## Portfolio Economy");
   lines.push(formatPortfolioEconomy(context));
   lines.push("");
-  lines.push("## Pending Escalations");
-  lines.push(formatEscalations(context));
+  lines.push("## Pending Communications");
+  lines.push(formatCommunications(context));
   lines.push("");
   lines.push("## Recent Activity");
   lines.push(formatRecentActivity(context, recentActivityLimit));

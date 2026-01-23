@@ -19,7 +19,8 @@ process.env.CONTROL_CENTER_SCAN_ROOTS = repoRoot;
 process.env.CONTROL_CENTER_SCAN_TTL_MS = "0";
 process.env.CONTROL_CENTER_BUDGET_USED_TODAY = "12.5";
 
-const { createRun, getDb, startShift, upsertProjectVm } = await import("./db.ts");
+const { createProjectCommunication, createRun, getDb, startShift, upsertProjectVm } =
+  await import("./db.ts");
 const { buildGlobalContextResponse } = await import("./global_context.ts");
 const { invalidateDiscoveryCache, syncAndListRepoSummaries } = await import(
   "./projects_catalog.ts"
@@ -251,6 +252,14 @@ test("buildGlobalContextResponse aggregates and sorts projects", () => {
     }),
   });
 
+  createProjectCommunication({
+    project_id: "beta",
+    intent: "message",
+    summary: "Beta status update",
+    body: "Waiting on beta token",
+    to_scope: "global",
+  });
+
   startShift({ projectId: "beta", agentType: "global", agentId: "agent-1" });
 
   upsertProjectVm({
@@ -306,6 +315,16 @@ test("buildGlobalContextResponse aggregates and sorts projects", () => {
   assert.equal(response.projects[1].health_summary.status, response.projects[1].health);
   assert.equal(response.projects[1].health_summary.metrics.ready_wo_count, 1);
   assert.equal(response.projects[1].health_summary.metrics.pending_escalations, 1);
+
+  const escalationGroup = response.communications_queue.find(
+    (group) => group.intent === "escalation"
+  );
+  assert.equal(escalationGroup?.items.length, 2);
+  const messageGroup = response.communications_queue.find(
+    (group) => group.intent === "message"
+  );
+  assert.equal(messageGroup?.items.length, 1);
+  assert.equal(messageGroup?.items[0].summary, "Beta status update");
 
   assert.equal(response.escalation_queue.length, 2);
   assert.deepEqual(

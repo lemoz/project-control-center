@@ -539,9 +539,13 @@ function buildActionSummary(actions: GlobalAgentActionResult[]): string {
 }
 
 function buildPendingItems(context: GlobalContextResponse): string[] {
-  return context.escalation_queue.map(
-    (entry) => `Escalation ${entry.escalation_id} on ${entry.project_id}`
-  );
+  const items: string[] = [];
+  for (const group of context.communications_queue) {
+    for (const entry of group.items) {
+      items.push(`${group.intent} ${entry.communication_id} on ${entry.project_id}`);
+    }
+  }
+  return items;
 }
 
 export async function runGlobalAgentShift(

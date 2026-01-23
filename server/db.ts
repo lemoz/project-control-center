@@ -147,19 +147,43 @@ export type EscalationType =
 
 export type EscalationStatus = "pending" | "claimed" | "resolved" | "escalated_to_user";
 
-export type EscalationRow = {
+export type ProjectCommunicationIntent =
+  | "escalation"
+  | "request"
+  | "message"
+  | "suggestion"
+  | "status";
+
+export type ProjectCommunicationScope = "project" | "global" | "user";
+
+export type ProjectCommunicationType = EscalationType | ProjectCommunicationIntent | null;
+
+export type ProjectCommunicationRow = {
   id: string;
   project_id: string;
   run_id: string | null;
   shift_id: string | null;
-  type: EscalationType;
+  intent: ProjectCommunicationIntent;
+  type: ProjectCommunicationType;
   summary: string;
+  body: string | null;
   payload: string | null;
   status: EscalationStatus;
+  from_scope: ProjectCommunicationScope;
+  from_project_id: string | null;
+  to_scope: ProjectCommunicationScope;
+  to_project_id: string | null;
   claimed_by: string | null;
   resolution: string | null;
   created_at: string;
   resolved_at: string | null;
+  read_at: string | null;
+  acknowledged_at: string | null;
+};
+
+export type EscalationRow = ProjectCommunicationRow & {
+  intent: "escalation";
+  type: EscalationType;
 };
 
 export type BudgetEnforcementEventType =
@@ -616,14 +640,22 @@ function initSchema(database: Database.Database) {
       project_id TEXT NOT NULL,
       run_id TEXT,
       shift_id TEXT,
-      type TEXT NOT NULL,
+      intent TEXT NOT NULL DEFAULT 'escalation',
+      type TEXT,
       summary TEXT NOT NULL,
+      body TEXT,
       payload TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
+      from_scope TEXT NOT NULL DEFAULT 'project',
+      from_project_id TEXT,
+      to_scope TEXT NOT NULL DEFAULT 'global',
+      to_project_id TEXT,
       claimed_by TEXT,
       resolution TEXT,
       created_at TEXT NOT NULL,
       resolved_at TEXT,
+      read_at TEXT,
+      acknowledged_at TEXT,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
     );
 
@@ -1105,6 +1137,60 @@ function initSchema(database: Database.Database) {
   }
   if (!hasEscalation) {
     database.exec("ALTER TABLE runs ADD COLUMN escalation TEXT;");
+  }
+
+  const escalationColumns = database
+    .prepare("PRAGMA table_info(escalations)")
+    .all() as Array<{ name: string }>;
+  const hasIntent = escalationColumns.some((c) => c.name === "intent");
+  const hasFromScope = escalationColumns.some((c) => c.name === "from_scope");
+  const hasFromProjectId = escalationColumns.some((c) => c.name === "from_project_id");
+  const hasToScope = escalationColumns.some((c) => c.name === "to_scope");
+  const hasToProjectId = escalationColumns.some((c) => c.name === "to_project_id");
+  const hasBody = escalationColumns.some((c) => c.name === "body");
+  const hasReadAt = escalationColumns.some((c) => c.name === "read_at");
+  const hasAcknowledgedAt = escalationColumns.some((c) => c.name === "acknowledged_at");
+  const hasEscalationType = escalationColumns.some((c) => c.name === "type");
+  if (!hasIntent) {
+    database.exec("ALTER TABLE escalations ADD COLUMN intent TEXT NOT NULL DEFAULT 'escalation';");
+  }
+  if (!hasEscalationType) {
+    database.exec("ALTER TABLE escalations ADD COLUMN type TEXT;");
+  }
+  if (!hasBody) {
+    database.exec("ALTER TABLE escalations ADD COLUMN body TEXT;");
+  }
+  if (!hasFromScope) {
+    database.exec("ALTER TABLE escalations ADD COLUMN from_scope TEXT NOT NULL DEFAULT 'project';");
+  }
+  if (!hasFromProjectId) {
+    database.exec("ALTER TABLE escalations ADD COLUMN from_project_id TEXT;");
+  }
+  if (!hasToScope) {
+    database.exec("ALTER TABLE escalations ADD COLUMN to_scope TEXT NOT NULL DEFAULT 'global';");
+  }
+  if (!hasToProjectId) {
+    database.exec("ALTER TABLE escalations ADD COLUMN to_project_id TEXT;");
+  }
+  if (!hasReadAt) {
+    database.exec("ALTER TABLE escalations ADD COLUMN read_at TEXT;");
+  }
+  if (!hasAcknowledgedAt) {
+    database.exec("ALTER TABLE escalations ADD COLUMN acknowledged_at TEXT;");
+  }
+  if (escalationColumns.length > 0) {
+    database.exec(`
+      UPDATE escalations
+      SET
+        intent = COALESCE(NULLIF(intent, ''), 'escalation'),
+        from_scope = COALESCE(NULLIF(from_scope, ''), 'project'),
+        to_scope = COALESCE(NULLIF(to_scope, ''), 'global'),
+        from_project_id = CASE
+          WHEN from_scope IS NULL OR from_scope = '' OR from_scope = 'project'
+            THEN COALESCE(from_project_id, project_id)
+          ELSE from_project_id
+        END
+    `);
   }
 
   const costRecordColumns = database
@@ -1784,6 +1870,198 @@ export function hasBudgetEnforcementEvent(params: {
   return Boolean(row);
 }
 
+export type ProjectCommunicationQuery = {
+  projectId?: string;
+  intents?: ProjectCommunicationIntent[];
+  statuses?: EscalationStatus[];
+  fromScope?: ProjectCommunicationScope;
+  fromProjectId?: string;
+  toScope?: ProjectCommunicationScope;
+  toProjectId?: string;
+  unreadOnly?: boolean;
+  unacknowledgedOnly?: boolean;
+  limit?: number;
+  order?: "asc" | "desc";
+};
+
+export type CreateProjectCommunicationInput = {
+  project_id: string;
+  intent: ProjectCommunicationIntent;
+  summary: string;
+  body?: string | null;
+  payload?: string | null;
+  run_id?: string | null;
+  shift_id?: string | null;
+  type?: EscalationType | null;
+  status?: EscalationStatus;
+  from_scope?: ProjectCommunicationScope;
+  from_project_id?: string | null;
+  to_scope?: ProjectCommunicationScope;
+  to_project_id?: string | null;
+};
+
+export function createProjectCommunication(
+  input: CreateProjectCommunicationInput
+): ProjectCommunicationRow {
+  const database = getDb();
+  const fromScope: ProjectCommunicationScope = input.from_scope ?? "project";
+  const toScope: ProjectCommunicationScope = input.to_scope ?? "global";
+  const resolvedType: ProjectCommunicationType =
+    input.type ?? (input.intent === "escalation" ? null : input.intent);
+  const row: ProjectCommunicationRow = {
+    id: crypto.randomUUID(),
+    project_id: input.project_id,
+    run_id: input.run_id ?? null,
+    shift_id: input.shift_id ?? null,
+    intent: input.intent,
+    type: resolvedType,
+    summary: input.summary,
+    body: input.body ?? null,
+    payload: input.payload ?? null,
+    status: input.status ?? "pending",
+    from_scope: fromScope,
+    from_project_id:
+      input.from_project_id ??
+      (fromScope === "project" ? input.project_id : null),
+    to_scope: toScope,
+    to_project_id: input.to_project_id ?? null,
+    claimed_by: null,
+    resolution: null,
+    created_at: new Date().toISOString(),
+    resolved_at: null,
+    read_at: null,
+    acknowledged_at: null,
+  };
+  database
+    .prepare(
+      `INSERT INTO escalations
+        (id, project_id, run_id, shift_id, intent, type, summary, body, payload, status, from_scope, from_project_id, to_scope, to_project_id, claimed_by, resolution, created_at, resolved_at, read_at, acknowledged_at)
+       VALUES
+        (@id, @project_id, @run_id, @shift_id, @intent, @type, @summary, @body, @payload, @status, @from_scope, @from_project_id, @to_scope, @to_project_id, @claimed_by, @resolution, @created_at, @resolved_at, @read_at, @acknowledged_at)`
+    )
+    .run(row);
+  return row;
+}
+
+export function getProjectCommunicationById(id: string): ProjectCommunicationRow | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM escalations WHERE id = ? LIMIT 1")
+    .get(id) as ProjectCommunicationRow | undefined;
+  return row || null;
+}
+
+export function listProjectCommunications(
+  query: ProjectCommunicationQuery = {}
+): ProjectCommunicationRow[] {
+  const database = getDb();
+  const clauses: string[] = [];
+  const params: Array<string | number> = [];
+
+  if (query.projectId) {
+    clauses.push("project_id = ?");
+    params.push(query.projectId);
+  }
+
+  if (query.intents) {
+    if (!query.intents.length) return [];
+    if (query.intents.length === 1) {
+      clauses.push("intent = ?");
+      params.push(query.intents[0]);
+    } else {
+      const placeholders = query.intents.map(() => "?").join(", ");
+      clauses.push(`intent IN (${placeholders})`);
+      params.push(...query.intents);
+    }
+  }
+
+  if (query.statuses) {
+    if (!query.statuses.length) return [];
+    if (query.statuses.length === 1) {
+      clauses.push("status = ?");
+      params.push(query.statuses[0]);
+    } else {
+      const placeholders = query.statuses.map(() => "?").join(", ");
+      clauses.push(`status IN (${placeholders})`);
+      params.push(...query.statuses);
+    }
+  }
+
+  if (query.fromScope) {
+    clauses.push("from_scope = ?");
+    params.push(query.fromScope);
+  }
+
+  if (query.fromProjectId) {
+    clauses.push("from_project_id = ?");
+    params.push(query.fromProjectId);
+  }
+
+  if (query.toScope) {
+    clauses.push("to_scope = ?");
+    params.push(query.toScope);
+  }
+
+  if (query.toProjectId) {
+    clauses.push("to_project_id = ?");
+    params.push(query.toProjectId);
+  }
+
+  if (query.unreadOnly) {
+    clauses.push("read_at IS NULL");
+  }
+
+  if (query.unacknowledgedOnly) {
+    clauses.push("acknowledged_at IS NULL");
+  }
+
+  const whereClause = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const order = query.order === "desc" ? "DESC" : "ASC";
+  const limit =
+    typeof query.limit === "number" && Number.isFinite(query.limit)
+      ? Math.max(1, Math.min(200, Math.trunc(query.limit)))
+      : 100;
+  const rows = database
+    .prepare(
+      `SELECT * FROM escalations ${whereClause} ORDER BY created_at ${order} LIMIT ?`
+    )
+    .all(...params, limit) as ProjectCommunicationRow[];
+  return rows;
+}
+
+export function updateProjectCommunication(
+  id: string,
+  patch: Partial<
+    Pick<
+      ProjectCommunicationRow,
+      | "status"
+      | "claimed_by"
+      | "resolution"
+      | "resolved_at"
+      | "read_at"
+      | "acknowledged_at"
+    >
+  >
+): boolean {
+  const database = getDb();
+  const fields: Array<{ key: keyof typeof patch; column: string }> = [
+    { key: "status", column: "status" },
+    { key: "claimed_by", column: "claimed_by" },
+    { key: "resolution", column: "resolution" },
+    { key: "resolved_at", column: "resolved_at" },
+    { key: "read_at", column: "read_at" },
+    { key: "acknowledged_at", column: "acknowledged_at" },
+  ];
+  const sets = fields
+    .filter((field) => patch[field.key] !== undefined)
+    .map((field) => `${field.column} = @${field.key}`);
+  if (!sets.length) return false;
+  const result = database
+    .prepare(`UPDATE escalations SET ${sets.join(", ")} WHERE id = @id`)
+    .run({ id, ...patch });
+  return result.changes > 0;
+}
+
 export type EscalationQuery = {
   projectId?: string;
   statuses?: EscalationStatus[];
@@ -1805,21 +2083,29 @@ export function createEscalation(input: {
     project_id: input.project_id,
     run_id: input.run_id ?? null,
     shift_id: input.shift_id ?? null,
+    intent: "escalation",
     type: input.type,
     summary: input.summary,
+    body: null,
     payload: input.payload ?? null,
     status: "pending",
+    from_scope: "project",
+    from_project_id: input.project_id,
+    to_scope: "global",
+    to_project_id: null,
     claimed_by: null,
     resolution: null,
     created_at: new Date().toISOString(),
     resolved_at: null,
+    read_at: null,
+    acknowledged_at: null,
   };
   database
     .prepare(
       `INSERT INTO escalations
-        (id, project_id, run_id, shift_id, type, summary, payload, status, claimed_by, resolution, created_at, resolved_at)
+        (id, project_id, run_id, shift_id, intent, type, summary, body, payload, status, from_scope, from_project_id, to_scope, to_project_id, claimed_by, resolution, created_at, resolved_at, read_at, acknowledged_at)
        VALUES
-        (@id, @project_id, @run_id, @shift_id, @type, @summary, @payload, @status, @claimed_by, @resolution, @created_at, @resolved_at)`
+        (@id, @project_id, @run_id, @shift_id, @intent, @type, @summary, @body, @payload, @status, @from_scope, @from_project_id, @to_scope, @to_project_id, @claimed_by, @resolution, @created_at, @resolved_at, @read_at, @acknowledged_at)`
     )
     .run(row);
   return row;
@@ -1828,7 +2114,7 @@ export function createEscalation(input: {
 export function getEscalationById(id: string): EscalationRow | null {
   const database = getDb();
   const row = database
-    .prepare("SELECT * FROM escalations WHERE id = ? LIMIT 1")
+    .prepare("SELECT * FROM escalations WHERE id = ? AND intent = 'escalation' LIMIT 1")
     .get(id) as EscalationRow | undefined;
   return row || null;
 }
@@ -1837,6 +2123,8 @@ export function listEscalations(query: EscalationQuery = {}): EscalationRow[] {
   const database = getDb();
   const clauses: string[] = [];
   const params: Array<string | number> = [];
+
+  clauses.push("intent = 'escalation'");
 
   if (query.projectId) {
     clauses.push("project_id = ?");
@@ -1885,7 +2173,9 @@ export function updateEscalation(
     .map((field) => `${field.column} = @${field.key}`);
   if (!sets.length) return false;
   const result = database
-    .prepare(`UPDATE escalations SET ${sets.join(", ")} WHERE id = @id`)
+    .prepare(
+      `UPDATE escalations SET ${sets.join(", ")} WHERE id = @id AND intent = 'escalation'`
+    )
     .run({ id, ...patch });
   const updated = result.changes > 0;
   if (updated && patch.status === "escalated_to_user") {
@@ -1898,7 +2188,7 @@ export function getOpenEscalationForProject(projectId: string): EscalationRow | 
   const database = getDb();
   const row = database
     .prepare(
-      "SELECT * FROM escalations WHERE project_id = ? AND status = 'escalated_to_user' ORDER BY created_at DESC LIMIT 1"
+      "SELECT * FROM escalations WHERE project_id = ? AND intent = 'escalation' AND status = 'escalated_to_user' ORDER BY created_at DESC LIMIT 1"
     )
     .get(projectId) as EscalationRow | undefined;
   return row || null;

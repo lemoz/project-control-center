@@ -5,8 +5,12 @@ import {
   findProjectById,
   getDb,
   getProjectVm,
+  listProjectCommunications,
   listTracks,
   listRunsByProject,
+  type EscalationStatus,
+  type ProjectCommunicationIntent,
+  type ProjectCommunicationScope,
   type ProjectVmRow,
   type RunRow,
   type Track,
@@ -72,6 +76,22 @@ type LastHumanInteraction = LastHumanInteractionBase & {
   seconds_since: number | null;
 };
 
+type CommunicationInboxItem = {
+  id: string;
+  intent: ProjectCommunicationIntent;
+  type: string | null;
+  summary: string;
+  body: string | null;
+  status: EscalationStatus;
+  from_scope: ProjectCommunicationScope;
+  from_project_id: string | null;
+  to_scope: ProjectCommunicationScope;
+  to_project_id: string | null;
+  created_at: string;
+  read_at: string | null;
+  acknowledged_at: string | null;
+};
+
 export type ShiftContext = {
   project: {
     id: string;
@@ -130,6 +150,7 @@ export type ShiftContext = {
     started_at: string;
     status: string;
   }>;
+  communications_inbox: CommunicationInboxItem[];
   last_human_interaction: LastHumanInteraction | null;
   environment: {
     vm: {
@@ -216,6 +237,29 @@ export function buildShiftContext(
       status: run.status,
     }));
 
+  const communicationsInbox = listProjectCommunications({
+    toScope: "project",
+    toProjectId: project.id,
+    statuses: ["pending", "claimed", "escalated_to_user"],
+    order: "asc",
+    limit: 100,
+    unacknowledgedOnly: true,
+  }).map((communication) => ({
+    id: communication.id,
+    intent: communication.intent,
+    type: communication.type,
+    summary: communication.summary,
+    body: communication.body,
+    status: communication.status,
+    from_scope: communication.from_scope,
+    from_project_id: communication.from_project_id,
+    to_scope: communication.to_scope,
+    to_project_id: communication.to_project_id,
+    created_at: communication.created_at,
+    read_at: communication.read_at,
+    acknowledged_at: communication.acknowledged_at,
+  }));
+
   const constitution = buildConstitutionContext(project.path);
   const lastHandoff = readLastHandoff(project.id);
   const lastHumanInteraction = withInteractionAge(
@@ -250,6 +294,7 @@ export function buildShiftContext(
     last_handoff: lastHandoff,
     git: gitState,
     active_runs: activeRuns,
+    communications_inbox: communicationsInbox,
     last_human_interaction: lastHumanInteraction,
     environment: {
       vm: vmState,
