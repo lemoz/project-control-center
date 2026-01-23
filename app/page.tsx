@@ -1,4 +1,5 @@
 import { StarToggle } from "./components/StarToggle";
+import { NarrationPanel } from "./landing/NarrationPanel";
 import Link from "next/link";
 import path from "path";
 
@@ -50,6 +51,7 @@ export default async function Page() {
 
   return (
     <main style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <NarrationPanel />
       <section className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h2 style={{ margin: 0, fontSize: 16 }}>Portfolio</h2>
