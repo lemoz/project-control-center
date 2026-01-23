@@ -1,6 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEventHandler } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEventHandler,
+  type WheelEventHandler,
+} from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type { ProjectNode, Visualization, VisualizationNode, WorkOrderNode } from "./types";
@@ -9,6 +17,7 @@ import { ProjectPopup } from "./ProjectPopup";
 import { WorkOrderPopup } from "./WorkOrderPopup";
 import { useProjectsVisualization } from "./useProjectsVisualization";
 import { useCanvasInteraction } from "./useCanvasInteraction";
+import { useAgentFocusSync, type AgentFocus } from "./useAgentFocus";
 import { defaultVisualizationId, findVisualization, visualizations } from "./visualizations";
 import type { RiverBubbleDetails } from "./visualizations/TimelineRiverViz";
 import type { HeatmapGrouping } from "./visualizations/HeatmapGridViz";
@@ -16,6 +25,24 @@ import { selectWorkOrderNodes, type WorkOrderFilter } from "./visualizations/Orb
 
 const TOOLTIP_OFFSET = 14;
 const CLICK_THRESHOLD = 4;
+const IDLE_TIMEOUT_MS = 30000;
+const FOCUS_CENTER_ATTEMPTS = 60;
+
+type CanvasMode = "follow" | "manual";
+
+const FOCUS_RING_COLORS: Record<string, string> = {
+  waiting_for_input: "#fbbf24",
+  you_review: "#a855f7",
+  ai_review: "#a855f7",
+  testing: "#22d3ee",
+  building: "#60a5fa",
+  queued: "#60a5fa",
+};
+
+function resolveFocusRingColor(status?: string): string {
+  if (!status) return "#f8fafc";
+  return FOCUS_RING_COLORS[status] ?? "#f8fafc";
+}
 
 type BubbleHitTestVisualization = Visualization & {
   getBubbleAtPoint: (point: { x: number; y: number }) => RiverBubbleDetails | null;
@@ -41,6 +68,7 @@ function supportsLayoutOptions(
 type WorkOrderFilterVisualization = Visualization & {
   setWorkOrderFilter?: (filter: WorkOrderFilter) => void;
   setProjectId?: (projectId: string | null) => void;
+  setPinnedWorkOrderIds?: (ids: string[]) => void;
 };
 
 function supportsWorkOrderFilter(
@@ -111,6 +139,58 @@ function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
+function FocusModeChip({
+  mode,
+  focus,
+  onResume,
+}: {
+  mode: CanvasMode;
+  focus: AgentFocus | null;
+  onResume: () => void;
+}) {
+  const isIdle = !focus || focus.kind === "none" || !focus.workOrderId;
+  const focusLabel = isIdle ? "Agent idle" : focus.workOrderId;
+  const statusLabel = !isIdle && focus?.status ? formatRunStatus(focus.status) : null;
+  const modeLabel = mode === "follow" ? "Following agent" : "Manual";
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 16,
+        right: 16,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "8px 12px",
+        borderRadius: 12,
+        background: "rgba(12, 15, 24, 0.9)",
+        border: "1px solid #1d2233",
+        color: "#e2e8f0",
+        fontSize: 12,
+        zIndex: 4,
+      }}
+    >
+      <span style={{ fontWeight: 600 }}>{modeLabel}</span>
+      <span className="badge" style={{ fontSize: 11 }}>{focusLabel}</span>
+      {statusLabel && (
+        <span className="badge" style={{ fontSize: 11 }}>
+          {statusLabel}
+        </span>
+      )}
+      {mode === "manual" && (
+        <button
+          className="btnSecondary"
+          onClick={onResume}
+          style={{ padding: "4px 8px", fontSize: 11 }}
+        >
+          Resume following
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function CanvasShell() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -122,8 +202,12 @@ export function CanvasShell() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [heatmapGrouping, setHeatmapGrouping] = useState<HeatmapGrouping>("status");
   const [workOrderFilter, setWorkOrderFilter] = useState<WorkOrderFilter>("active");
+  const [mode, setMode] = useState<CanvasMode>("follow");
   const lastFrame = useRef<number | null>(null);
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
+  const lastInteractionRef = useRef<number>(Date.now());
+  const focusRef = useRef<AgentFocus | null>(null);
+  const focusNodeRef = useRef<WorkOrderNode | null>(null);
 
   const { data, loading, error, refresh, lastUpdated } = useProjectsVisualization();
   const dataRef = useRef(data);
@@ -143,14 +227,29 @@ export function CanvasShell() {
     return activeProject?.id ?? data.nodes[0]?.id ?? null;
   }, [data.nodes, projectParam]);
 
+  const focus = useAgentFocusSync(resolvedProjectId, {
+    intervalMs: 5000,
+    hiddenIntervalMs: 15000,
+    debounceMs: 400,
+  });
+
+  const focusNodeId = useMemo(() => {
+    if (selectedVizId !== "orbital_work_orders") return null;
+    if (!focus || focus.kind !== "work_order" || !resolvedProjectId || !focus.workOrderId) {
+      return null;
+    }
+    return `${resolvedProjectId}::${focus.workOrderId}`;
+  }, [focus, resolvedProjectId, selectedVizId]);
+
   const orbitalWorkOrderNodes = useMemo<WorkOrderNode[]>(() => {
     if (!data.workOrderNodes || data.workOrderNodes.length === 0) return [];
     return selectWorkOrderNodes({
       nodes: data.workOrderNodes,
       filter: workOrderFilter,
       projectId: resolvedProjectId,
+      includeIds: focusNodeId ? [focusNodeId] : undefined,
     });
-  }, [data.workOrderNodes, resolvedProjectId, workOrderFilter]);
+  }, [data.workOrderNodes, focusNodeId, resolvedProjectId, workOrderFilter]);
 
   const interactionNodes = useMemo<VisualizationNode[]>(() => {
     if (selectedVizId === "orbital_work_orders") {
@@ -169,6 +268,11 @@ export function CanvasShell() {
   }, [data.nodes, data.workOrderNodes]);
 
   const nodeDragEnabled = selectedVizId === "force_graph";
+
+  const focusNode = useMemo(() => {
+    if (!focusNodeId) return null;
+    return orbitalWorkOrderNodes.find((node) => node.id === focusNodeId) ?? null;
+  }, [focusNodeId, orbitalWorkOrderNodes]);
 
   const {
     transform,
@@ -203,6 +307,16 @@ export function CanvasShell() {
     }
     return selectedNode.name;
   }, [selectedNode]);
+
+  const registerUserInteraction = useCallback(() => {
+    lastInteractionRef.current = Date.now();
+    setMode((prev) => (prev === "manual" ? prev : "manual"));
+  }, []);
+
+  const resumeFollow = useCallback(() => {
+    lastInteractionRef.current = Date.now();
+    setMode("follow");
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -241,6 +355,13 @@ export function CanvasShell() {
     visualization.setWorkOrderFilter?.(workOrderFilter);
     visualization.setProjectId?.(resolvedProjectId ?? null);
   }, [selectedVizId, workOrderFilter, resolvedProjectId]);
+
+  useEffect(() => {
+    if (selectedVizId !== "orbital_work_orders") return;
+    const visualization = vizRef.current;
+    if (!supportsWorkOrderFilter(visualization)) return;
+    visualization.setPinnedWorkOrderIds?.(focusNodeId ? [focusNodeId] : []);
+  }, [focusNodeId, selectedVizId]);
 
   useEffect(() => {
     vizRef.current?.update(data);
@@ -290,6 +411,14 @@ export function CanvasShell() {
   }, [hoveredNode]);
 
   useEffect(() => {
+    focusRef.current = focus;
+  }, [focus]);
+
+  useEffect(() => {
+    focusNodeRef.current = focusNode;
+  }, [focusNode]);
+
+  useEffect(() => {
     vizRef.current?.onNodeHover?.(hoveredNode);
   }, [hoveredNode]);
 
@@ -297,12 +426,50 @@ export function CanvasShell() {
     sizeRef.current = canvasSize;
   }, [canvasSize]);
 
+  useEffect(() => {
+    if (mode !== "manual") return;
+    const interval = window.setInterval(() => {
+      if (Date.now() - lastInteractionRef.current >= IDLE_TIMEOUT_MS) {
+        resumeFollow();
+      }
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [mode, resumeFollow]);
+
+  useEffect(() => {
+    if (mode !== "follow") return;
+    if (!focusNode) return;
+    if (canvasSize.width === 0 || canvasSize.height === 0) return;
+    let attempts = 0;
+    let rafId = 0;
+
+    const attemptCenter = () => {
+      attempts += 1;
+      if (focusNode.x !== undefined && focusNode.y !== undefined) {
+        const { x, y } = focusNode;
+        setTransform((prev) => ({
+          ...prev,
+          offsetX: canvasSize.width / 2 - x * prev.scale,
+          offsetY: canvasSize.height / 2 - y * prev.scale,
+        }));
+        return;
+      }
+      if (attempts < FOCUS_CENTER_ATTEMPTS) {
+        rafId = window.requestAnimationFrame(attemptCenter);
+      }
+    };
+
+    rafId = window.requestAnimationFrame(attemptCenter);
+    return () => window.cancelAnimationFrame(rafId);
+  }, [canvasSize.height, canvasSize.width, focusNode, mode, setTransform]);
+
   const handlePointerDown = useCallback<PointerEventHandler<HTMLCanvasElement>>(
     (event) => {
+      registerUserInteraction();
       pointerDownRef.current = { x: event.clientX, y: event.clientY };
       handlers.onPointerDown(event);
     },
-    [handlers]
+    [handlers, registerUserInteraction]
   );
 
   const handlePointerUp = useCallback<PointerEventHandler<HTMLCanvasElement>>(
@@ -346,6 +513,14 @@ export function CanvasShell() {
     [handlers]
   );
 
+  const handleWheel = useCallback<WheelEventHandler<HTMLCanvasElement>>(
+    (event) => {
+      registerUserInteraction();
+      handlers.onWheel(event);
+    },
+    [handlers, registerUserInteraction]
+  );
+
   useEffect(() => {
     const render = () => {
       const canvas = canvasRef.current;
@@ -368,6 +543,28 @@ export function CanvasShell() {
           currentTransform.offsetY * dpr
         );
         vizRef.current?.render();
+
+        const agentFocus = focusRef.current;
+        const agentNode = focusNodeRef.current;
+        if (
+          agentNode &&
+          agentFocus?.kind === "work_order" &&
+          agentNode.x !== undefined &&
+          agentNode.y !== undefined
+        ) {
+          const radius = (agentNode.radius ?? 16) + 8;
+          const ringColor = resolveFocusRingColor(agentFocus.status);
+          ctx.save();
+          ctx.strokeStyle = ringColor;
+          ctx.lineWidth = 2.2;
+          ctx.shadowBlur = 18;
+          ctx.shadowColor = ringColor;
+          ctx.globalAlpha = 0.9;
+          ctx.beginPath();
+          ctx.arc(agentNode.x, agentNode.y, radius, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
 
         const selected = selectedRef.current;
         if (selected && selected.x !== undefined && selected.y !== undefined) {
@@ -515,8 +712,12 @@ export function CanvasShell() {
             onPointerMove={handlers.onPointerMove}
             onPointerUp={handlePointerUp}
             onPointerLeave={handlePointerLeave}
-            onWheel={handlers.onWheel}
+            onWheel={handleWheel}
           />
+
+          {selectedVizId === "orbital_work_orders" && (
+            <FocusModeChip mode={mode} focus={focus} onResume={resumeFollow} />
+          )}
 
           {hoveredNode && tooltipPosition && (
             <div

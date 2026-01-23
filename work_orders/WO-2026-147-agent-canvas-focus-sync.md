@@ -34,9 +34,9 @@ tags:
   - visualization
   - landing-page
 estimate_hours: 6
-status: ready
+status: you_review
 created_at: 2026-01-22
-updated_at: 2026-01-22
+updated_at: 2026-01-23
 depends_on:
   - WO-2026-140
   - WO-2026-145
