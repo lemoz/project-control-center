@@ -95,6 +95,7 @@ import {
   type WorkOrderLookup,
 } from "./work_order_dependencies.js";
 import { generateWorkOrderDraft } from "./wo_generation.js";
+import { generateNarration } from "./narration.js";
 import {
   getChatSettingsResponse,
   getRunnerSettingsResponse,
@@ -551,6 +552,21 @@ app.post("/api/voice/run-status", verifyElevenLabsWebhook, (req, res) => {
   const run = getRun(runId);
   if (!run) return res.status(404).json({ error: "run not found" });
   return res.json(run);
+});
+
+app.post("/narration", async (req, res) => {
+  const result = await generateNarration(req.body);
+  if (!result.ok) {
+    return res.status(result.status).json({
+      error: result.error,
+      retry_after_ms: result.retryAfterMs,
+    });
+  }
+  return res.json({
+    text: result.text,
+    provider: result.provider,
+    model: result.model,
+  });
 });
 
 app.get("/observability/vm-health", async (req, res) => {

@@ -15,6 +15,10 @@ const BURST_WINDOW_MS = 7_000;
 const PERIODIC_MIN_MS = 45_000;
 const PERIODIC_MAX_MS = 75_000;
 const TRANSCRIPT_LIMIT = 12;
+const LLM_MIN_GAP_MS = 30_000;
+const LLM_TIMEOUT_MS = 8_000;
+const RECENT_NARRATION_LIMIT = 6;
+const MAX_ACTIVE_RUNS = 6;
 
 type TranscriptEntry = {
   id: string;
@@ -53,11 +57,33 @@ type NarrationEventType =
 type NarrationEvent = {
   type: NarrationEventType;
   priority: NarrationPriority;
+  runId?: string;
   workOrderId?: string;
   phase?: string;
   status?: string;
   activeCount?: number;
   escalationSummary?: string;
+};
+
+type NarrationRequestEvent = {
+  type: NarrationEventType;
+  runId?: string;
+  workOrderId?: string;
+  phase?: string;
+  status?: string;
+  escalationSummary?: string;
+  activeCount?: number;
+};
+
+type NarrationRequestPayload = {
+  primaryEvent: NarrationRequestEvent;
+  events: NarrationRequestEvent[];
+  activeRunIds: string[];
+  recentNarrations: string[];
+};
+
+type NarrationResponse = {
+  text?: string;
 };
 
 function randomBetween(min: number, max: number): number {
@@ -104,6 +130,28 @@ function formatStatus(status?: string | null): string {
     default:
       return status || "complete";
   }
+}
+
+function normalizeNarrationText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isRepeatNarration(text: string, recent: string[]): boolean {
+  const normalized = normalizeNarrationText(text);
+  if (!normalized) return true;
+  for (const entry of recent) {
+    const prior = normalizeNarrationText(entry);
+    if (!prior) continue;
+    if (normalized === prior) return true;
+    if (normalized.length >= 40 && (normalized.includes(prior) || prior.includes(normalized))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function extractEscalationSummary(payload: Record<string, unknown>): string | null {
@@ -188,6 +236,29 @@ async function fetchWorkOrderDetails(
   };
 }
 
+function toRequestEvent(event: NarrationEvent): NarrationRequestEvent {
+  return {
+    type: event.type,
+    runId: event.runId,
+    workOrderId: event.workOrderId,
+    phase: event.phase,
+    status: event.status,
+    escalationSummary: event.escalationSummary,
+    activeCount: event.activeCount,
+  };
+}
+
+function collectRecentNarrations(
+  entries: TranscriptEntry[],
+  limit: number
+): string[] {
+  if (!entries.length) return [];
+  return entries
+    .slice(-limit)
+    .map((entry) => entry.text)
+    .filter((text) => text.trim());
+}
+
 export function useNarration() {
   const [enabled, setEnabled] = useState(false);
   const [muted, setMuted] = useState(false);
@@ -199,6 +270,7 @@ export function useNarration() {
   const readyRef = useRef(false);
 
   const serviceRef = useRef<NarrationService | null>(null);
+  const transcriptRef = useRef<TranscriptEntry[]>([]);
   const previousRunsRef = useRef<Map<string, ActiveRun>>(new Map());
   const completedRunsRef = useRef<Set<string>>(new Set());
   const activeCountRef = useRef(0);
@@ -208,6 +280,8 @@ export function useNarration() {
   const burstTimerRef = useRef<number | null>(null);
   const periodicTimerRef = useRef<number | null>(null);
   const baselineReadyRef = useRef(false);
+  const lastLlmCallRef = useRef(0);
+  const llmInFlightRef = useRef(false);
 
   const enabledRef = useRef(enabled);
   const supportedRef = useRef(supported);
@@ -235,7 +309,9 @@ export function useNarration() {
           text,
         },
       ];
-      return next.slice(-TRANSCRIPT_LIMIT);
+      const trimmed = next.slice(-TRANSCRIPT_LIMIT);
+      transcriptRef.current = trimmed;
+      return trimmed;
     });
   }, []);
 
@@ -303,23 +379,94 @@ export function useNarration() {
     service.speak(text, priority);
   }, []);
 
+  const buildFallbackMessage = useCallback(
+    (events: NarrationEvent[], primary: NarrationEvent) => {
+      let message = formatEvent(primary);
+      if (events.length > 1) {
+        const extra = events.length - 1;
+        const suffix = extra === 1 ? "change" : "changes";
+        message = `Multiple updates just landed. ${message} Also ${extra} more ${suffix}.`;
+      }
+      return message;
+    },
+    [formatEvent]
+  );
+
+  const requestNarration = useCallback(
+    async (events: NarrationEvent[], primary: NarrationEvent) => {
+      if (llmInFlightRef.current) return null;
+      const now = Date.now();
+      if (now - lastLlmCallRef.current < LLM_MIN_GAP_MS) return null;
+
+      const recentNarrations = collectRecentNarrations(
+        transcriptRef.current,
+        RECENT_NARRATION_LIMIT
+      );
+      const payload: NarrationRequestPayload = {
+        primaryEvent: toRequestEvent(primary),
+        events: events.map((event) => toRequestEvent(event)),
+        activeRunIds: Array.from(previousRunsRef.current.keys()).slice(
+          0,
+          MAX_ACTIVE_RUNS
+        ),
+        recentNarrations,
+      };
+
+      llmInFlightRef.current = true;
+      lastLlmCallRef.current = now;
+      const controller =
+        typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timeoutId =
+        typeof window !== "undefined"
+          ? window.setTimeout(() => controller?.abort(), LLM_TIMEOUT_MS)
+          : null;
+
+      try {
+        const res = await fetch("/api/narration", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: controller?.signal,
+        }).catch(() => null);
+        if (!res || !res.ok) return null;
+        const json = (await res.json().catch(() => null)) as NarrationResponse | null;
+        const text = typeof json?.text === "string" ? json.text.trim() : "";
+        if (!text) return null;
+        if (isRepeatNarration(text, recentNarrations)) return null;
+        return text;
+      } catch {
+        return null;
+      } finally {
+        if (timeoutId !== null && typeof window !== "undefined") {
+          window.clearTimeout(timeoutId);
+        }
+        llmInFlightRef.current = false;
+      }
+    },
+    []
+  );
+
+  const deliverNarration = useCallback(
+    async (events: NarrationEvent[]) => {
+      if (!events.length) return;
+      const priority: NarrationPriority = events.some((event) => event.priority === "high")
+        ? "high"
+        : "normal";
+      const primary = events.find((event) => event.priority === "high") ?? events[0];
+      const fallback = buildFallbackMessage(events, primary);
+      const llmText = await requestNarration(events, primary);
+      speakText(llmText ?? fallback, priority);
+    },
+    [buildFallbackMessage, requestNarration, speakText]
+  );
+
   const flushBurst = useCallback(() => {
     const events = burstBufferRef.current;
     if (!events.length) return;
     burstBufferRef.current = [];
     burstTimerRef.current = null;
-    const priority: NarrationPriority = events.some((event) => event.priority === "high")
-      ? "high"
-      : "normal";
-    const primary = events.find((event) => event.priority === "high") ?? events[0];
-    let message = formatEvent(primary);
-    if (events.length > 1) {
-      const extra = events.length - 1;
-      const suffix = extra === 1 ? "change" : "changes";
-      message = `Multiple updates just landed. ${message} Also ${extra} more ${suffix}.`;
-    }
-    speakText(message, priority);
-  }, [formatEvent, speakText]);
+    void deliverNarration(events);
+  }, [deliverNarration]);
 
   const queueEvent = useCallback(
     (event: NarrationEvent) => {
@@ -353,6 +500,7 @@ export function useNarration() {
       const event: NarrationEvent = {
         type: "periodic",
         priority: "normal",
+        runId: focusRun?.id,
         activeCount: activeCountRef.current,
         workOrderId: focusWorkOrderId,
       };
@@ -393,6 +541,7 @@ export function useNarration() {
       const queued = queueEvent({
         type: "run_completed",
         priority: "high",
+        runId: run.id,
         workOrderId: details?.work_order_id ?? run.work_order_id,
         status: details?.status ?? run.status,
       });
@@ -409,6 +558,7 @@ export function useNarration() {
       const queued = queueEvent({
         type: "escalation",
         priority: "high",
+        runId: run.id,
         workOrderId: run.work_order_id,
         escalationSummary: summary ?? undefined,
       });
@@ -451,6 +601,7 @@ export function useNarration() {
             queueEvent({
               type: "run_started",
               priority: "high",
+              runId: run.id,
               workOrderId: run.work_order_id,
             })
           ) {
@@ -467,6 +618,7 @@ export function useNarration() {
             queueEvent({
               type: "phase_change",
               priority: "normal",
+              runId: run.id,
               workOrderId: run.work_order_id,
               phase: run.phase,
             })
