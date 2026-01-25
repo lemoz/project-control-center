@@ -17,6 +17,7 @@
     "test": "npm run test:e2e"
   },
   "dependencies": {
+    "@elevenlabs/react": "^0.13.0",
     "better-sqlite3": "^11.5.0",
     "cors": "^2.8.5",
     "express": "^4.21.2",
