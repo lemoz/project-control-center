@@ -11,11 +11,11 @@ context:
 acceptance_criteria:
   - Change persona from "podcast host" to "chief of staff"
   - Expand context passed to LLM:
-    - All active projects with status summary
-    - Recent chat threads and decisions
-    - Recently completed WOs (last 24h)
-    - Pending escalations awaiting response
-    - What changed since last narration
+      - All active projects with status summary
+      - Recent chat threads and decisions
+      - Recently completed WOs (last 24h)
+      - Pending escalations awaiting response
+      - What changed since last narration
   - Track "what's been reported" to avoid semantic repetition
   - Prioritize updates by relevance (escalations > completions > progress)
   - Connect current activity to recent decisions/conversations
@@ -34,14 +34,13 @@ tags:
   - llm
   - ux
 estimate_hours: 4
-status: backlog
+status: you_review
 created_at: 2026-01-25
 updated_at: 2026-01-25
 depends_on:
   - WO-2026-154
 era: v2
 ---
-
 ## Persona Shift
 
 **Before (Podcast Host):**
