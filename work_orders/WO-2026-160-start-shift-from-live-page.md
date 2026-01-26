@@ -5,6 +5,8 @@ status: done
 priority: 2
 track: live-demo
 estimate_hours: 2
+depends_on: []
+era: v2
 updated_at: 2026-01-26
 ---
 ## Goal

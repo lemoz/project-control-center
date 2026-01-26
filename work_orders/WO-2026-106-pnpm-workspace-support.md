@@ -9,6 +9,7 @@ tags:
   - pnpm
   - monorepo
 depends_on: []
+era: v2
 goal: Thoroughly research the pnpm workspace symlink issue and produce a detailed implementation plan
 acceptance_criteria:
   - Document exactly how pnpm workspaces structure node_modules

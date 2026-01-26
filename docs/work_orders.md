@@ -28,13 +28,17 @@ estimate_hours: 0.5
 status: backlog|ready|building|ai_review|you_review|done|blocked|parked
 created_at: "YYYY-MM-DD"
 updated_at: "YYYY-MM-DD"
+depends_on: []
+era: v1
 ---
 ```
 
+Metadata requirements:
+- `depends_on`: required array (use `[]` for root work orders).
+- `era`: required, one of `v0`, `v1`, or `v2`.
+
 Optional fields (can be added to the frontmatter as needed):
 - `base_branch`: default base branch for runs when no run-level override is provided.
-- `depends_on`: array of Work Order IDs. Use `WO-YYYY-NNN` for same-project deps or
-  `project_id:WO-YYYY-NNN` for cross-project deps.
 
 ### Dependencies
 Example:

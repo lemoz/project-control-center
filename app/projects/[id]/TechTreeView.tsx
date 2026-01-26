@@ -57,9 +57,19 @@ const STATUS_LABELS: Record<WorkOrderStatus, string> = {
   parked: "Parked",
 };
 
+const ERA_LANES = [
+  { id: "v0", label: "v0", color: "#1f2937" },
+  { id: "v1", label: "v1", color: "#0f766e" },
+  { id: "v2", label: "v2", color: "#1d4ed8" },
+] as const;
+const ERA_LANE_IDS = new Set(ERA_LANES.map((lane) => lane.id));
+const UNASSIGNED_ERA_ID = "unassigned";
+const UNASSIGNED_ERA = { id: UNASSIGNED_ERA_ID, label: "Unassigned", color: "#475569" };
+
 const NODE_WIDTH = 220;
 const NODE_HEIGHT = 80;
 const HORIZONTAL_GAP = 100;
+const ERA_COLUMN_WIDTH = NODE_WIDTH + HORIZONTAL_GAP;
 const VERTICAL_GAP = 30;
 const LANE_HEADER_HEIGHT = 32;
 const LANE_PADDING_Y = 16;
@@ -85,6 +95,14 @@ type LaneLayout = {
   top: number;
   height: number;
   isCollapsed: boolean;
+};
+
+type EraLaneLayout = {
+  id: string;
+  label: string;
+  color: string;
+  x: number;
+  width: number;
 };
 
 type Viewport = {
@@ -244,14 +262,15 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
     void load();
   }, [load]);
 
-  // Calculate node positions based on dependency depth + track lanes
-  const { nodePositions, svgWidth, svgHeight, lanes } = useMemo(() => {
+  // Calculate node positions based on era lanes + track lanes
+  const { nodePositions, svgWidth, svgHeight, lanes, eraColumns } = useMemo(() => {
     if (!data)
       return {
         nodePositions: new Map<string, { x: number; y: number }>(),
         svgWidth: 800,
         svgHeight: 600,
         lanes: [] as LaneLayout[],
+        eraColumns: [] as EraLaneLayout[],
       };
 
     const nodes = data.nodes;
@@ -286,7 +305,20 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       getDepth(node.id, new Set());
     }
 
-    const maxDepth = Math.max(...Array.from(depths.values()), 0);
+    const normalizeEra = (value: string | null) => {
+      if (!value) return UNASSIGNED_ERA_ID;
+      const trimmed = value.trim();
+      return ERA_LANE_IDS.has(trimmed) ? trimmed : UNASSIGNED_ERA_ID;
+    };
+
+    const needsUnassigned = nodes.some((node) => normalizeEra(node.era) === UNASSIGNED_ERA_ID);
+    const eraList = needsUnassigned ? [...ERA_LANES, UNASSIGNED_ERA] : [...ERA_LANES];
+    const eraLayouts: EraLaneLayout[] = eraList.map((lane, index) => ({
+      ...lane,
+      x: LEFT_PADDING + index * ERA_COLUMN_WIDTH,
+      width: ERA_COLUMN_WIDTH,
+    }));
+    const eraIndexById = new Map(eraLayouts.map((lane, index) => [lane.id, index]));
 
     const lanesById = new Map<string, { id: string; name: string; color: string | null; nodes: DependencyNode[]; isUnassigned: boolean }>();
 
@@ -352,8 +384,10 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       });
 
       visibleNodes.forEach((node, idx) => {
+        const eraId = normalizeEra(node.era);
+        const eraIndex = eraIndexById.get(eraId) ?? 0;
         positions.set(node.id, {
-          x: LEFT_PADDING + (depths.get(node.id) ?? 0) * (NODE_WIDTH + HORIZONTAL_GAP),
+          x: LEFT_PADDING + eraIndex * ERA_COLUMN_WIDTH,
           y: laneTop + LANE_HEADER_HEIGHT + LANE_PADDING_Y + idx * (NODE_HEIGHT + VERTICAL_GAP),
         });
       });
@@ -361,7 +395,9 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       yOffset += laneHeight + LANE_GAP;
     }
 
-    const width = LEFT_PADDING + (maxDepth + 1) * (NODE_WIDTH + HORIZONTAL_GAP) + RIGHT_PADDING;
+    const columnCount = Math.max(1, eraLayouts.length);
+    const width =
+      LEFT_PADDING + columnCount * ERA_COLUMN_WIDTH - HORIZONTAL_GAP + RIGHT_PADDING;
     const height = Math.max(400, yOffset - LANE_GAP + BOTTOM_PADDING);
 
     return {
@@ -369,6 +405,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       svgWidth: Math.max(800, width),
       svgHeight: height,
       lanes: laneLayouts,
+      eraColumns: eraLayouts,
     };
   }, [data, collapsedLanes]);
 
@@ -564,6 +601,24 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
               <span style={{ fontSize: 11, color: "#aaa" }}>{STATUS_LABELS[status as WorkOrderStatus]}</span>
             </div>
           ))}
+          {eraColumns.length > 0 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: 10 }}>
+              {eraColumns.map((lane) => (
+                <div key={lane.id} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <div
+                    style={{
+                      width: 10,
+                      height: 10,
+                      backgroundColor: lane.color,
+                      borderRadius: 2,
+                      opacity: 0.6,
+                    }}
+                  />
+                  <span style={{ fontSize: 11, color: "#aaa" }}>{lane.label}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <button className="btnSecondary" onClick={() => void load()} style={{ marginLeft: 12 }}>
             Refresh
           </button>
@@ -595,6 +650,34 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
               willChange: "transform",
             }}
           >
+            {/* Era lanes */}
+            {eraColumns.map((lane) => (
+              <rect
+                key={`era-bg-${lane.id}`}
+                x={lane.x}
+                y={0}
+                width={lane.width}
+                height={svgHeight}
+                fill={lane.color}
+                opacity={0.06}
+              />
+            ))}
+
+            {/* Era labels */}
+            {eraColumns.map((lane) => (
+              <text
+                key={`era-label-${lane.id}`}
+                x={lane.x + NODE_WIDTH / 2}
+                y={TOP_PADDING - 18}
+                textAnchor="middle"
+                fill="#94a3b8"
+                fontSize={12}
+                fontWeight={600}
+              >
+                {lane.label}
+              </text>
+            ))}
+
             {/* Lane backgrounds */}
             {lanes.map((lane) => {
               const laneColor = lane.color ?? "#334155";
@@ -736,7 +819,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
 
                   {/* Era + deps info */}
                   <text x={14} y={58} fill="#888" fontSize={10}>
-                    {node.era ? `${node.era} - ` : ""}
+                    {(node.era ?? "Unassigned") + " - "}
                     {node.dependsOn.length} deps - {node.dependents.length} unlocks
                   </text>
 
@@ -944,11 +1027,9 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
               >
                 {STATUS_LABELS[selectedNode.status]}
               </span>
-              {selectedNode.era && (
-                <span className="badge" style={{ marginLeft: 6 }}>
-                  {selectedNode.era}
-                </span>
-              )}
+              <span className="badge" style={{ marginLeft: 6 }}>
+                {selectedNode.era ?? "Unassigned"}
+              </span>
               <span className="badge" style={{ marginLeft: 6 }}>
                 P{selectedNode.priority}
               </span>

@@ -28,6 +28,7 @@ estimate_hours: 2
 status: done
 created_at: 2026-01-23
 updated_at: 2026-01-26
+depends_on: []
 era: v2
 ---
 ## Problem

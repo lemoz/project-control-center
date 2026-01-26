@@ -6,6 +6,7 @@ priority: 1
 tags: [live-demo, canvas, ui]
 estimate_hours: 2
 depends_on: [WO-2026-164]
+era: v2
 updated_at: 2026-01-26
 ---
 ## Goal

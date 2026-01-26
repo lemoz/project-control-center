@@ -4,7 +4,7 @@ title: Shift Telemetry Research
 goal: Research and prototype expanded shift telemetry to help agents learn from predecessors.
 context:
   - WO-2026-060 through 064 (Agent Shift system)
-  - "Line of agents" concept - each inherits from predecessors
+  - '"Line of agents" concept - each inherits from predecessors'
   - Question: what additional context helps future agents make better decisions?
 acceptance_criteria:
   - Document what telemetry would be valuable (execution methods, tool usage patterns, time spent, etc.)

@@ -19,6 +19,8 @@ export const WORK_ORDER_STATUSES = [
 export type WorkOrderStatus = (typeof WORK_ORDER_STATUSES)[number];
 
 const WorkOrderStatusSchema = z.enum(WORK_ORDER_STATUSES);
+const WORK_ORDER_ERAS = ["v0", "v1", "v2"] as const;
+const WORK_ORDER_ERA_SET = new Set<string>(WORK_ORDER_ERAS);
 
 const MinimalFrontmatterSchema = z
   .object({
@@ -66,6 +68,7 @@ export type WorkOrder = {
   depends_on: string[];
   era: string | null;
   ready_check: { ok: boolean; errors: string[] };
+  validation_warnings: string[];
   trackId: string | null;
   track: { id: string; name: string; color: string | null } | null;
 };
@@ -182,6 +185,32 @@ function normalizeOptionalString(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
+function buildMetadataWarnings(frontmatter: Record<string, unknown>): string[] {
+  const warnings: string[] = [];
+  const hasEra = Object.prototype.hasOwnProperty.call(frontmatter, "era");
+  if (!hasEra) {
+    warnings.push(`Missing \`era\` (expected ${WORK_ORDER_ERAS.join(", ")}).`);
+  } else {
+    const rawEra = frontmatter.era;
+    if (typeof rawEra !== "string" || !rawEra.trim()) {
+      warnings.push(`Invalid \`era\` (expected ${WORK_ORDER_ERAS.join(", ")}).`);
+    } else if (!WORK_ORDER_ERA_SET.has(rawEra.trim())) {
+      warnings.push(
+        `Invalid \`era\` "${rawEra.trim()}" (expected ${WORK_ORDER_ERAS.join(", ")}).`
+      );
+    }
+  }
+
+  const hasDependsOn = Object.prototype.hasOwnProperty.call(frontmatter, "depends_on");
+  if (!hasDependsOn) {
+    warnings.push("Missing `depends_on` (expected array).");
+  } else if (!Array.isArray(frontmatter.depends_on)) {
+    warnings.push("Invalid `depends_on` (expected array).");
+  }
+
+  return warnings;
+}
+
 export function readyCheck(frontmatter: Record<string, unknown>): {
   ok: boolean;
   errors: string[];
@@ -241,6 +270,7 @@ function normalizeWorkOrder(
     typeof data.era === "string" && data.era.trim() ? data.era.trim() : null;
 
   const rc = readyCheck(rawFrontmatter);
+  const validation_warnings = buildMetadataWarnings(rawFrontmatter);
 
   return {
     id: data.id,
@@ -260,6 +290,7 @@ function normalizeWorkOrder(
     depends_on,
     era,
     ready_check: rc,
+    validation_warnings,
     trackId: null,
     track: null,
   };

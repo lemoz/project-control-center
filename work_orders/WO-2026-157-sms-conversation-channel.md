@@ -16,7 +16,7 @@ acceptance_criteria:
   - Dedicated phone number for the global agent
   - Incoming SMS creates or continues a conversation
   - Conversation state tracked (active, ended, processed)
-  - "End conversation" detection (timeout, natural conclusion, "done")
+  - '"End conversation" detection (timeout, natural conclusion, "done")'
   - When conversation ends, context packaged and passed to global agent
   - Global agent can send SMS to user (initiate conversation)
   - Phone number → user mapping for identification
