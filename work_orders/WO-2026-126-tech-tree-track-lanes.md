@@ -25,11 +25,11 @@ tags:
   - tracks
   - visualization
 estimate_hours: 3
-status: you_review
+status: done
 depends_on:
   - WO-2026-125
 created_at: 2026-01-22
-updated_at: 2026-01-23
+updated_at: 2026-01-26
 ---
 ## Summary
 
