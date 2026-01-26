@@ -6,6 +6,7 @@ import type { AgentFocus } from "../playground/canvas/useAgentFocus";
 import type { ProjectNode, RunStatus, WorkOrderNode } from "../playground/canvas/types";
 import { useActiveShift } from "./useActiveShift";
 import { useShiftLogTail } from "./useShiftLogTail";
+import { parseShiftLogLines, extractCurrentState, type ActivityEntry } from "./parseShiftLog";
 import styles from "./live.module.css";
 
 type AgentActivityPanelProps = {
@@ -47,6 +48,41 @@ function resolveActionLabel(
   return "Idle";
 }
 
+const ENTRY_TYPE_STYLES: Record<ActivityEntry["type"], { icon: string; color: string }> = {
+  init: { icon: "⚡", color: "#6ee7b7" },
+  tool: { icon: "→", color: "#60a5fa" },
+  text: { icon: "💬", color: "#a9b0c2" },
+  result: { icon: "✓", color: "#6ee7b7" },
+  error: { icon: "✗", color: "#f87171" },
+  unknown: { icon: "•", color: "#6b7280" },
+};
+
+function ActivityLogEntry({ entry }: { entry: ActivityEntry }) {
+  const style = ENTRY_TYPE_STYLES[entry.type];
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 8,
+        padding: "4px 0",
+        borderBottom: "1px solid #1f2433",
+        fontSize: 12,
+        lineHeight: 1.4,
+      }}
+    >
+      <span style={{ color: style.color, flexShrink: 0, width: 16 }}>{style.icon}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ color: style.color, fontWeight: entry.type === "tool" ? 600 : 400 }}>
+          {entry.content}
+        </div>
+        {entry.details && (
+          <div style={{ color: "#6b7280", fontSize: 11, marginTop: 2 }}>{entry.details}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function AgentActivityPanel({
   project,
   focus,
@@ -83,16 +119,23 @@ export function AgentActivityPanel({
   }, [projectId, workOrderIdToShow, workOrderNodes]);
 
   const hasActiveShift = Boolean(shiftId);
-  const actionLabel = resolveActionLabel(focus, hasActiveShift);
   const focusUpdated = formatTime(focus?.updatedAt);
   const shiftStarted = formatTime(shift?.started_at);
   const logUpdated = lastUpdated ? lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
   const logLines = logTail?.lines ?? [];
-  const logBody = logLines.length
-    ? logLines.join("\n")
-    : hasActiveShift
-      ? "(no logs yet)"
-      : "No active shift log yet.";
+
+  // Parse stream-json log lines into structured activity entries
+  const activityEntries = useMemo(() => parseShiftLogLines(logLines), [logLines]);
+  const currentState = useMemo(() => extractCurrentState(activityEntries), [activityEntries]);
+
+  // Derive action label from parsed logs or fall back to focus/shift status
+  const actionLabel = useMemo(() => {
+    if (currentState.currentTool) {
+      return currentState.currentTool.replace("→ ", "");
+    }
+    return resolveActionLabel(focus, hasActiveShift);
+  }, [currentState.currentTool, focus, hasActiveShift]);
+
   const showLogError = Boolean(logError) && !logLines.length;
 
   useEffect(() => {
@@ -102,7 +145,7 @@ export function AgentActivityPanel({
     if (distanceFromBottom < 40) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [logBody]);
+  }, [activityEntries]);
 
   if (loading) {
     return (
@@ -207,24 +250,39 @@ export function AgentActivityPanel({
 
       <div className={styles.logPanel}>
         <div className={styles.logHeader}>
-          <div style={{ fontWeight: 600 }}>Shift log (tail)</div>
+          <div style={{ fontWeight: 600 }}>Agent activity</div>
           <div className="muted" style={{ fontSize: 12 }}>
-            {logLoading && !logLines.length ? "Loading log..." : "Auto-updating"}
+            {logLoading && !logLines.length ? "Loading..." : "Live"}
+            {currentState.isComplete && " • Complete"}
+            {currentState.hasError && " • Error"}
           </div>
         </div>
 
         <div className={styles.logScroller} ref={logRef}>
-          <pre className={styles.logText}>
-            {showLogError ? logError : logBody}
-          </pre>
+          {showLogError ? (
+            <pre className={styles.logText}>{logError}</pre>
+          ) : activityEntries.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              {activityEntries.map((entry) => (
+                <ActivityLogEntry key={entry.id} entry={entry} />
+              ))}
+            </div>
+          ) : (
+            <pre className={styles.logText}>
+              {hasActiveShift ? "(waiting for activity...)" : "No active shift."}
+            </pre>
+          )}
         </div>
 
         <div className={styles.logMeta}>
           <div>
-            {logTail?.has_more ? "Showing latest lines." : "Showing all recent lines."}
+            {activityEntries.length > 0
+              ? `${activityEntries.length} events`
+              : logTail?.has_more
+                ? "Showing latest"
+                : ""}
           </div>
           {logUpdated && <div>Updated {logUpdated}</div>}
-          {logTail?.log_path && <div>Log: {logTail.log_path}</div>}
         </div>
       </div>
     </section>
