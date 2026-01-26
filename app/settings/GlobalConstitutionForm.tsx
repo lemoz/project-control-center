@@ -17,16 +17,52 @@ type SaveResponse = {
   error?: string;
 };
 
+type ConstitutionVersion = {
+  id: string;
+  scope: "global" | "project";
+  project_id: string | null;
+  content: string;
+  statements: string[];
+  source: string;
+  created_at: string;
+  active: boolean;
+};
+
+type VersionsResponse = {
+  versions: ConstitutionVersion[];
+  error?: string;
+};
+
 export function GlobalConstitutionForm() {
   const [saved, setSaved] = useState("");
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [versions, setVersions] = useState<ConstitutionVersion[]>([]);
+  const [loadingVersions, setLoadingVersions] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showGenerator, setShowGenerator] = useState(false);
 
   const dirty = useMemo(() => draft !== saved, [draft, saved]);
+
+  const loadVersions = useCallback(async () => {
+    setLoadingVersions(true);
+    setHistoryError(null);
+    try {
+      const res = await fetch("/api/constitution/versions?scope=global", {
+        cache: "no-store",
+      });
+      const json = (await res.json().catch(() => null)) as VersionsResponse | null;
+      if (!res.ok) throw new Error(json?.error || "failed to load history");
+      setVersions(Array.isArray(json?.versions) ? json.versions : []);
+    } catch (e) {
+      setHistoryError(e instanceof Error ? e.message : "failed to load history");
+    } finally {
+      setLoadingVersions(false);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -39,12 +75,13 @@ export function GlobalConstitutionForm() {
       const global = json?.global ?? "";
       setSaved(global);
       setDraft(global);
+      void loadVersions();
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed to load constitution");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadVersions]);
 
   useEffect(() => {
     void load();
@@ -65,12 +102,13 @@ export function GlobalConstitutionForm() {
       setSaved(draft);
       setNotice(json?.version ? `Saved (${json.version}).` : "Saved.");
       setTimeout(() => setNotice(null), 2500);
+      void loadVersions();
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed to save constitution");
     } finally {
       setSaving(false);
     }
-  }, [draft]);
+  }, [draft, loadVersions]);
 
   const applyTemplate = useCallback(() => {
     setDraft(CONSTITUTION_TEMPLATE);
@@ -125,6 +163,36 @@ export function GlobalConstitutionForm() {
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
               />
+            </div>
+            <div className="field">
+              <div className="fieldLabel muted">History</div>
+              {!!historyError && <div className="error">{historyError}</div>}
+              {loadingVersions && <div className="muted">Loading history…</div>}
+              {!loadingVersions && versions.length === 0 && (
+                <div className="muted" style={{ fontSize: 12 }}>
+                  No saved versions yet.
+                </div>
+              )}
+              {!loadingVersions &&
+                versions.map((version) => {
+                  const count = Array.isArray(version.statements)
+                    ? version.statements.length
+                    : 0;
+                  const label = `${
+                    version.active ? "Active" : "Saved"
+                  } - ${version.created_at} - ${version.source || "unknown"} - ${count} statements`;
+                  return (
+                    <details key={version.id} style={{ marginBottom: 6 }}>
+                      <summary style={{ cursor: "pointer" }}>{label}</summary>
+                      <textarea
+                        className="input"
+                        rows={8}
+                        value={version.content ?? ""}
+                        readOnly
+                      />
+                    </details>
+                  );
+                })}
             </div>
           </>
         )}

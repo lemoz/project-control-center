@@ -186,6 +186,30 @@ export type EscalationRow = ProjectCommunicationRow & {
   type: EscalationType;
 };
 
+export type ConstitutionScope = "global" | "project";
+
+export type ConstitutionVersionRow = {
+  id: string;
+  scope: ConstitutionScope;
+  project_id: string | null;
+  content: string;
+  statements: string;
+  source: string;
+  created_at: string;
+  active: 0 | 1;
+};
+
+export type ConstitutionVersion = {
+  id: string;
+  scope: ConstitutionScope;
+  project_id: string | null;
+  content: string;
+  statements: string[];
+  source: string;
+  created_at: string;
+  active: boolean;
+};
+
 export type BudgetEnforcementEventType =
   | "run_blocked"
   | "warning"
@@ -709,6 +733,23 @@ function initSchema(database: Database.Database) {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS constitution_versions (
+      id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL,
+      project_id TEXT,
+      content TEXT NOT NULL,
+      statements TEXT NOT NULL DEFAULT '[]',
+      source TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_constitution_versions_scope_active
+      ON constitution_versions(scope, active, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_constitution_versions_project_active
+      ON constitution_versions(project_id, scope, active, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS user_interactions (
       id TEXT PRIMARY KEY,
@@ -3478,4 +3519,204 @@ export function createGlobalPattern(input: CreateGlobalPatternInput): GlobalPatt
     .run(row);
 
   return toGlobalPattern(row);
+}
+
+const MAX_CONSTITUTION_VERSIONS = 5;
+
+function normalizeConstitutionStatements(statements: string[]): string[] {
+  const trimmed = statements.map((entry) => entry.trim()).filter(Boolean);
+  return Array.from(new Set(trimmed));
+}
+
+function toConstitutionVersion(row: ConstitutionVersionRow): ConstitutionVersion {
+  return {
+    id: row.id,
+    scope: row.scope,
+    project_id: row.project_id ?? null,
+    content: row.content,
+    statements: parseJsonStringArray(row.statements),
+    source: row.source,
+    created_at: row.created_at,
+    active: row.active === 1,
+  };
+}
+
+export function getActiveConstitutionVersion(params: {
+  scope: ConstitutionScope;
+  projectId?: string | null;
+}): ConstitutionVersion | null {
+  const database = getDb();
+  const scope = params.scope;
+  const projectId = params.projectId ?? null;
+  let row: ConstitutionVersionRow | undefined;
+  if (scope === "global") {
+    row = database
+      .prepare(
+        `SELECT *
+         FROM constitution_versions
+         WHERE scope = 'global' AND active = 1
+         ORDER BY created_at DESC
+         LIMIT 1`
+      )
+      .get() as ConstitutionVersionRow | undefined;
+    if (!row) {
+      row = database
+        .prepare(
+          `SELECT *
+           FROM constitution_versions
+           WHERE scope = 'global'
+           ORDER BY created_at DESC
+           LIMIT 1`
+        )
+        .get() as ConstitutionVersionRow | undefined;
+    }
+  } else {
+    if (!projectId) return null;
+    row = database
+      .prepare(
+        `SELECT *
+         FROM constitution_versions
+         WHERE scope = 'project' AND project_id = ? AND active = 1
+         ORDER BY created_at DESC
+         LIMIT 1`
+      )
+      .get(projectId) as ConstitutionVersionRow | undefined;
+    if (!row) {
+      row = database
+        .prepare(
+          `SELECT *
+           FROM constitution_versions
+           WHERE scope = 'project' AND project_id = ?
+           ORDER BY created_at DESC
+           LIMIT 1`
+        )
+        .get(projectId) as ConstitutionVersionRow | undefined;
+    }
+  }
+  return row ? toConstitutionVersion(row) : null;
+}
+
+export function listConstitutionVersions(params: {
+  scope: ConstitutionScope;
+  projectId?: string | null;
+  limit?: number;
+}): ConstitutionVersion[] {
+  const database = getDb();
+  const scope = params.scope;
+  const projectId = params.projectId ?? null;
+  const safeLimit = Number.isFinite(params.limit)
+    ? Math.max(1, Math.min(200, Math.trunc(params.limit ?? 100)))
+    : 100;
+  let rows: ConstitutionVersionRow[] = [];
+  if (scope === "global") {
+    rows = database
+      .prepare(
+        `SELECT *
+         FROM constitution_versions
+         WHERE scope = 'global'
+         ORDER BY created_at DESC
+         LIMIT ?`
+      )
+      .all(safeLimit) as ConstitutionVersionRow[];
+  } else if (projectId) {
+    rows = database
+      .prepare(
+        `SELECT *
+         FROM constitution_versions
+         WHERE scope = 'project' AND project_id = ?
+         ORDER BY created_at DESC
+         LIMIT ?`
+      )
+      .all(projectId, safeLimit) as ConstitutionVersionRow[];
+  }
+  return rows.map((row) => toConstitutionVersion(row));
+}
+
+export function createConstitutionVersion(params: {
+  scope: ConstitutionScope;
+  projectId?: string | null;
+  content: string;
+  statements: string[];
+  source: string;
+  createdAt?: string;
+}): ConstitutionVersion {
+  const database = getDb();
+  const scope = params.scope;
+  const projectId = params.projectId ?? null;
+  if (scope === "project" && !projectId) {
+    throw new Error("projectId is required for project constitution versions");
+  }
+  const id = crypto.randomUUID();
+  const createdAt =
+    typeof params.createdAt === "string" && params.createdAt.trim()
+      ? params.createdAt.trim()
+      : new Date().toISOString();
+  const statements = normalizeConstitutionStatements(params.statements);
+
+  const row: ConstitutionVersionRow = {
+    id,
+    scope,
+    project_id: scope === "project" ? projectId : null,
+    content: params.content,
+    statements: JSON.stringify(statements),
+    source: params.source.trim() || "user",
+    created_at: createdAt,
+    active: 1,
+  };
+
+  const insert = database.transaction(() => {
+    if (scope === "global") {
+      database
+        .prepare("UPDATE constitution_versions SET active = 0 WHERE scope = 'global'")
+        .run();
+    } else {
+      database
+        .prepare(
+          "UPDATE constitution_versions SET active = 0 WHERE scope = 'project' AND project_id = ?"
+        )
+        .run(projectId);
+    }
+
+    database
+      .prepare(
+        `INSERT INTO constitution_versions
+          (id, scope, project_id, content, statements, source, created_at, active)
+         VALUES
+          (@id, @scope, @project_id, @content, @statements, @source, @created_at, @active)`
+      )
+      .run(row);
+
+    let idsToPrune: Array<{ id: string }> = [];
+    if (scope === "global") {
+      idsToPrune = database
+        .prepare(
+          `SELECT id
+           FROM constitution_versions
+           WHERE scope = 'global'
+           ORDER BY created_at DESC
+           LIMIT -1 OFFSET ?`
+        )
+        .all(MAX_CONSTITUTION_VERSIONS) as Array<{ id: string }>;
+    } else if (projectId) {
+      idsToPrune = database
+        .prepare(
+          `SELECT id
+           FROM constitution_versions
+           WHERE scope = 'project' AND project_id = ?
+           ORDER BY created_at DESC
+           LIMIT -1 OFFSET ?`
+        )
+        .all(projectId, MAX_CONSTITUTION_VERSIONS) as Array<{ id: string }>;
+    }
+    if (idsToPrune.length > 0) {
+      const ids = idsToPrune.map((entry) => entry.id);
+      const placeholders = ids.map(() => "?").join(", ");
+      database
+        .prepare(`DELETE FROM constitution_versions WHERE id IN (${placeholders})`)
+        .run(...ids);
+    }
+  });
+
+  insert();
+  return toConstitutionVersion(row);
 }

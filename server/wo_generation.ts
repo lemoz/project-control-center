@@ -20,6 +20,7 @@ import {
   recordCostEntry,
 } from "./cost_tracking.js";
 import { resolveUtilitySettings } from "./settings.js";
+import { getConstitutionForProject } from "./constitution.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -553,6 +554,7 @@ export async function generateWorkOrderDraft(params: {
   const knownTags = Array.from(
     new Set(workOrders.flatMap((wo) => wo.tags).filter(Boolean))
   ).sort();
+  const constitution = getConstitutionForProject(params.project.path).trim();
 
   const prompt = buildWorkOrderGenerationPrompt({
     projectName: params.project.name,
@@ -569,6 +571,7 @@ export async function generateWorkOrderDraft(params: {
       depends_on: wo.depends_on,
       estimate_hours: wo.estimate_hours,
     })),
+    constitution,
   });
 
   let llmDraft: LlmDraft | null = null;
