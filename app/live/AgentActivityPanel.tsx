@@ -576,8 +576,8 @@ export function AgentActivityPanel({
 
               {selectedEntry.type === "tool" ? (() => {
                 const toolName =
-                  selectedEntry.toolName ??
-                  selectedEntry.content.replace("→ ", "").trim() ||
+                  (selectedEntry.toolName ??
+                  selectedEntry.content.replace("→ ", "").trim()) ||
                   "Tool";
                 const isShellTool = isShellToolName(toolName);
                 const command = extractCommand(selectedEntry.toolInput);

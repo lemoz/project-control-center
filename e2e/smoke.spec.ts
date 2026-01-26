@@ -23,9 +23,17 @@ function waitForStarPatch(page: import("@playwright/test").Page, repoId: string)
 }
 
 async function waitForStarToggle(card: import("@playwright/test").Locator) {
+  await card.scrollIntoViewIfNeeded();
   const toggle = card.getByRole("button", { name: /Star project|Unstar project/ });
+  await toggle.scrollIntoViewIfNeeded();
   await expect(toggle).toBeVisible();
+  await expect(toggle).toBeEnabled();
   return toggle;
+}
+
+async function clickStarToggle(toggle: import("@playwright/test").Locator) {
+  // Use force:true because the stretched link overlay can intercept on mobile
+  await toggle.click({ force: true });
 }
 
 function waitForThreadPatch(page: import("@playwright/test").Page, threadId: string) {
@@ -93,43 +101,48 @@ test.describe("Project Control Center smoke", () => {
     await expect(alphaCard.getByText("sidecar")).toBeVisible();
   });
 
-  // Skip: flaky on mobile due to timing issues with star button visibility
-  test.skip("Star/unstar reorder persists after refresh", async ({ page }) => {
+  test("Star/unstar reorder persists after refresh", async ({ page }) => {
     await page.goto("/");
+    await page.waitForLoadState("networkidle");
     const cards = page.locator(".grid .card.cardLink");
 
     await expect(cards.first()).toContainText("alpha");
 
     const betaCard = page.locator(".grid .card.cardLink", { hasText: "beta" });
     const betaId = await repoIdFromCard(betaCard);
+    const betaStarToggle = await waitForStarToggle(betaCard);
     const starResponse = waitForStarPatch(page, betaId);
-    await betaCard.locator('button[aria-label="Star project"]').click();
+    await clickStarToggle(betaStarToggle);
     expect((await starResponse).ok()).toBe(true);
 
     await page.reload();
+    await page.waitForLoadState("networkidle");
     await expect(cards.first()).toContainText("beta");
 
     const betaCardAfter = page.locator(".grid .card.cardLink", { hasText: "beta" });
     const betaIdAfter = await repoIdFromCard(betaCardAfter);
+    const betaUnstarToggle = await waitForStarToggle(betaCardAfter);
     const unstarResponse = waitForStarPatch(page, betaIdAfter);
-    await betaCardAfter.locator('button[aria-label="Unstar project"]').click();
+    await clickStarToggle(betaUnstarToggle);
     expect((await unstarResponse).ok()).toBe(true);
 
     await page.reload();
+    await page.waitForLoadState("networkidle");
     await expect(cards.first()).toContainText("alpha");
   });
 
-  // Skip: flaky on mobile due to timing issues with star button visibility
-  test.skip("Star persists across repo ID migration", async ({ page }) => {
+  test("Star persists across repo ID migration", async ({ page }) => {
     await page.goto("/");
+    await page.waitForLoadState("networkidle");
     const cards = page.locator(".grid .card.cardLink");
 
     await expect(cards.first()).toContainText("alpha");
 
     const betaCard = page.locator(".grid .card.cardLink", { hasText: "beta" });
     const betaId = await repoIdFromCard(betaCard);
+    const betaStarToggle = await waitForStarToggle(betaCard);
     const starResponse = waitForStarPatch(page, betaId);
-    await betaCard.locator('button[aria-label="Star project"]').click();
+    await clickStarToggle(betaStarToggle);
     expect((await starResponse).ok()).toBe(true);
 
     const betaControlPath = path.join(
@@ -142,6 +155,7 @@ test.describe("Project Control Center smoke", () => {
     fs.writeFileSync(betaControlPath, "id: beta-stable\n", "utf8");
 
     await page.reload();
+    await page.waitForLoadState("networkidle");
     await expect(cards.first()).toContainText("beta");
 
     const betaCardAfter = page.locator(".grid .card.cardLink", { hasText: "beta" });
@@ -150,11 +164,13 @@ test.describe("Project Control Center smoke", () => {
       "/projects/beta-stable"
     );
 
+    const betaUnstarToggle = await waitForStarToggle(betaCardAfter);
     const unstarResponse = waitForStarPatch(page, "beta-stable");
-    await betaCardAfter.locator('button[aria-label="Unstar project"]').click();
+    await clickStarToggle(betaUnstarToggle);
     expect((await unstarResponse).ok()).toBe(true);
 
     await page.reload();
+    await page.waitForLoadState("networkidle");
     await expect(cards.first()).toContainText("alpha");
   });
 
@@ -236,8 +252,7 @@ test.describe("Project Control Center smoke", () => {
     await expect(cards.first()).toContainText("alpha");
   });
 
-  // Skip: flaky on mobile due to timing issues with star button visibility
-  test.skip("Repo move preserves stable sidecar id and history", async ({ page }) => {
+  test("Repo move preserves stable sidecar id and history", async ({ page }) => {
     const tmpDir = path.join(e2eDir, ".tmp");
     const betaRepoPath = path.join(tmpDir, "repos", "beta");
     const movedRepoPath = path.join(tmpDir, "repos", "beta-moved");
@@ -245,6 +260,7 @@ test.describe("Project Control Center smoke", () => {
 
     fs.writeFileSync(betaControlPath, "id: beta-stable\n", "utf8");
     await page.goto("/");
+    await page.waitForLoadState("networkidle");
 
     const betaCard = page.locator(".grid .card.cardLink", { hasText: "beta" });
     await expect(betaCard.locator("a.stretchedLink")).toHaveAttribute(
@@ -255,7 +271,7 @@ test.describe("Project Control Center smoke", () => {
     const betaStarToggle = await waitForStarToggle(betaCard);
     if ((await betaStarToggle.getAttribute("aria-label")) === "Star project") {
       const starResponse = waitForStarPatch(page, "beta-stable");
-      await betaStarToggle.click();
+      await clickStarToggle(betaStarToggle);
       expect((await starResponse).ok()).toBe(true);
       await expect(betaStarToggle).toHaveAttribute("aria-label", "Unstar project");
     }
@@ -269,7 +285,6 @@ test.describe("Project Control Center smoke", () => {
         "/projects/beta-stable"
       );
       await expect(betaAfter).toContainText("beta-moved");
-      // Wait for card to be fully rendered before checking star button (flaky on mobile)
       await expect(betaAfter).toBeVisible();
       const betaAfterToggle = await waitForStarToggle(betaAfter);
       await expect(betaAfterToggle).toHaveAttribute("aria-label", "Unstar project");
@@ -280,11 +295,12 @@ test.describe("Project Control Center smoke", () => {
     }
 
     await page.reload();
+    await page.waitForLoadState("networkidle");
     const betaRestored = page.locator(".grid .card.cardLink", { hasText: "beta" });
     const betaRestoredToggle = await waitForStarToggle(betaRestored);
     if ((await betaRestoredToggle.getAttribute("aria-label")) === "Unstar project") {
       const unstarResponse = waitForStarPatch(page, "beta-stable");
-      await betaRestoredToggle.click();
+      await clickStarToggle(betaRestoredToggle);
       expect((await unstarResponse).ok()).toBe(true);
       await expect(betaRestoredToggle).toHaveAttribute("aria-label", "Star project");
     }

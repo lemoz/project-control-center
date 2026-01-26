@@ -82,13 +82,13 @@ export default async function Page() {
               className="stretchedLink"
               aria-label={`Open ${displayName(repo)}`}
             />
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-              <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+              <div style={{ minWidth: 0, overflow: "hidden" }}>
                 <div style={{ fontWeight: 600 }}>{displayName(repo)}</div>
-                <div className="muted" style={{ fontSize: 12 }}>{repo.path}</div>
+                <div className="muted" style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis" }}>{repo.path}</div>
                 {repo.description && <div className="desc">{repo.description}</div>}
               </div>
-              <div style={{ zIndex: 2, position: "relative" }}>
+              <div style={{ zIndex: 2, position: "relative", flexShrink: 0, pointerEvents: "auto" }}>
                 <StarToggle repoId={repo.id} initialStarred={repo.starred} />
               </div>
             </div>
@@ -146,13 +146,13 @@ export default async function Page() {
                     className="stretchedLink"
                     aria-label={`Open ${displayName(repo)}`}
                   />
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                    <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                    <div style={{ minWidth: 0, overflow: "hidden" }}>
                       <div style={{ fontWeight: 600 }}>{displayName(repo)}</div>
-                      <div className="muted" style={{ fontSize: 12 }}>{repo.path}</div>
+                      <div className="muted" style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis" }}>{repo.path}</div>
                       {repo.description && <div className="desc">{repo.description}</div>}
                     </div>
-                    <div style={{ zIndex: 2, position: "relative" }}>
+                    <div style={{ zIndex: 2, position: "relative", flexShrink: 0, pointerEvents: "auto" }}>
                       <StarToggle repoId={repo.id} initialStarred={repo.starred} />
                     </div>
                   </div>
