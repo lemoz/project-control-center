@@ -23,14 +23,13 @@ tags:
   - research
   - telemetry
 estimate_hours: 2
-status: backlog
+status: ready
 created_at: 2026-01-11
-updated_at: 2026-01-11
+updated_at: 2026-01-26
 depends_on:
   - WO-2026-063
 era: v2
 ---
-
 ## Research Questions
 
 1. **Execution patterns**: Does knowing "agent ran 3 WO runs, made 12 direct edits" help the next agent?

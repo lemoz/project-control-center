@@ -34,15 +34,14 @@ tags:
   - slack
   - integration
 estimate_hours: 6
-status: backlog
+status: ready
 created_at: 2026-01-23
-updated_at: 2026-01-23
+updated_at: 2026-01-26
 track_id: 138764e0-ff8d-46c3-bddb-292a806bce03
 depends_on:
   - WO-2026-144
 era: v2
 ---
-
 ## Architecture
 
 ```
