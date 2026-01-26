@@ -1896,7 +1896,7 @@ function reviewerSchema(): object {
         },
       },
     },
-    required: ["status", "notes"],
+    required: ["status", "notes", "scope_creep_wos"],
   };
 }
 
