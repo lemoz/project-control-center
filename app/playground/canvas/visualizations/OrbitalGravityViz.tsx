@@ -57,7 +57,7 @@ type Palette = {
   stroke?: string;
 };
 
-type WorkOrderRunPhase = "waiting" | "testing" | "reviewing" | "building" | null;
+type WorkOrderRunPhase = "waiting" | "testing" | "ai_review" | "you_review" | "building" | null;
 
 type WorkOrderRing = "inner" | "middle" | "outer" | "archive";
 
@@ -284,9 +284,8 @@ function resolveWorkOrderRunPhase(runs: RunSummary[]): WorkOrderRunPhase {
   if (!runs.length) return null;
   if (runs.some((run) => run.status === "waiting_for_input")) return "waiting";
   if (runs.some((run) => run.status === "testing")) return "testing";
-  if (runs.some((run) => run.status === "ai_review" || run.status === "you_review")) {
-    return "reviewing";
-  }
+  if (runs.some((run) => run.status === "ai_review")) return "ai_review";
+  if (runs.some((run) => run.status === "you_review")) return "you_review";
   if (runs.some((run) => run.status === "building" || run.status === "queued")) {
     return "building";
   }
@@ -303,8 +302,10 @@ function targetHeatForWorkOrder(
     heat = Math.max(heat, 0.9);
   } else if (runPhase === "testing") {
     heat = Math.max(heat, 0.84);
-  } else if (runPhase === "reviewing") {
+  } else if (runPhase === "ai_review") {
     heat = Math.max(heat, 0.88);
+  } else if (runPhase === "you_review") {
+    heat = Math.max(heat, 0.75);
   } else if (runPhase === "building") {
     heat = Math.max(heat, 0.82);
   }
@@ -339,7 +340,7 @@ function statusAccentColorForWorkOrder(
 ): string {
   if (runPhase === "waiting") return COLORS.waiting;
   if (runPhase === "testing") return COLORS.testing;
-  if (runPhase === "reviewing") return COLORS.reviewing;
+  if (runPhase === "ai_review" || runPhase === "you_review") return COLORS.reviewing;
   if (runPhase === "building") return WORK_ORDER_STATUS_COLORS.building;
   return WORK_ORDER_STATUS_COLORS[node.status] ?? COLORS.backlog;
 }
@@ -697,8 +698,8 @@ export class OrbitalGravityVisualization implements Visualization {
       state.targetRadius = desiredRadius;
       state.radius = lerp(state.radius, state.targetRadius, smoothFactor(delta, RADIUS_SMOOTH_RATE));
 
-      // Only orbit if agent is actively working (building/testing), not waiting on human
-      const isAgentWorking = runPhase === "building" || runPhase === "testing";
+      // Only orbit if agent is actively working, not waiting on human
+      const isAgentWorking = runPhase === "building" || runPhase === "testing" || runPhase === "ai_review";
       if (isAgentWorking) {
         const speedFactor = layout.outerRadius / Math.max(state.radius, layout.focusRadius);
         const focusSpeedDamp = lerp(1, 0.4, focusBlend);
