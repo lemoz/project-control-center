@@ -7,7 +7,6 @@ import {
   useRef,
   useState,
   type PointerEventHandler,
-  type WheelEventHandler,
 } from "react";
 import Link from "next/link";
 import styles from "./live.module.css";
@@ -508,13 +507,31 @@ export function LiveOrbitalCanvas({
     [handlers, registerUserInteraction]
   );
 
-  const handleWheel = useCallback<WheelEventHandler<HTMLCanvasElement>>(
-    (event) => {
-      registerUserInteraction();
-      handlers.onWheel(event);
-    },
-    [handlers, registerUserInteraction]
-  );
+  const zoomIn = useCallback(() => {
+    registerUserInteraction();
+    setTransform((prev) => ({
+      ...prev,
+      scale: Math.min(prev.scale * 1.25, 2.8),
+    }));
+  }, [registerUserInteraction, setTransform]);
+
+  const zoomOut = useCallback(() => {
+    registerUserInteraction();
+    setTransform((prev) => ({
+      ...prev,
+      scale: Math.max(prev.scale * 0.8, 0.4),
+    }));
+  }, [registerUserInteraction, setTransform]);
+
+  const resetZoom = useCallback(() => {
+    registerUserInteraction();
+    setTransform((prev) => ({
+      ...prev,
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0,
+    }));
+  }, [registerUserInteraction, setTransform]);
 
   const overlayContent = (() => {
     if (error) {
@@ -575,7 +592,6 @@ export function LiveOrbitalCanvas({
         onPointerMove={handlers.onPointerMove}
         onPointerUp={handlers.onPointerUp}
         onPointerLeave={handlers.onPointerLeave}
-        onWheel={handleWheel}
       />
 
       {tooltipPosition && hoveredNode && hoveredNode.type === "work_order" && (
@@ -609,32 +625,64 @@ export function LiveOrbitalCanvas({
 
       {overlayContent}
 
-      {/* Filter toggle */}
+      {/* Canvas controls */}
       <div
         style={{
           position: "absolute",
           top: 12,
           left: 12,
           display: "flex",
-          gap: 6,
+          flexDirection: "column",
+          gap: 8,
           zIndex: 5,
         }}
       >
-        <button
-          type="button"
-          className={showAllWOs ? "btn" : "btnSecondary"}
-          style={{ fontSize: 12, padding: "4px 10px" }}
-          onClick={() => setShowAllWOs((prev) => !prev)}
-          title={showAllWOs ? "Showing all WOs" : "Showing active WOs only"}
-        >
-          {showAllWOs ? "All WOs" : "Active only"}
-        </button>
-        <span
-          className="muted"
-          style={{ fontSize: 11, alignSelf: "center" }}
-        >
-          {workOrderNodes.length} visible
-        </span>
+        {/* Filter toggle */}
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <button
+            type="button"
+            className={showAllWOs ? "btn" : "btnSecondary"}
+            style={{ fontSize: 12, padding: "4px 10px" }}
+            onClick={() => setShowAllWOs((prev) => !prev)}
+            title={showAllWOs ? "Showing all WOs" : "Showing active WOs only"}
+          >
+            {showAllWOs ? "All WOs" : "Active only"}
+          </button>
+          <span className="muted" style={{ fontSize: 11 }}>
+            {workOrderNodes.length} visible
+          </span>
+        </div>
+
+        {/* Zoom controls */}
+        <div style={{ display: "flex", gap: 4 }}>
+          <button
+            type="button"
+            className="btnSecondary"
+            style={{ fontSize: 14, padding: "4px 10px", fontWeight: 600 }}
+            onClick={zoomIn}
+            title="Zoom in"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            className="btnSecondary"
+            style={{ fontSize: 14, padding: "4px 10px", fontWeight: 600 }}
+            onClick={zoomOut}
+            title="Zoom out"
+          >
+            −
+          </button>
+          <button
+            type="button"
+            className="btnSecondary"
+            style={{ fontSize: 11, padding: "4px 8px" }}
+            onClick={resetZoom}
+            title="Reset view"
+          >
+            Reset
+          </button>
+        </div>
       </div>
     </div>
   );
