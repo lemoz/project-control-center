@@ -70,6 +70,7 @@ export function useCanvasInteraction({
   hoveredNode: VisualizationNode | null;
   tooltipPosition: TooltipPosition;
   isPanning: boolean;
+  clearSelection: () => void;
   handlers: {
     onPointerDown: PointerEventHandler<HTMLCanvasElement>;
     onPointerMove: PointerEventHandler<HTMLCanvasElement>;
@@ -88,6 +89,7 @@ export function useCanvasInteraction({
   const [tooltipPosition, setTooltipPosition] = useState<TooltipPosition>(null);
   const [isPanning, setIsPanning] = useState(false);
   const dragState = useRef<DragState | null>(null);
+  const clearSelection = useCallback(() => setSelectedId(null), []);
 
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedId) ?? null,
@@ -297,6 +299,7 @@ export function useCanvasInteraction({
     hoveredNode,
     tooltipPosition,
     isPanning,
+    clearSelection,
     handlers: {
       onPointerDown,
       onPointerMove,

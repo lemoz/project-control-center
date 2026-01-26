@@ -18,7 +18,14 @@ import {
   type WorkOrderFilter,
 } from "../playground/canvas/visualizations/OrbitalGravityViz";
 import type { AgentFocus } from "../playground/canvas/useAgentFocus";
-import type { ProjectNode, VisualizationData, VisualizationNode, WorkOrderNode } from "../playground/canvas/types";
+import type {
+  ProjectNode,
+  RunSummary,
+  VisualizationData,
+  VisualizationNode,
+  WorkOrderNode,
+  WorkOrderStatus,
+} from "../playground/canvas/types";
 import {
   setCanvasVoiceState,
   subscribeCanvasCommands,
@@ -76,6 +83,19 @@ function toVoiceNode(node: VisualizationNode): CanvasVoiceNode {
   };
 }
 
+type WorkOrderDetails = {
+  id: string;
+  title: string;
+  goal: string | null;
+  status: WorkOrderStatus;
+  priority: number;
+  acceptance_criteria: string[];
+};
+
+type WorkOrderDetailsResponse = {
+  work_order: WorkOrderDetails;
+};
+
 type LiveOrbitalCanvasProps = {
   data: VisualizationData;
   loading: boolean;
@@ -109,6 +129,10 @@ export function LiveOrbitalCanvas({
   const transformRef = useRef({ offsetX: 0, offsetY: 0, scale: 1 });
   const sizeRef = useRef(canvasSize);
   const initialDataRef = useRef(data);
+  const detailPanelRef = useRef<HTMLDivElement | null>(null);
+  const [detail, setDetail] = useState<WorkOrderDetails | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   const projectId = project?.id ?? null;
   const hasActiveShift = Boolean(
@@ -171,11 +195,88 @@ export function LiveOrbitalCanvas({
     hoveredNode,
     tooltipPosition,
     isPanning,
+    clearSelection,
     handlers,
   } = useCanvasInteraction({
     canvasRef,
     nodes: workOrderNodes,
   });
+
+  const selectedWorkOrderNode = selectedNode?.type === "work_order" ? selectedNode : null;
+
+  const recentRuns = useMemo<RunSummary[]>(() => {
+    if (!selectedWorkOrderNode) return [];
+    const runs = data.runsByProject?.[selectedWorkOrderNode.projectId] ?? [];
+    return runs
+      .filter((run) => run.work_order_id === selectedWorkOrderNode.workOrderId)
+      .slice()
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, 5);
+  }, [data.runsByProject, selectedWorkOrderNode?.projectId, selectedWorkOrderNode?.workOrderId]);
+
+  useEffect(() => {
+    if (!selectedWorkOrderNode) {
+      setDetail(null);
+      setDetailError(null);
+      setDetailLoading(false);
+      return;
+    }
+
+    let active = true;
+    const loadDetails = async () => {
+      setDetail(null);
+      setDetailLoading(true);
+      setDetailError(null);
+      try {
+        const res = await fetch(
+          `/api/repos/${encodeURIComponent(selectedWorkOrderNode.projectId)}/work-orders/${encodeURIComponent(
+            selectedWorkOrderNode.workOrderId
+          )}`,
+          { cache: "no-store" }
+        );
+        const json = (await res.json().catch(() => null)) as
+          | WorkOrderDetailsResponse
+          | { error?: string }
+          | null;
+        if (!res.ok) {
+          throw new Error(
+            (json as { error?: string } | null)?.error || "failed to load work order"
+          );
+        }
+        if (active) {
+          setDetail((json as WorkOrderDetailsResponse).work_order);
+        }
+      } catch (err) {
+        if (active) {
+          setDetailError(err instanceof Error ? err.message : "failed to load work order");
+        }
+      } finally {
+        if (active) {
+          setDetailLoading(false);
+        }
+      }
+    };
+
+    void loadDetails();
+    return () => {
+      active = false;
+    };
+  }, [selectedWorkOrderNode?.projectId, selectedWorkOrderNode?.workOrderId]);
+
+  useEffect(() => {
+    if (!selectedWorkOrderNode) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const panel = detailPanelRef.current;
+      if (!panel) return;
+      const target = event.target as Node | null;
+      if (target && panel.contains(target)) return;
+      clearSelection();
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [clearSelection, selectedWorkOrderNode]);
 
   const registerUserInteraction = useCallback(() => {
     lastInteractionRef.current = Date.now();
@@ -346,9 +447,9 @@ export function LiveOrbitalCanvas({
       visibleProjects,
       visibleWorkOrders,
       highlightedWorkOrderId: highlightedNode?.workOrderId ?? null,
-      detailPanelOpen: false,
+      detailPanelOpen: Boolean(selectedWorkOrderNode),
     });
-  }, [focusNode, highlightedNode, project, selectedNode, workOrderNodes]);
+  }, [focusNode, highlightedNode, project, selectedNode, selectedWorkOrderNode, workOrderNodes]);
 
   useEffect(() => {
     if (mode !== "manual") return;
@@ -600,6 +701,91 @@ export function LiveOrbitalCanvas({
             {formatActivity(hoveredNode.lastActivity)}
           </div>
         </div>
+      )}
+
+      {selectedWorkOrderNode && (
+        <aside ref={detailPanelRef} className={`card ${styles.detailPanel}`}>
+          <div className={styles.detailHeader}>
+            <div>
+              <div className="muted" style={{ fontSize: 12 }}>
+                {detail?.id ?? selectedWorkOrderNode.workOrderId}
+              </div>
+              <div className={styles.detailTitle}>
+                {detail?.title ?? selectedWorkOrderNode.title}
+              </div>
+            </div>
+            <button
+              className="btnSecondary"
+              onClick={clearSelection}
+              style={{ padding: "4px 8px", fontSize: 12 }}
+              aria-label="Close work order details"
+            >
+              X
+            </button>
+          </div>
+
+          <div className={styles.detailMeta}>
+            <span className="badge">
+              {formatRunStatus(detail?.status ?? selectedWorkOrderNode.status)}
+            </span>
+            <span className="badge">P{detail?.priority ?? selectedWorkOrderNode.priority}</span>
+          </div>
+
+          {detailLoading && (
+            <div className="muted" style={{ fontSize: 12 }}>
+              Loading work order details...
+            </div>
+          )}
+          {detailError && (
+            <div className="error" style={{ fontSize: 12 }}>
+              {detailError}
+            </div>
+          )}
+
+          <div className={styles.detailSection}>
+            <div className={styles.detailLabel}>Goal</div>
+            <div className="muted" style={{ fontSize: 12 }}>
+              {detail?.goal?.trim()
+                ? detail.goal
+                : detailLoading
+                  ? "Loading goal..."
+                  : "No goal recorded."}
+            </div>
+          </div>
+
+          <div className={styles.detailSection}>
+            <div className={styles.detailLabel}>Acceptance criteria</div>
+            {detail?.acceptance_criteria?.length ? (
+              <ul className={styles.detailList}>
+                {detail.acceptance_criteria.map((item, index) => (
+                  <li key={`${selectedWorkOrderNode.workOrderId}-criteria-${index}`}>{item}</li>
+                ))}
+              </ul>
+            ) : (
+              <div className="muted" style={{ fontSize: 12 }}>
+                {detailLoading ? "Loading acceptance criteria..." : "No acceptance criteria listed."}
+              </div>
+            )}
+          </div>
+
+          <div className={styles.detailSection}>
+            <div className={styles.detailLabel}>Recent runs</div>
+            {recentRuns.length ? (
+              <div className={styles.runList}>
+                {recentRuns.map((run) => (
+                  <div key={run.id} className={styles.runItem}>
+                    <span className={styles.runId}>{run.id}</span>
+                    <span className="badge">{formatRunStatus(run.status)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="muted" style={{ fontSize: 12 }}>
+                No recent runs yet.
+              </div>
+            )}
+          </div>
+        </aside>
       )}
 
       {overlayContent}

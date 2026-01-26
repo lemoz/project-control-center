@@ -168,6 +168,82 @@
   color: #a9b0c2;
 }
 
+.detailPanel {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  width: 360px;
+  max-width: calc(100% - 32px);
+  max-height: calc(100% - 32px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 5;
+}
+
+.detailHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.detailTitle {
+  font-weight: 700;
+  font-size: 15px;
+  margin-top: 4px;
+}
+
+.detailMeta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.detailSection {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.detailLabel {
+  font-size: 12px;
+  color: #a9b0c2;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.detailList {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #e2e6f3;
+}
+
+.runList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.runItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.runId {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  color: #cbd5f5;
+  font-size: 11px;
+}
+
 .narrationSection {
   width: 100%;
 }
@@ -187,5 +263,13 @@
   .canvasContainer {
     height: 60vh;
     min-height: 320px;
+  }
+
+  .detailPanel {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: auto;
+    max-height: 55vh;
   }
 }
