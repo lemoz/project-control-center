@@ -75,6 +75,9 @@ export type ObservabilityAlert = {
   message: string;
   created_at: string;
   acknowledged: boolean;
+  run_id?: string;
+  work_order_id?: string;
+  waiting_since?: string;
 };
 
 export type LogTail = {

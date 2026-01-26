@@ -31,13 +31,12 @@ tags:
   - observability
   - runner
 estimate_hours: 6
-status: backlog
+status: you_review
 created_at: 2026-01-22
-updated_at: 2026-01-22
+updated_at: 2026-01-26
 depends_on: []
 era: v2
 ---
-
 ## Overview
 
 Escalation handling currently requires manual API calls and has no visibility in the UI. This leads to runs getting stuck in `waiting_for_input` status indefinitely.
