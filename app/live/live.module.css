@@ -244,6 +244,200 @@
   color: #a9b0c2;
 }
 
+.logEntryButton {
+  display: block;
+  width: 100%;
+  padding: 0 4px;
+  margin: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.logEntryButton:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.logEntryButton:focus-visible {
+  outline: 2px solid #2b5cff;
+  outline-offset: 2px;
+}
+
+.activityModalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 7, 12, 0.78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 60;
+}
+
+.activityModalCard {
+  width: min(92vw, 820px);
+  max-height: 85vh;
+  background: #0f1320;
+  border: 1px solid #2b3347;
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.activityModalHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid #1f2433;
+}
+
+.activityModalTitle {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.activityModalSubtitle {
+  font-size: 13px;
+  color: #cbd5f5;
+  margin-top: 4px;
+}
+
+.activityModalMeta {
+  font-size: 12px;
+  color: #8c94a8;
+  margin-top: 4px;
+}
+
+.activityModalClose {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid #2b3347;
+  background: transparent;
+  color: #a9b0c2;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.activityModalClose:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.activityModalBody {
+  padding: 16px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.activityModalMetaRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.activityDetailSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.activityDetailStack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.activityDetailValue {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.activityInlineMeta {
+  font-size: 12px;
+  color: #a9b0c2;
+}
+
+.detailSubLabel {
+  font-size: 11px;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.monoText {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  color: #cbd5f5;
+}
+
+.codeBlock {
+  background: #0b0d12;
+  border: 1px solid #1f2433;
+  border-radius: 10px;
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #e6e8ee;
+  white-space: pre-wrap;
+  margin: 0;
+}
+
+.stdoutBlock {
+  border-color: #203a2d;
+}
+
+.stderrBlock {
+  border-color: #3a1f25;
+  background: #140b0e;
+}
+
+.emptyState {
+  font-size: 12px;
+  color: #a9b0c2;
+  font-style: italic;
+}
+
+.tokenKey {
+  color: #7dd3fc;
+}
+
+.tokenString {
+  color: #f9a8d4;
+}
+
+.tokenNumber {
+  color: #fcd34d;
+}
+
+.tokenBoolean {
+  color: #a7f3d0;
+}
+
+.tokenNull {
+  color: #c4b5fd;
+}
+
+.tokenKeyword {
+  color: #60a5fa;
+  font-weight: 600;
+}
+
+.tokenComment {
+  color: #94a3b8;
+  font-style: italic;
+}
+
 .detailPanel {
   position: absolute;
   right: 16px;
@@ -347,5 +541,13 @@
     bottom: 12px;
     width: auto;
     max-height: 55vh;
+  }
+
+  .activityModalOverlay {
+    padding: 12px;
+  }
+
+  .activityModalCard {
+    max-height: 90vh;
   }
 }
