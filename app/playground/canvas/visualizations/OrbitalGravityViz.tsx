@@ -74,14 +74,14 @@ const WORK_ORDER_ZONES: Zone[] = [
     minR: 40,
     maxR: 140,
     color: "#fef3c7",
-    label: "In Progress",
+    label: "Urgent",
   },
   {
     name: "middle",
     minR: 140,
     maxR: 260,
     color: "#dcfce7",
-    label: "Ready",
+    label: "Active",
   },
   {
     name: "outer",
@@ -98,6 +98,8 @@ const BASE_FOCUS_RADIUS = 34;
 const BASE_SUN_RADIUS = 18;
 const LABEL_OFFSET = 12;
 const RADIAL_JITTER = 12;
+const COLLISION_PADDING = 4;
+const COLLISION_ITERATIONS = 3;
 
 const BASE_ORBIT_SPEED = 0.016;
 const MIN_ORBIT_SPEED = 0.005;
@@ -370,8 +372,9 @@ function workOrderRingForStatus(
   runPhase: WorkOrderRunPhase | null
 ): WorkOrderRing {
   if (runPhase) return "inner";
-  if (status === "building" || status === "ai_review" || status === "you_review") return "inner";
-  if (status === "ready" || status === "blocked") return "middle";
+  // Only active agent work goes in "Urgent" — you_review waits on human, not system
+  if (status === "building" || status === "ai_review") return "inner";
+  if (status === "ready" || status === "blocked" || status === "you_review") return "middle";
   if (status === "backlog") return "outer";
   return "archive";
 }
@@ -732,23 +735,40 @@ export class OrbitalGravityVisualization implements Visualization {
       ctx.stroke();
       ctx.restore();
 
-      if (isProjectNode(node) && node.needsHuman) {
-        const dotRadius = 6;
-        ctx.fillStyle = "#ff5c6a";
-        ctx.beginPath();
-        ctx.arc(orbitX + size * 0.55, orbitY - size * 0.55, dotRadius, 0, Math.PI * 2);
-        ctx.fill();
+      // Notification dot for items needing human attention
+      const needsHumanAttention =
+        (isProjectNode(node) && node.needsHuman) ||
+        (isWorkOrderNode(node) &&
+          (node.status === "you_review" ||
+            node.status === "blocked" ||
+            runPhase === "waiting"));
 
-        if (node.escalationCount > 1) {
+      if (needsHumanAttention) {
+        const dotRadius = 5;
+        const dotX = orbitX + size * 0.6;
+        const dotY = orbitY - size * 0.6;
+
+        // Dot color: orange for review, red for blocked/escalation
+        const isBlocked = isWorkOrderNode(node) && node.status === "blocked";
+        const hasEscalation = isProjectNode(node) && node.escalationCount > 0;
+        const dotColor = isBlocked || hasEscalation ? "#f87171" : "#fbbf24";
+
+        ctx.save();
+        ctx.fillStyle = dotColor;
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = dotColor;
+        ctx.beginPath();
+        ctx.arc(dotX, dotY, dotRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        // Show count for escalations
+        if (isProjectNode(node) && node.escalationCount > 1) {
           ctx.fillStyle = "#fff";
-          ctx.font = "10px system-ui";
+          ctx.font = "9px system-ui";
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
-          ctx.fillText(
-            String(node.escalationCount),
-            orbitX + size * 0.55,
-            orbitY - size * 0.55
-          );
+          ctx.fillText(String(node.escalationCount), dotX, dotY);
         }
       }
 
