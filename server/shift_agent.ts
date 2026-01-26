@@ -26,6 +26,11 @@ function resolveAllowedTools(): string {
   return allowed || DEFAULT_ALLOWED_TOOLS;
 }
 
+function resolveModel(): string | null {
+  const model = (process.env.CONTROL_CENTER_SHIFT_MODEL || "").trim();
+  return model || null;
+}
+
 function resolvePromptPath(projectPath: string): string {
   const override = (process.env.CONTROL_CENTER_SHIFT_PROMPT_FILE || "").trim();
   if (override) return override;
@@ -157,15 +162,19 @@ export function spawnShiftAgent(params: {
     promptPath,
   });
   const logFd = fs.openSync(absolutePath, "a");
+  const model = resolveModel();
+  const args = [
+    "--dangerously-skip-permissions",
+    "--allowedTools",
+    resolveAllowedTools(),
+  ];
+  if (model) {
+    args.push("--model", model);
+  }
+  args.push("-p", prompt);
   const child = spawn(
     resolveClaudePath(),
-    [
-      "--dangerously-skip-permissions",
-      "--allowedTools",
-      resolveAllowedTools(),
-      "-p",
-      prompt,
-    ],
+    args,
     {
       cwd: params.projectPath,
       env: {

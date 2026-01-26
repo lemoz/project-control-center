@@ -9,6 +9,7 @@ SHIFT_TIMEOUT_MINUTES="${CONTROL_CENTER_SHIFT_TIMEOUT_MINUTES:-120}"
 ALLOWED_TOOLS_DEFAULT="Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch"
 ALLOWED_TOOLS="${CONTROL_CENTER_SHIFT_ALLOWED_TOOLS:-$ALLOWED_TOOLS_DEFAULT}"
 CLAUDE_COMMAND="${CONTROL_CENTER_SHIFT_CLAUDE_PATH:-claude}"
+SHIFT_MODEL="${CONTROL_CENTER_SHIFT_MODEL:-}"
 
 # Resolve project path from the API if not provided
 if [ -n "${2:-}" ]; then
@@ -44,7 +45,13 @@ PROMPT_CONTENT="$(
 
 cd "${PROJECT_PATH}"
 
+MODEL_ARGS=()
+if [ -n "${SHIFT_MODEL}" ]; then
+  MODEL_ARGS=("--model" "${SHIFT_MODEL}")
+fi
+
 exec "${CLAUDE_COMMAND}" \
   --dangerously-skip-permissions \
   --allowedTools "${ALLOWED_TOOLS}" \
+  "${MODEL_ARGS[@]}" \
   -p "${PROMPT_CONTENT}"
