@@ -8,8 +8,9 @@ const successMetricSchema = z
     name: z.string().min(1),
     target: z.union([z.number(), z.string()]),
     current: z.union([z.number(), z.string()]).nullable().optional(),
+    notes: z.string().optional(),
   })
-  .strict();
+  .passthrough();
 
 const controlSchema = z
   .object({

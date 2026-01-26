@@ -26,13 +26,12 @@ tags:
   - visualization
   - filtering
 estimate_hours: 2
-status: backlog
+status: ready
 depends_on:
   - WO-2026-126
-created_at: "2026-01-22"
-updated_at: "2026-01-22"
+created_at: 2026-01-22
+updated_at: 2026-01-26
 ---
-
 ## Summary
 
 With track lanes in place, users need ability to filter which tracks are visible. This helps focus on specific areas of work.

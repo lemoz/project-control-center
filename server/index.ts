@@ -22,6 +22,7 @@ import {
   getProjectVm,
   getRunById,
   getRunPhaseMetricsSummary,
+  updateRun,
   getGlobalShiftById,
   getShiftByProjectId,
   listGlobalPatterns,
@@ -3582,6 +3583,44 @@ app.post("/runs/:runId/cancel", async (req, res) => {
       error: err instanceof Error ? err.message : "cancel failed",
     });
   }
+});
+
+// PATCH endpoint for updating run status (for cleaning up stale states)
+app.patch("/runs/:runId", (req, res) => {
+  const run = getRunById(req.params.runId);
+  if (!run) return res.status(404).json({ error: "run not found" });
+
+  const body = req.body as Record<string, unknown> | null;
+  if (!body || typeof body !== "object") {
+    return res.status(400).json({ error: "request body required" });
+  }
+
+  const allowedFields = ["status", "merge_status", "error"] as const;
+  const patch: Partial<{ status: string; merge_status: string; error: string }> = {};
+
+  for (const field of allowedFields) {
+    if (field in body && typeof body[field] === "string") {
+      patch[field] = body[field] as string;
+    }
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return res.status(400).json({ error: "no valid fields to update" });
+  }
+
+  // Add finished_at if transitioning to a terminal status
+  const terminalStatuses = ["merged", "failed", "canceled", "rejected"];
+  if (patch.status && terminalStatuses.includes(patch.status) && !run.finished_at) {
+    (patch as Record<string, string>).finished_at = new Date().toISOString();
+  }
+
+  const updated = updateRun(req.params.runId, patch);
+  if (!updated) {
+    return res.status(500).json({ error: "failed to update run" });
+  }
+
+  const updatedRun = getRunById(req.params.runId);
+  return res.json(updatedRun);
 });
 
 app.post("/runs/:runId/provide-input", (req, res) => {

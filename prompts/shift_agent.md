@@ -222,7 +222,20 @@ git merge run/WO-XXXX-runid
 
 # 5. After resolving
 git add -A && git commit -m "Resolve merge conflict from run/WO-XXXX"
+
+# 6. IMPORTANT: Update the run status in the database AND push to remote
+curl -s -X PATCH "{base_url}/runs/{run_id}" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "merged", "merge_status": "merged"}'
+
+git push
 ```
+
+**CRITICAL:** After manually resolving a merge conflict, you MUST:
+1. Update the run status via the PATCH endpoint (so the database reflects reality)
+2. Push the merged changes to the remote (so other agents see the work)
+
+Failing to do this leaves stale `merge_conflict` statuses in the database.
 
 ---
 
@@ -288,6 +301,7 @@ POST /repos/:id/work-orders/:woId/runs      # Kick off run
 
 # Runs
 GET  /runs/:runId
+PATCH /runs/:runId                          # Update status/merge_status/error
 POST /runs/:runId/cancel
 POST /runs/:runId/provide-input
 ```
