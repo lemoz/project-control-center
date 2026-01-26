@@ -38,7 +38,7 @@ tags:
   - voice
   - visualization
 estimate_hours: 4
-status: ready
+status: done
 created_at: 2026-01-23
 updated_at: 2026-01-26
 depends_on:
