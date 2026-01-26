@@ -21,6 +21,9 @@ non_goals:
   - Cross-project global tracks (per-project only for v1)
   - ML embeddings (LLM does the clustering)
   - Specifying track completion behavior (builder figures it out)
+stop_conditions:
+  - If agent-generated tracks are unhelpful or confusing, revert to manual tagging
+  - If review UI becomes a bottleneck, simplify to one-click approval
 triggers:
   - Auto-run after N new WOs created (threshold TBD, maybe 10-15)
   - Manual trigger available
@@ -34,9 +37,9 @@ tags:
   - agent
   - tech-tree
 estimate_hours: 4
-status: backlog
+status: ready
 created_at: 2026-01-14
-updated_at: 2026-01-14
+updated_at: 2026-01-26
 depends_on: []
 era: v2
 ---

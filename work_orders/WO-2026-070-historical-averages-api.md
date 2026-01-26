@@ -24,9 +24,9 @@ tags:
   - api
   - estimation
 estimate_hours: 1.5
-status: draft
+status: ready
 created_at: 2026-01-12
-updated_at: 2026-01-12
+updated_at: 2026-01-26
 depends_on:
   - WO-2026-069
 era: v2

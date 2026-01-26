@@ -1,11 +1,11 @@
 ---
 id: WO-2026-105
-title: "Agent Earning - Concept Research"
+title: Agent Earning - Concept Research
 goal: Explore how agents could autonomously earn money to fund themselves and grow.
 context:
   - Economy system foundation (WO-2026-101 through 104)
-  - "The agents would earn money themselves - go out and do some stuff"
-  - "If you can get paid, you can have that budget to do whatever you want"
+  - The agents would earn money themselves - go out and do some stuff
+  - If you can get paid, you can have that budget to do whatever you want
   - Vision of self-sustaining agent ecosystem
 acceptance_criteria:
   - Research existing agent earning models
@@ -28,9 +28,9 @@ tags:
   - concept
   - autonomous
 estimate_hours: 3
-status: backlog
+status: ready
 created_at: 2026-01-13
-updated_at: 2026-01-13
+updated_at: 2026-01-26
 depends_on: []
 era: v2
 ---

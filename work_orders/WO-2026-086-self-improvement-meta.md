@@ -22,9 +22,9 @@ tags:
   - global-agent
   - meta
 estimate_hours: 3
-status: backlog
+status: ready
 created_at: 2026-01-12
-updated_at: 2026-01-12
+updated_at: 2026-01-26
 depends_on:
   - WO-2026-080
   - WO-2026-081

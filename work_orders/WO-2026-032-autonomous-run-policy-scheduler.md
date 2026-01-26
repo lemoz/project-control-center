@@ -8,7 +8,7 @@ context:
   - server/work_orders.ts (dependency checking at line 606)
   - server/index.ts (POST /repos/:id/work-orders/:woId/runs endpoint)
   - app/projects/[id]/page.tsx (project UI)
-  - "Constitution injection already working (1793 chars injected in recent runs)"
+  - Constitution injection already working (1793 chars injected in recent runs)
 acceptance_criteria:
   - Add autopilot_policies table with per-project settings (enabled, max_concurrent_runs, allowed_tags, min_priority, stop_on_failure_count, schedule_cron)
   - Add triggered_by column to runs table ('manual' | 'autopilot')
@@ -33,9 +33,9 @@ tags:
   - policy
   - scheduling
 estimate_hours: 6
-status: deprecated
+status: ready
 created_at: 2026-01-07
-updated_at: 2026-01-11
+updated_at: 2026-01-26
 depends_on:
   - WO-2025-004
   - WO-2026-020
@@ -43,7 +43,6 @@ depends_on:
 era: v2
 deprecated_reason: Superseded by Agent Shift system (WO-2026-060 through 065). Queue-processor approach replaced by goal-directed agent model.
 ---
-
 ## Implementation Plan
 
 ### Phase 1: Database Schema

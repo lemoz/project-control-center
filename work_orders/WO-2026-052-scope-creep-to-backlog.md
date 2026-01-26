@@ -24,13 +24,12 @@ tags:
   - workflow
   - backlog
 estimate_hours: 3
-status: backlog
+status: ready
 created_at: 2026-01-10
-updated_at: 2026-01-10
+updated_at: 2026-01-26
 depends_on: []
 era: v1
 ---
-
 ## Problem
 
 Builders frequently make changes outside WO scope. Current pattern:

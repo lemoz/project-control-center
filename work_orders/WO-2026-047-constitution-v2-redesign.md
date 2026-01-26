@@ -23,14 +23,13 @@ tags:
   - autonomous
   - v2
 estimate_hours: 2
-status: backlog
+status: ready
 created_at: 2026-01-10
-updated_at: 2026-01-10
+updated_at: 2026-01-26
 depends_on:
   - WO-2026-025
 era: v2
 ---
-
 ## Problem
 
 Current constitution generation (WO-2026-025) produces weak outputs:
