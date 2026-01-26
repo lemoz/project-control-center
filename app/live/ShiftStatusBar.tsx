@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useState } from "react";
 import type { AgentFocus } from "../playground/canvas/useAgentFocus";
 import type { ProjectNode } from "../playground/canvas/types";
+import { useActiveShift } from "./useActiveShift";
 
 type ShiftStatusBarProps = {
   focus: AgentFocus | null;
@@ -20,6 +21,8 @@ export function ShiftStatusBar({ focus, project, loading }: ShiftStatusBarProps)
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const projectId = project?.id ?? null;
+  const { shift, loading: shiftLoading } = useActiveShift(projectId);
+  const hasActiveShift = Boolean(shift?.id);
 
   const startShift = useCallback(async () => {
     if (!projectId) return;
@@ -60,50 +63,35 @@ export function ShiftStatusBar({ focus, project, loading }: ShiftStatusBarProps)
     focus?.kind === "work_order" ? focus.workOrderId ?? null : null;
   const statusLabel = hasActiveRun ? formatRunStatus(focus?.status ?? "") : null;
 
-  // Show active run info, but still allow starting a shift
-  if (hasActiveRun && activeWorkOrderId) {
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <span className="badge">Active run</span>
-          <Link
-            href={`/projects/${encodeURIComponent(project.id)}/work-orders/${encodeURIComponent(
-              activeWorkOrderId
-            )}`}
-            className="badge"
-          >
-            {activeWorkOrderId}
-          </Link>
-          {statusLabel && <span className="badge">{statusLabel}</span>}
-          <button className="btn" type="button" onClick={() => void startShift()} disabled={starting}>
-            {starting ? "Starting..." : "Start Shift"}
-          </button>
-        </div>
-        {!!error && <div className="error">{error}</div>}
-      </div>
-    );
-  }
+  // Determine primary status badge
+  const statusBadge = hasActiveShift ? "Active shift" : hasActiveRun ? "Active run" : "Idle";
 
-  const lastFocusWorkOrder = activeWorkOrderId;
+  // Show start shift button only if no shift is active
+  const showStartButton = !hasActiveShift && !shiftLoading;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <span className="badge">Idle</span>
-        <button className="btn" type="button" onClick={() => void startShift()} disabled={starting}>
-          {starting ? "Starting..." : "Start Shift"}
-        </button>
-        {lastFocusWorkOrder ? (
-          <Link
-            href={`/projects/${encodeURIComponent(project.id)}/work-orders/${encodeURIComponent(
-              lastFocusWorkOrder
-            )}`}
-            className="muted"
-            style={{ fontSize: 12 }}
-          >
-            Last focus {lastFocusWorkOrder}
-          </Link>
-        ) : (
+        <span className="badge">{statusBadge}</span>
+        {activeWorkOrderId && (
+          <>
+            <Link
+              href={`/projects/${encodeURIComponent(project.id)}/work-orders/${encodeURIComponent(
+                activeWorkOrderId
+              )}`}
+              className="badge"
+            >
+              {activeWorkOrderId}
+            </Link>
+            {statusLabel && <span className="badge">{statusLabel}</span>}
+          </>
+        )}
+        {showStartButton && (
+          <button className="btn" type="button" onClick={() => void startShift()} disabled={starting}>
+            {starting ? "Starting..." : "Start Shift"}
+          </button>
+        )}
+        {!activeWorkOrderId && !hasActiveShift && (
           <Link
             href={`/projects/${encodeURIComponent(project.id)}`}
             className="muted"
