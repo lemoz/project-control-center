@@ -697,9 +697,9 @@ export class OrbitalGravityVisualization implements Visualization {
       state.targetRadius = desiredRadius;
       state.radius = lerp(state.radius, state.targetRadius, smoothFactor(delta, RADIUS_SMOOTH_RATE));
 
-      // Only orbit if actively running (has a run phase)
-      const isActivelyRunning = runPhase !== null || (isProjectNode(node) && node.isActive);
-      if (isActivelyRunning) {
+      // Only orbit if agent is actively working (building/testing), not waiting on human
+      const isAgentWorking = runPhase === "building" || runPhase === "testing";
+      if (isAgentWorking) {
         const speedFactor = layout.outerRadius / Math.max(state.radius, layout.focusRadius);
         const focusSpeedDamp = lerp(1, 0.4, focusBlend);
         const speedDamp = isWorkOrderNode(node) ? workOrderSpeedDamp(node.status) : 1;
