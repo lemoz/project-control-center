@@ -167,6 +167,8 @@ export function spawnShiftAgent(params: {
     "--dangerously-skip-permissions",
     "--allowedTools",
     resolveAllowedTools(),
+    "--output-format",
+    "stream-json",
   ];
   if (model) {
     args.push("--model", model);
