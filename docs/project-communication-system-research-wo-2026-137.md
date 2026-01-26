@@ -1,6 +1,6 @@
 # WO-2026-137 Project Communication System Research
 
-**Status: Research Complete**
+**Status: Implemented** (see WO-2026-144)
 
 ## Current Escalation System
 
@@ -104,3 +104,27 @@ type ProjectCommunication = {
 - **Recommend extend:** Evolve the existing `escalations` table into a unified `project_communications` model by adding `intent`, sender/recipient metadata, and read/ack fields. Keep existing columns and endpoints as backward-compatible wrappers for escalation intent.
 - **Why:** Minimal migration, preserves current routing, avoids dual systems.
 - **Sufficiency check:** Current escalation system is sufficient for blocking input only; it does not satisfy cross-project or non-blocking communication needs without extension.
+
+---
+
+## Implementation Notes (WO-2026-144)
+
+The recommendation was followed. The existing `escalations` table was extended with:
+
+**New Columns:**
+- `intent`: escalation | request | message | suggestion | status
+- `from_scope`: project | global | user
+- `to_scope`: global | project | user
+- `body`: Optional detailed message text
+- `read_at`: Timestamp when marked as read
+- `acknowledged_at`: Timestamp when acknowledged
+
+**New API Endpoints:**
+- `POST /projects/:id/communications` - Send a communication
+- `GET /projects/:id/communications/inbox` - Get project's inbox
+- `POST /communications/:id/read` - Mark as read
+- `POST /communications/:id/acknowledge` - Acknowledge (for suggestions/messages)
+
+**Context Integration:**
+- Global context now includes `communications_queue` grouped by intent
+- Shift context now includes `communications_inbox` for unread/open communications addressed to the project
