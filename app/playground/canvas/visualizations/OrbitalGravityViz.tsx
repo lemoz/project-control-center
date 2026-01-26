@@ -697,15 +697,19 @@ export class OrbitalGravityVisualization implements Visualization {
       state.targetRadius = desiredRadius;
       state.radius = lerp(state.radius, state.targetRadius, smoothFactor(delta, RADIUS_SMOOTH_RATE));
 
-      const speedFactor = layout.outerRadius / Math.max(state.radius, layout.focusRadius);
-      const focusSpeedDamp = lerp(1, 0.4, focusBlend);
-      const speedDamp = isWorkOrderNode(node) ? workOrderSpeedDamp(node.status) : 1;
-      state.angularVelocity = clamp(
-        BASE_ORBIT_SPEED * speedFactor * focusSpeedDamp * speedDamp,
-        MIN_ORBIT_SPEED * speedDamp,
-        MAX_ORBIT_SPEED
-      );
-      state.angle += state.angularVelocity * delta;
+      // Only orbit if actively running (has a run phase)
+      const isActivelyRunning = runPhase !== null || (isProjectNode(node) && node.isActive);
+      if (isActivelyRunning) {
+        const speedFactor = layout.outerRadius / Math.max(state.radius, layout.focusRadius);
+        const focusSpeedDamp = lerp(1, 0.4, focusBlend);
+        const speedDamp = isWorkOrderNode(node) ? workOrderSpeedDamp(node.status) : 1;
+        state.angularVelocity = clamp(
+          BASE_ORBIT_SPEED * speedFactor * focusSpeedDamp * speedDamp,
+          MIN_ORBIT_SPEED * speedDamp,
+          MAX_ORBIT_SPEED
+        );
+        state.angle += state.angularVelocity * delta;
+      }
 
       const hoverBoost = this.hoveredId === node.id ? 0.12 : 0;
       const focusBoostSize = focusBlend > 0 ? 0.18 : 0;
