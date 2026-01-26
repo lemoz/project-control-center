@@ -372,6 +372,8 @@ function workOrderRingForStatus(
   status: WorkOrderStatus,
   runPhase: WorkOrderRunPhase | null
 ): WorkOrderRing {
+  // Done and parked always go to archive, regardless of runPhase
+  if (status === "done" || status === "parked") return "archive";
   if (runPhase) return "inner";
   // Only active agent work goes in "Urgent" — you_review waits on human, not system
   if (status === "building" || status === "ai_review") return "inner";

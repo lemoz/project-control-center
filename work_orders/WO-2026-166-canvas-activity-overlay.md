@@ -2,7 +2,7 @@
 id: WO-2026-166
 title: Activity Log Canvas Overlay
 status: ready
-priority: 3
+priority: 1
 tags: [live-demo, canvas, ui]
 estimate_hours: 2
 depends_on: [WO-2026-164]

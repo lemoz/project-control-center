@@ -70,15 +70,61 @@ The shift-context endpoint returns everything you need:
    - If a run is in progress, check its status
    - Don't just poll - do useful work while waiting (see below)
 
-3. **Pick next WO to run**
+3. **Pick next WO(s) to run**
    - Look at `work_orders.ready` - these have deps satisfied
    - Consider priority field and alignment with success_criteria
-   - Kick off ONE run, then monitor
+   - **Consider parallel runs** when WOs touch different areas (see below)
 
 4. **If nothing ready**
    - Garden: clean up old merge_conflict runs
    - Plan: review backlog, identify blockers
    - Escalate: ask user for guidance if truly stuck
+
+---
+
+## Parallel Runs (When Appropriate)
+
+The runner supports multiple concurrent runs. Consider launching parallel runs when:
+
+**Safe to parallelize:**
+- WOs target **different directories** (e.g., `app/live/` vs `server/routes/`)
+- WOs have **different tags** indicating separate concerns
+- WOs are **independent features** with no shared state
+- One is **backend**, one is **frontend** with clear boundaries
+
+**Do NOT parallelize:**
+- WOs touching the **same files** or **same component**
+- WOs with **overlapping acceptance criteria**
+- WOs that might **both modify shared utilities** (types, helpers, styles)
+- When **unsure** - default to sequential
+
+**How to decide:**
+```bash
+# Read the WO specs to understand scope
+curl -s "{base_url}/repos/1/work-orders/WO-2026-XXX" | jq '.context, .acceptance_criteria'
+
+# Check for file overlap hints in context field
+# If WOs reference same files → sequential
+# If WOs reference different areas → can parallelize
+```
+
+**Launching parallel runs:**
+```bash
+# Kick off first run
+curl -s -X POST "{base_url}/repos/{project_id}/work-orders/WO-2026-AAA/runs"
+
+# Immediately kick off second run (if safe)
+curl -s -X POST "{base_url}/repos/{project_id}/work-orders/WO-2026-BBB/runs"
+
+# Monitor both
+curl -s "{base_url}/repos/{project_id}/runs" | jq '.runs[] | select(.status != "merged" and .status != "failed") | {id, work_order_id, status}'
+```
+
+**Managing parallel runs:**
+- Track all active run IDs
+- First one to reach `you_review` gets merged first
+- If merge conflict occurs, the second run may need to rebase or restart
+- Don't launch more than 2-3 parallel runs (diminishing returns, conflict risk)
 
 ---
 
