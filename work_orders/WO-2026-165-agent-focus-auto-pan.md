@@ -1,7 +1,7 @@
 ---
 id: WO-2026-165
 title: Agent Focus Auto-Pan
-status: you_review
+status: done
 priority: 1
 tags:
   - live-demo

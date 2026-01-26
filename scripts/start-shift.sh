@@ -55,5 +55,5 @@ exec "${CLAUDE_COMMAND}" \
   --allowedTools "${ALLOWED_TOOLS}" \
   --output-format stream-json \
   --verbose \
-  "${MODEL_ARGS[@]}" \
+  ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   -p "${PROMPT_CONTENT}"
