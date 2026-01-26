@@ -23,11 +23,11 @@ tags:
   - e2e
   - stability
 estimate_hours: 2
-status: backlog
+status: ready
 created_at: 2026-01-26
 era: v2
+updated_at: 2026-01-26
 ---
-
 ## Skipped Tests
 
 1. **Star/unstar reorder persists after refresh** (line 96)

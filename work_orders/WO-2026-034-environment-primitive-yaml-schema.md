@@ -27,10 +27,10 @@ tags:
   - infra
   - agent-os
 estimate_hours: 4
-status: archived
+status: ready
 created_at: 2026-01-08
-updated_at: 2026-01-14
-archived_reason: "Superseded by DB-first approach. Budget/pricing in 101-103, agent notes in constitution (024-026), policies hardcoded. File-based config would create two sources of truth."
+updated_at: 2026-01-26
+archived_reason: Superseded by DB-first approach. Budget/pricing in 101-103, agent notes in constitution (024-026), policies hardcoded. File-based config would create two sources of truth.
 depends_on:
   - WO-2025-002
 era: v2

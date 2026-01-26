@@ -27,15 +27,14 @@ tags:
   - meta
   - validation
 estimate_hours: 3
-status: backlog
+status: ready
 created_at: 2026-01-08
-updated_at: 2026-01-09
+updated_at: 2026-01-26
 depends_on:
   - WO-2025-003
   - WO-2026-021
 era: v1
 ---
-
 ## Notes
 
 Manual gardening done 2026-01-09:

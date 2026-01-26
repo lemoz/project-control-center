@@ -26,14 +26,14 @@ tags:
   - secrets
   - runner
 estimate_hours: 6
-status: backlog
+status: ready
 created_at: 2026-01-08
-updated_at: 2026-01-08
+updated_at: 2026-01-26
 depends_on:
   - WO-2025-004
   - WO-2026-027
 notes:
-  - "Dependencies 034/035 archived. Secret refs can be stored in DB instead of YAML. Event logging for secret_accessed can be added to cost_records or a simple audit table."
+  - Dependencies 034/035 archived. Secret refs can be stored in DB instead of YAML. Event logging for secret_accessed can be added to cost_records or a simple audit table.
 era: v2
 ---
 ## Notes
