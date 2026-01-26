@@ -1,0 +1,102 @@
+.page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.headerTitle {
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.headerActions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.canvasSection {
+  position: relative;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.canvasContainer {
+  position: relative;
+  width: 100%;
+  height: min(70vh, 720px);
+  min-height: 360px;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.canvasSurface {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+
+.overlayCard {
+  position: absolute;
+  left: 20px;
+  bottom: 20px;
+  max-width: 340px;
+  background: rgba(12, 16, 28, 0.92);
+  border: 1px solid #2b3347;
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.35);
+}
+
+.voiceDock {
+  position: absolute;
+  right: 16px;
+  top: 16px;
+  width: 340px;
+  max-width: calc(100% - 32px);
+  z-index: 4;
+}
+
+.narrationSection {
+  width: 100%;
+}
+
+@media (max-width: 960px) {
+  .headerActions {
+    margin-left: 0;
+  }
+
+  .voiceDock {
+    position: static;
+    width: 100%;
+    max-width: none;
+    padding: 0 12px 12px;
+  }
+
+  .canvasContainer {
+    height: 60vh;
+    min-height: 320px;
+  }
+}
