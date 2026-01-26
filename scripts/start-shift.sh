@@ -54,5 +54,6 @@ exec "${CLAUDE_COMMAND}" \
   --dangerously-skip-permissions \
   --allowedTools "${ALLOWED_TOOLS}" \
   --output-format stream-json \
+  --verbose \
   "${MODEL_ARGS[@]}" \
   -p "${PROMPT_CONTENT}"

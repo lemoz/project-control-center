@@ -169,6 +169,7 @@ export function spawnShiftAgent(params: {
     resolveAllowedTools(),
     "--output-format",
     "stream-json",
+    "--verbose",
   ];
   if (model) {
     args.push("--model", model);
