@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentFocus } from "../playground/canvas/useAgentFocus";
 import type { ProjectNode, RunStatus, WorkOrderNode } from "../playground/canvas/types";
 import { useActiveShift } from "./useActiveShift";
@@ -48,6 +48,204 @@ function resolveActionLabel(
   return "Idle";
 }
 
+const SHELL_TOOL_HINTS = ["bash", "shell", "shell_command", "sh"];
+
+const CODE_KEYWORDS = new Set([
+  "const",
+  "let",
+  "var",
+  "function",
+  "return",
+  "if",
+  "else",
+  "for",
+  "while",
+  "class",
+  "interface",
+  "type",
+  "import",
+  "export",
+  "from",
+  "async",
+  "await",
+  "switch",
+  "case",
+  "break",
+  "continue",
+  "try",
+  "catch",
+  "finally",
+  "throw",
+  "new",
+]);
+
+const CODE_TOKEN_REGEX =
+  /(\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b(?:const|let|var|function|return|if|else|for|while|class|interface|type|import|export|from|async|await|switch|case|break|continue|try|catch|finally|throw|new)\b|\b(?:true|false|null|undefined)\b|\b-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?\b)/g;
+
+const JSON_TOKEN_REGEX =
+  /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)/g;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function tryParseJson(value: string): unknown | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function flattenText(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (!value) return null;
+  if (Array.isArray(value)) {
+    const parts: string[] = [];
+    for (const item of value) {
+      if (typeof item === "string") {
+        parts.push(item);
+      } else if (isRecord(item) && typeof item.text === "string") {
+        parts.push(item.text);
+      }
+    }
+    return parts.length ? parts.join("") : null;
+  }
+  if (isRecord(value) && typeof value.text === "string") return value.text;
+  return null;
+}
+
+function normalizeValue(value: unknown): unknown {
+  const flattened = flattenText(value);
+  if (flattened !== null) return flattened;
+  if (typeof value === "string") {
+    const parsed = tryParseJson(value);
+    if (parsed !== null) return parsed;
+  }
+  return value;
+}
+
+function formatValueForHighlight(value: unknown): { text: string; isJson: boolean } {
+  if (value === null || value === undefined) return { text: "", isJson: false };
+  if (typeof value === "string") {
+    const parsed = tryParseJson(value);
+    if (parsed !== null) {
+      return { text: JSON.stringify(parsed, null, 2), isJson: true };
+    }
+    return { text: value, isJson: false };
+  }
+  if (typeof value === "object") {
+    return { text: JSON.stringify(value, null, 2), isJson: true };
+  }
+  return { text: String(value), isJson: true };
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function highlightJson(value: string): string {
+  const escaped = escapeHtml(value);
+  return escaped.replace(JSON_TOKEN_REGEX, (match) => {
+    let className = styles.tokenNumber;
+    if (match.startsWith("\"")) {
+      className = match.endsWith(":") ? styles.tokenKey : styles.tokenString;
+    } else if (match === "true" || match === "false") {
+      className = styles.tokenBoolean;
+    } else if (match === "null") {
+      className = styles.tokenNull;
+    }
+    return `<span class="${className}">${match}</span>`;
+  });
+}
+
+function highlightCode(value: string): string {
+  const escaped = escapeHtml(value);
+  return escaped.replace(CODE_TOKEN_REGEX, (match) => {
+    if (match.startsWith("//") || match.startsWith("/*")) {
+      return `<span class="${styles.tokenComment}">${match}</span>`;
+    }
+    if (match.startsWith("\"") || match.startsWith("'") || match.startsWith("`")) {
+      return `<span class="${styles.tokenString}">${match}</span>`;
+    }
+    if (match === "true" || match === "false" || match === "undefined") {
+      return `<span class="${styles.tokenBoolean}">${match}</span>`;
+    }
+    if (match === "null") {
+      return `<span class="${styles.tokenNull}">${match}</span>`;
+    }
+    if (CODE_KEYWORDS.has(match)) {
+      return `<span class="${styles.tokenKeyword}">${match}</span>`;
+    }
+    return `<span class="${styles.tokenNumber}">${match}</span>`;
+  });
+}
+
+function isShellToolName(toolName: string | null | undefined): boolean {
+  if (!toolName) return false;
+  const normalized = toolName.toLowerCase();
+  return SHELL_TOOL_HINTS.some((hint) => normalized.includes(hint));
+}
+
+function extractCommand(value: unknown): string | null {
+  const normalized = normalizeValue(value);
+  if (typeof normalized === "string") return normalized;
+  if (!isRecord(normalized)) return null;
+  if (typeof normalized.command === "string") return normalized.command;
+  if (typeof normalized.cmd === "string") return normalized.cmd;
+  if (typeof normalized.script === "string") return normalized.script;
+  return null;
+}
+
+function extractWorkdir(value: unknown): string | null {
+  const normalized = normalizeValue(value);
+  if (!isRecord(normalized)) return null;
+  if (typeof normalized.cwd === "string") return normalized.cwd;
+  if (typeof normalized.workdir === "string") return normalized.workdir;
+  if (typeof normalized.directory === "string") return normalized.directory;
+  if (typeof normalized.dir === "string") return normalized.dir;
+  return null;
+}
+
+function extractShellOutput(value: unknown): {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number | string | null;
+} {
+  const normalized = normalizeValue(value);
+  if (typeof normalized === "string") {
+    return { stdout: normalized };
+  }
+  if (!isRecord(normalized)) {
+    const fallback = flattenText(value);
+    return fallback ? { stdout: fallback } : {};
+  }
+  const stdout = typeof normalized.stdout === "string" ? normalized.stdout : undefined;
+  const stderr = typeof normalized.stderr === "string" ? normalized.stderr : undefined;
+  const exitCode =
+    typeof normalized.exit_code === "number"
+      ? normalized.exit_code
+      : typeof normalized.exitCode === "number"
+        ? normalized.exitCode
+        : typeof normalized.status === "number"
+          ? normalized.status
+          : typeof normalized.exit_code === "string"
+            ? normalized.exit_code
+            : typeof normalized.exitCode === "string"
+              ? normalized.exitCode
+              : typeof normalized.status === "string"
+                ? normalized.status
+                : null;
+  if (stdout || stderr || exitCode !== null) {
+    return { stdout, stderr, exitCode };
+  }
+  const fallback = flattenText(normalized.content ?? normalized.output ?? normalized.result);
+  return fallback ? { stdout: fallback } : {};
+}
+
 const ENTRY_TYPE_STYLES: Record<ActivityEntry["type"], { icon: string; color: string }> = {
   init: { icon: "⚡", color: "#6ee7b7" },
   tool: { icon: "→", color: "#60a5fa" },
@@ -57,29 +255,66 @@ const ENTRY_TYPE_STYLES: Record<ActivityEntry["type"], { icon: string; color: st
   unknown: { icon: "•", color: "#6b7280" },
 };
 
-function ActivityLogEntry({ entry }: { entry: ActivityEntry }) {
+function ActivityLogEntry({
+  entry,
+  onSelect,
+}: {
+  entry: ActivityEntry;
+  onSelect: (entry: ActivityEntry) => void;
+}) {
   const style = ENTRY_TYPE_STYLES[entry.type];
   return (
-    <div
-      style={{
-        display: "flex",
-        gap: 8,
-        padding: "4px 0",
-        borderBottom: "1px solid #1f2433",
-        fontSize: 12,
-        lineHeight: 1.4,
-      }}
+    <button
+      type="button"
+      className={styles.logEntryButton}
+      onClick={() => onSelect(entry)}
+      aria-haspopup="dialog"
+      aria-label={`View details for ${entry.content}`}
     >
-      <span style={{ color: style.color, flexShrink: 0, width: 16 }}>{style.icon}</span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ color: style.color, fontWeight: entry.type === "tool" ? 600 : 400 }}>
-          {entry.content}
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          padding: "4px 0",
+          borderBottom: "1px solid #1f2433",
+          fontSize: 12,
+          lineHeight: 1.4,
+        }}
+      >
+        <span style={{ color: style.color, flexShrink: 0, width: 16 }}>{style.icon}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ color: style.color, fontWeight: entry.type === "tool" ? 600 : 400 }}>
+            {entry.content}
+          </div>
+          {entry.details && (
+            <div style={{ color: "#6b7280", fontSize: 11, marginTop: 2 }}>{entry.details}</div>
+          )}
         </div>
-        {entry.details && (
-          <div style={{ color: "#6b7280", fontSize: 11, marginTop: 2 }}>{entry.details}</div>
-        )}
       </div>
-    </div>
+    </button>
+  );
+}
+
+function HighlightedBlock({
+  value,
+  className,
+}: {
+  value: unknown;
+  className?: string;
+}) {
+  const normalized = normalizeValue(value);
+  const { text, isJson } = formatValueForHighlight(normalized);
+  if (!text) {
+    return <div className={styles.emptyState}>(empty)</div>;
+  }
+  const html = isJson ? highlightJson(text) : highlightCode(text);
+  const combinedClassName = className
+    ? `${styles.codeBlock} ${className}`
+    : styles.codeBlock;
+  return (
+    <pre className={combinedClassName}>
+      <code dangerouslySetInnerHTML={{ __html: html }} />
+    </pre>
   );
 }
 
@@ -99,6 +334,8 @@ export function AgentActivityPanel({
     lastUpdated,
   } = useShiftLogTail(projectId, shiftId, { lines: 120, intervalMs: 2000 });
   const logRef = useRef<HTMLDivElement | null>(null);
+  const [selectedEntry, setSelectedEntry] = useState<ActivityEntry | null>(null);
+  const closeModal = useCallback(() => setSelectedEntry(null), []);
 
   const activeWorkOrderId =
     focus?.kind === "work_order" && focus.source === "active_run"
@@ -146,6 +383,17 @@ export function AgentActivityPanel({
       el.scrollTop = el.scrollHeight;
     }
   }, [activityEntries]);
+
+  useEffect(() => {
+    if (!selectedEntry) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSelectedEntry(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedEntry]);
 
   if (loading) {
     return (
@@ -264,7 +512,7 @@ export function AgentActivityPanel({
           ) : activityEntries.length > 0 ? (
             <div style={{ display: "flex", flexDirection: "column" }}>
               {activityEntries.map((entry) => (
-                <ActivityLogEntry key={entry.id} entry={entry} />
+                <ActivityLogEntry key={entry.id} entry={entry} onSelect={setSelectedEntry} />
               ))}
             </div>
           ) : (
@@ -285,6 +533,132 @@ export function AgentActivityPanel({
           {logUpdated && <div>Updated {logUpdated}</div>}
         </div>
       </div>
+
+      {selectedEntry && (
+        <div className={styles.activityModalOverlay} onClick={closeModal}>
+          <div
+            className={styles.activityModalCard}
+            role="dialog"
+            aria-modal="true"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className={styles.activityModalHeader}>
+              <div>
+                <div className={styles.activityModalTitle}>Activity detail</div>
+                <div className={styles.activityModalSubtitle}>{selectedEntry.content}</div>
+                {selectedEntry.details && (
+                  <div className={styles.activityModalMeta}>{selectedEntry.details}</div>
+                )}
+              </div>
+              <button
+                type="button"
+                className={styles.activityModalClose}
+                onClick={closeModal}
+                aria-label="Close activity detail"
+              >
+                X
+              </button>
+            </div>
+
+            <div className={styles.activityModalBody}>
+              <div className={styles.activityModalMetaRow}>
+                <span className="badge">{selectedEntry.type}</span>
+                {selectedEntry.timestamp && (
+                  <span className="muted">
+                    {selectedEntry.timestamp.toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </span>
+                )}
+              </div>
+
+              {selectedEntry.type === "tool" ? (() => {
+                const toolName =
+                  selectedEntry.toolName ??
+                  selectedEntry.content.replace("→ ", "").trim() ||
+                  "Tool";
+                const isShellTool = isShellToolName(toolName);
+                const command = extractCommand(selectedEntry.toolInput);
+                const workdir = extractWorkdir(selectedEntry.toolInput);
+                const shellOutput = extractShellOutput(selectedEntry.toolOutput);
+                const normalizedInput = normalizeValue(selectedEntry.toolInput);
+                const inputRecord = isRecord(normalizedInput) ? normalizedInput : null;
+                const hasExtraInput = inputRecord
+                  ? Object.keys(inputRecord).some(
+                      (key) => key !== "command" && key !== "cmd" && key !== "script"
+                    )
+                  : false;
+                const hasShellOutput =
+                  Boolean(shellOutput.stdout?.trim()) ||
+                  Boolean(shellOutput.stderr?.trim()) ||
+                  (shellOutput.exitCode !== null && shellOutput.exitCode !== undefined);
+
+                return (
+                  <>
+                    <div className={styles.activityDetailSection}>
+                      <div className={styles.detailLabel}>Tool</div>
+                      <div className={styles.activityDetailValue}>{toolName}</div>
+                    </div>
+
+                    <div className={styles.activityDetailSection}>
+                      <div className={styles.detailLabel}>Input</div>
+                      {isShellTool ? (
+                        <div className={styles.activityDetailStack}>
+                          <div className={styles.detailSubLabel}>Command</div>
+                          <HighlightedBlock value={command ?? ""} />
+                          {workdir && (
+                            <div className={styles.activityInlineMeta}>
+                              Working dir: <span className={styles.monoText}>{workdir}</span>
+                            </div>
+                          )}
+                          {hasExtraInput && <div className={styles.detailSubLabel}>Full input</div>}
+                          {hasExtraInput && <HighlightedBlock value={selectedEntry.toolInput} />}
+                        </div>
+                      ) : (
+                        <HighlightedBlock value={selectedEntry.toolInput} />
+                      )}
+                    </div>
+
+                    <div className={styles.activityDetailSection}>
+                      <div className={styles.detailLabel}>Output</div>
+                      {isShellTool ? (
+                        <div className={styles.activityDetailStack}>
+                          {shellOutput.exitCode !== null && shellOutput.exitCode !== undefined && (
+                            <div className={styles.activityInlineMeta}>
+                              Exit code: <span className={styles.monoText}>{shellOutput.exitCode}</span>
+                            </div>
+                          )}
+                          <div className={styles.detailSubLabel}>Stdout</div>
+                          <HighlightedBlock value={shellOutput.stdout ?? ""} className={styles.stdoutBlock} />
+                          <div className={styles.detailSubLabel}>Stderr</div>
+                          <HighlightedBlock value={shellOutput.stderr ?? ""} className={styles.stderrBlock} />
+                          {!hasShellOutput && <HighlightedBlock value={selectedEntry.toolOutput} />}
+                        </div>
+                      ) : (
+                        <HighlightedBlock value={selectedEntry.toolOutput} />
+                      )}
+                    </div>
+                  </>
+                );
+              })() : (
+                <div className={styles.activityDetailSection}>
+                  <div className={styles.detailLabel}>Details</div>
+                  <HighlightedBlock
+                    value={
+                      selectedEntry.fullText ??
+                      selectedEntry.details ??
+                      selectedEntry.raw ??
+                      selectedEntry.content
+                    }
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
