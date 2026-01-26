@@ -1,6 +1,7 @@
 import "./env.js";
 import fs from "fs";
 import crypto from "crypto";
+import YAML from "yaml";
 import express, { type Response, type NextFunction } from "express";
 import cors from "cors";
 import {
@@ -21,6 +22,7 @@ import {
   getProjectCommunicationById,
   getProjectVm,
   getRunById,
+  getEstimationContextSummary,
   getRunPhaseMetricsSummary,
   updateRun,
   getGlobalShiftById,
@@ -31,6 +33,7 @@ import {
   listGlobalShifts,
   searchGlobalPatternsByTags,
   listTracks,
+  listEstimationContextRuns,
   listRunPhaseMetrics,
   listShifts,
   listProjects,
@@ -3503,6 +3506,131 @@ app.get("/repos/:id/tech-tree", (req, res) => {
   return res.json({ nodes, cycles, eras });
 });
 
+const ESTIMATION_SCOPES = ["project", "global"] as const;
+const ESTIMATION_SCOPE_SET = new Set<string>(ESTIMATION_SCOPES);
+const DEFAULT_ESTIMATION_CONTEXT_LIMIT = 5;
+const MAX_ESTIMATION_CONTEXT_LIMIT = 50;
+const ESTIMATION_CONTEXT_FETCH_MULTIPLIER = 5;
+
+type WorkOrderMeta = {
+  title: string | null;
+  tags: string[];
+  estimate_hours: number | null;
+};
+
+type EstimationContextRun = {
+  wo_id: string;
+  wo_title: string;
+  wo_tags: string[];
+  wo_estimate_hours: number;
+  iterations: number;
+  total_seconds: number;
+  outcome: "approved" | "failed";
+  created_at: string;
+};
+
+function parseWorkOrderFrontmatter(markdown: string): Record<string, unknown> | null {
+  if (!markdown.startsWith("---")) return null;
+  const lines = markdown.split(/\r?\n/);
+  if (lines.length < 3) return null;
+  let endIdx = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") {
+      endIdx = i;
+      break;
+    }
+  }
+  if (endIdx === -1) return null;
+  const yamlText = lines.slice(1, endIdx).join("\n");
+  try {
+    const parsed = YAML.parse(yamlText);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function extractWorkOrderMeta(markdown: string): WorkOrderMeta {
+  const frontmatter = parseWorkOrderFrontmatter(markdown);
+  if (!frontmatter) {
+    return { title: null, tags: [], estimate_hours: null };
+  }
+  const title = typeof frontmatter.title === "string" ? frontmatter.title.trim() : null;
+  const tags = normalizeStringArrayField(frontmatter.tags) ?? [];
+  const estimate_hours =
+    typeof frontmatter.estimate_hours === "number" &&
+    Number.isFinite(frontmatter.estimate_hours)
+      ? frontmatter.estimate_hours
+      : null;
+  return { title, tags, estimate_hours };
+}
+
+function loadWorkOrderMeta(projectPath: string, workOrderId: string): WorkOrderMeta | null {
+  try {
+    return extractWorkOrderMeta(readWorkOrderMarkdown(projectPath, workOrderId));
+  } catch {
+    return null;
+  }
+}
+
+function normalizeEstimateHours(value: number | null): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.max(0, value);
+}
+
+function parseEstimationLimit(value: unknown): number {
+  const raw = typeof value === "string" ? Number(value) : NaN;
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_ESTIMATION_CONTEXT_LIMIT;
+  return Math.min(MAX_ESTIMATION_CONTEXT_LIMIT, Math.trunc(raw));
+}
+
+function countTagOverlap(tags: string[], targetTags: Set<string>): number {
+  if (!tags.length || targetTags.size === 0) return 0;
+  const seen = new Set<string>();
+  let count = 0;
+  for (const tag of tags) {
+    const normalized = tag.trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    if (targetTags.has(normalized)) count += 1;
+  }
+  return count;
+}
+
+function sortRunsBySimilarity(
+  runs: EstimationContextRun[],
+  targetTags: string[]
+): EstimationContextRun[] {
+  const sortedByRecency = [...runs].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  if (!targetTags.length) return sortedByRecency;
+  const targetSet = new Set(
+    targetTags.map((tag) => tag.trim().toLowerCase()).filter(Boolean)
+  );
+  if (!targetSet.size) return sortedByRecency;
+  const scored = sortedByRecency.map((run) => ({
+    run,
+    overlap: countTagOverlap(run.wo_tags, targetSet),
+  }));
+  const filtered = scored.filter((entry) => entry.overlap > 0);
+  const base = filtered.length ? filtered : scored;
+  return base
+    .sort((a, b) => {
+      if (a.overlap !== b.overlap) return b.overlap - a.overlap;
+      return b.run.created_at.localeCompare(a.run.created_at);
+    })
+    .map((entry) => entry.run);
+}
+
+function resolveRunOutcome(status: string, reviewerVerdict: string | null): "approved" | "failed" {
+  if (status === "baseline_failed" || status === "merge_conflict" || status === "failed") {
+    return "failed";
+  }
+  if (status === "merged" || status === "you_review") return "approved";
+  if (reviewerVerdict === "approved") return "approved";
+  return "failed";
+}
+
 app.get("/repos/:id/runs", (req, res) => {
   const { id } = req.params;
   const project = findProjectById(id);
@@ -3517,6 +3645,73 @@ app.get("/repos/:id/run-metrics/summary", (req, res) => {
   const project = findProjectById(id);
   if (!project) return res.status(404).json({ error: "project not found" });
   return res.json(getRunPhaseMetricsSummary(project.id));
+});
+
+app.get("/repos/:id/estimation-context", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const rawScope = typeof req.query.scope === "string" ? req.query.scope.trim() : "";
+  if (rawScope && !ESTIMATION_SCOPE_SET.has(rawScope)) {
+    return res.status(400).json({ error: "`scope` must be global or project" });
+  }
+  const scope = rawScope === "global" ? "global" : "project";
+  const limit = parseEstimationLimit(req.query.limit);
+  const fetchLimit = Math.min(
+    200,
+    Math.max(limit * ESTIMATION_CONTEXT_FETCH_MULTIPLIER, limit)
+  );
+  const woId = typeof req.query.wo_id === "string" ? req.query.wo_id.trim() : "";
+
+  let targetTags: string[] = [];
+  if (woId) {
+    const targetMeta = loadWorkOrderMeta(project.path, woId);
+    if (!targetMeta) return res.status(404).json({ error: "work order not found" });
+    targetTags = targetMeta.tags;
+  }
+
+  const summary = getEstimationContextSummary(scope === "global" ? null : project.id);
+  const recentRuns = listEstimationContextRuns(
+    scope === "global" ? null : project.id,
+    fetchLimit
+  );
+
+  const projectMap = new Map<string, ProjectRow>();
+  if (scope === "global") {
+    for (const entry of listProjects()) {
+      projectMap.set(entry.id, entry);
+    }
+  }
+
+  const resolvedRuns = recentRuns.map((run) => {
+    const projectPath =
+      scope === "global" ? projectMap.get(run.project_id)?.path ?? null : project.path;
+    const meta = projectPath ? loadWorkOrderMeta(projectPath, run.work_order_id) : null;
+    const woTags = meta?.tags.length ? meta.tags : run.work_order_tags;
+    const woTitle = meta?.title?.trim() || run.work_order_title || run.work_order_id;
+    const woEstimateHours = normalizeEstimateHours(meta?.estimate_hours ?? null);
+    return {
+      wo_id: run.work_order_id,
+      wo_title: woTitle,
+      wo_tags: woTags,
+      wo_estimate_hours: woEstimateHours,
+      iterations: run.iterations,
+      total_seconds: run.total_seconds,
+      outcome: resolveRunOutcome(run.status, run.reviewer_verdict),
+      created_at: run.created_at,
+    };
+  });
+
+  const recentSorted = sortRunsBySimilarity(resolvedRuns, targetTags)
+    .slice(0, limit)
+    .map(({ created_at, ...rest }) => rest);
+
+  return res.json({
+    averages: summary.averages,
+    recent_runs: recentSorted,
+    sample_size: summary.sample_size,
+  });
 });
 
 app.post("/repos/:id/runs/cleanup-merged", (req, res) => {
@@ -3609,23 +3804,43 @@ app.patch("/runs/:runId", (req, res) => {
     return res.status(400).json({ error: "request body required" });
   }
 
-  const allowedFields = ["status", "merge_status", "error"] as const;
-  const patch: Partial<{ status: string; merge_status: string; error: string }> = {};
+  const validStatuses = [
+    "queued", "baseline_failed", "building", "waiting_for_input",
+    "ai_review", "testing", "you_review", "merged", "merge_conflict",
+    "failed", "canceled", "superseded",
+  ] as const;
+  const validMergeStatuses = ["pending", "merged", "conflict"] as const;
 
-  for (const field of allowedFields) {
-    if (field in body && typeof body[field] === "string") {
-      patch[field] = body[field] as string;
+  type RunPatch = Parameters<typeof updateRun>[1];
+  const patch: RunPatch = {};
+
+  if ("status" in body && typeof body.status === "string") {
+    if (validStatuses.includes(body.status as typeof validStatuses[number])) {
+      patch.status = body.status as typeof validStatuses[number];
+    } else {
+      return res.status(400).json({ error: `invalid status: ${body.status}` });
     }
+  }
+
+  if ("merge_status" in body && typeof body.merge_status === "string") {
+    if (validMergeStatuses.includes(body.merge_status as typeof validMergeStatuses[number])) {
+      patch.merge_status = body.merge_status as typeof validMergeStatuses[number];
+    } else {
+      return res.status(400).json({ error: `invalid merge_status: ${body.merge_status}` });
+    }
+  }
+
+  if ("error" in body && typeof body.error === "string") {
+    patch.error = body.error;
   }
 
   if (Object.keys(patch).length === 0) {
     return res.status(400).json({ error: "no valid fields to update" });
   }
 
-  // Add finished_at if transitioning to a terminal status
-  const terminalStatuses = ["merged", "failed", "canceled", "rejected"];
+  const terminalStatuses = ["merged", "failed", "canceled"];
   if (patch.status && terminalStatuses.includes(patch.status) && !run.finished_at) {
-    (patch as Record<string, string>).finished_at = new Date().toISOString();
+    patch.finished_at = new Date().toISOString();
   }
 
   const updated = updateRun(req.params.runId, patch);
