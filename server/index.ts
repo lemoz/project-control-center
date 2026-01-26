@@ -131,6 +131,7 @@ import {
   markConstitutionGenerationComplete,
 } from "./constitution_generation.js";
 import {
+  autoCancelEscalationTimeouts,
   cancelRun,
   enqueueCodexRun,
   finalizeManualRunResolution,
@@ -212,6 +213,39 @@ const app = express();
 const port = Number(process.env.CONTROL_CENTER_PORT || 4010);
 const host = process.env.CONTROL_CENTER_HOST || "127.0.0.1";
 const allowLan = process.env.CONTROL_CENTER_ALLOW_LAN === "1";
+const DEFAULT_ESCALATION_TIMEOUT_HOURS = 24;
+const ESCALATION_TIMEOUT_SWEEP_MS = 10 * 60 * 1000;
+
+function resolveEscalationTimeoutHours(): number {
+  const raw = process.env.ESCALATION_TIMEOUT_HOURS;
+  const parsed = raw ? Number.parseFloat(raw) : NaN;
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return DEFAULT_ESCALATION_TIMEOUT_HOURS;
+}
+
+function startEscalationTimeoutSweep(): void {
+  const timeoutHours = resolveEscalationTimeoutHours();
+  const sweep = () => {
+    try {
+      const result = autoCancelEscalationTimeouts(timeoutHours);
+      if (result.canceled > 0) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[escalation] auto-canceled ${result.canceled}/${result.checked} runs after ${timeoutHours}h`
+        );
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        "[escalation] failed to auto-cancel timed-out runs:",
+        err instanceof Error ? err.message : err
+      );
+    }
+  };
+
+  sweep();
+  setInterval(sweep, ESCALATION_TIMEOUT_SWEEP_MS);
+}
 const ESCALATION_TYPES: EscalationType[] = [
   "need_input",
   "blocked",
@@ -4096,4 +4130,5 @@ app.listen(port, host, () => {
     // eslint-disable-next-line no-console
     console.log(`Marked ${recovered} in-progress runs as failed (restart recovery).`);
   }
+  startEscalationTimeoutSweep();
 });

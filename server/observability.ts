@@ -91,6 +91,9 @@ export type ObservabilityAlert = {
   message: string;
   created_at: string;
   acknowledged: boolean;
+  run_id?: string;
+  work_order_id?: string;
+  waiting_since?: string;
 };
 
 const ACTIVE_STATUSES = new Set([
@@ -342,6 +345,16 @@ function parseIso(value: string | null | undefined): number | null {
   if (!value) return null;
   const ms = Date.parse(value);
   return Number.isFinite(ms) ? ms : null;
+}
+
+function parseEscalationCreatedAt(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { created_at?: string };
+    return typeof parsed?.created_at === "string" ? parsed.created_at : null;
+  } catch {
+    return null;
+  }
 }
 
 function computeDurationSeconds(run: RunRow, nowMs: number): number {
@@ -675,6 +688,37 @@ export async function listObservabilityAlerts(
     }
   }
 
+  const database = getDb();
+  const escalationRows = database
+    .prepare(
+      `SELECT id, work_order_id, escalation, created_at, started_at
+       FROM runs
+       WHERE status = 'waiting_for_input'`
+    )
+    .all() as Array<
+    Pick<RunRow, "id" | "work_order_id" | "escalation" | "created_at" | "started_at">
+  >;
+  const nowMs = Date.now();
+  for (const run of escalationRows) {
+    const waitingSince =
+      parseEscalationCreatedAt(run.escalation) ?? run.started_at ?? run.created_at;
+    const waitingMs = parseIso(waitingSince);
+    if (!waitingMs) continue;
+    const ageHours = (nowMs - waitingMs) / (1000 * 60 * 60);
+    if (ageHours < 1) continue;
+    alerts.push({
+      id: formatAlertId("escalation_waiting", run.id),
+      type: "escalation_waiting",
+      severity: ageHours >= 12 ? "critical" : "warning",
+      message: "Escalation awaiting input",
+      created_at: now,
+      acknowledged: false,
+      run_id: run.id,
+      work_order_id: run.work_order_id,
+      waiting_since: waitingSince,
+    });
+  }
+
   const activeRuns = listActiveRuns(25, { includeActivity: false });
   const stuck = activeRuns.filter((run) => run.duration_seconds >= 30 * 60);
   if (stuck.length > 0) {
@@ -688,7 +732,6 @@ export async function listObservabilityAlerts(
     });
   }
 
-  const database = getDb();
   const recent = database
     .prepare(
       "SELECT status FROM runs ORDER BY created_at DESC LIMIT 3"

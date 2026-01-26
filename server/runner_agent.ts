@@ -9,6 +9,7 @@ import {
   createRun,
   createRunPhaseMetric,
   findProjectById,
+  getDb,
   getMergeLock,
   getProjectVm,
   getRunById,
@@ -140,6 +141,12 @@ const DENY_EXTS = new Set([".pem", ".key", ".p12", ".pfx"]);
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function parseIso(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 function estimateTokenCount(text: string): number {
@@ -1274,6 +1281,21 @@ function parseEscalationRecord(raw: string | null): EscalationRecord | null {
     resolved_at: resolvedAt,
     resolution: resolution && Object.keys(resolution).length ? resolution : undefined,
   };
+}
+
+function compactEscalationText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function logEscalationDetails(
+  log: (line: string) => void,
+  request: EscalationRequest
+): void {
+  const inputKeys = request.inputs.map((input) => input.key).filter(Boolean);
+  log("Escalation requested:");
+  log(`  What was tried: ${compactEscalationText(request.what_i_tried) || "(missing)"}`);
+  log(`  What is needed: ${compactEscalationText(request.what_i_need) || "(missing)"}`);
+  log(`  Required inputs: ${inputKeys.length ? inputKeys.join(", ") : "(none)"}`);
 }
 
 function getEscalationResolutionPath(runDir: string): string {
@@ -3186,6 +3208,7 @@ export async function runRun(runId: string) {
                   escalation: JSON.stringify(escalationRecord),
                 });
                 writeJson(path.join(runDir, "escalation.json"), escalationRecord);
+                logEscalationDetails(log, request);
                 log("Escalation requested; waiting for user input");
 
                 const resolved = await waitForEscalationResolution(runId, log);
@@ -3370,6 +3393,7 @@ export async function runRun(runId: string) {
               escalation: JSON.stringify(escalationRecord),
             });
             writeJson(path.join(runDir, "escalation.json"), escalationRecord);
+            logEscalationDetails(log, escalationRequest);
             log("Escalation requested after builder output; waiting for user input");
 
             const resolved = await waitForEscalationResolution(runId, log);
@@ -4721,6 +4745,47 @@ export function provideRunInput(
     escalation: JSON.stringify(updated),
   });
   return { ok: true };
+}
+
+export function autoCancelEscalationTimeouts(timeoutHours: number): {
+  checked: number;
+  canceled: number;
+} {
+  const safeTimeoutHours =
+    Number.isFinite(timeoutHours) && timeoutHours > 0 ? timeoutHours : 24;
+  const timeoutMs = safeTimeoutHours * 60 * 60 * 1000;
+  const database = getDb();
+  const runs = database
+    .prepare(
+      `SELECT id, escalation, log_path, created_at, started_at
+       FROM runs
+       WHERE status = 'waiting_for_input'`
+    )
+    .all() as Array<
+    Pick<RunRow, "id" | "escalation" | "log_path" | "created_at" | "started_at">
+  >;
+  const nowMs = Date.now();
+  let canceled = 0;
+
+  for (const run of runs) {
+    const escalation = parseEscalationRecord(run.escalation);
+    const waitingSince = escalation?.created_at ?? run.started_at ?? run.created_at;
+    const waitingMs = parseIso(waitingSince);
+    if (!waitingMs || nowMs - waitingMs < timeoutMs) continue;
+
+    const message = `Escalation timeout - no input provided within ${safeTimeoutHours} hours`;
+    appendLog(run.log_path, message);
+    updateRun(run.id, {
+      status: "canceled",
+      finished_at: nowIso(),
+      error: message,
+      failure_category: "canceled",
+      failure_reason: "escalation_timeout",
+    });
+    canceled += 1;
+  }
+
+  return { checked: runs.length, canceled };
 }
 
 type CancelRunResult =

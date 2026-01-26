@@ -1,16 +1,35 @@
 "use client";
 
+import Link from "next/link";
 import type { ObservabilityAlert } from "../types";
 
 function AlertItem({ alert }: { alert: ObservabilityAlert }) {
   const className = alert.severity === "critical" ? "error" : "notice";
+  const runHref = alert.run_id ? `/runs/${encodeURIComponent(alert.run_id)}` : null;
+  const meta: string[] = [];
+  if (alert.run_id) meta.push(`Run ${alert.run_id}`);
+  if (alert.work_order_id) meta.push(`WO ${alert.work_order_id}`);
+  if (alert.waiting_since) meta.push(`Waiting since ${alert.waiting_since}`);
   return (
     <div className={className} style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
       <div>
-        <div style={{ fontWeight: 700 }}>{alert.message}</div>
+        <div style={{ fontWeight: 700 }}>
+          {runHref ? (
+            <Link href={runHref} style={{ color: "inherit", textDecoration: "underline" }}>
+              {alert.message}
+            </Link>
+          ) : (
+            alert.message
+          )}
+        </div>
         <div className="muted" style={{ fontSize: 12 }}>
           {alert.type}
         </div>
+        {meta.length > 0 && (
+          <div className="muted" style={{ fontSize: 12 }}>
+            {meta.join(" · ")}
+          </div>
+        )}
       </div>
       <span className="badge">{alert.severity}</span>
     </div>
