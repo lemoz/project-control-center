@@ -103,6 +103,16 @@ export type WorkOrderPatchInput = Partial<{
   era: string | null;
 }>;
 
+export type ScopeCreepDraftInput = {
+  title: string;
+  file: string;
+  lines?: string | null;
+  rationale: string;
+  sourceWorkOrderId: string;
+  era?: string | null;
+  base_branch?: string | null;
+};
+
 export class WorkOrderError extends Error {
   code: "not_found" | "invalid" | "io";
   details?: unknown;
@@ -633,6 +643,50 @@ export function createWorkOrder(
     syncWorkOrderRows(project.id, [normalized]);
   }
   return normalized;
+}
+
+export function createScopeCreepDraftWorkOrder(
+  repoPath: string,
+  input: ScopeCreepDraftInput
+): WorkOrder {
+  const rawTitle = normalizeOptionalString(input.title);
+  const file = normalizeOptionalString(input.file);
+  const rationale = normalizeOptionalString(input.rationale);
+  const sourceWorkOrderId = normalizeOptionalString(input.sourceWorkOrderId);
+  if (!rawTitle || !file || !rationale || !sourceWorkOrderId) {
+    throw new WorkOrderError(
+      "Scope creep draft requires title, file, rationale, and sourceWorkOrderId",
+      "invalid"
+    );
+  }
+
+  const cleanedTitle = rawTitle.replace(/^\[Auto\]\s*/i, "").trim();
+  const changeTitle = cleanedTitle || rawTitle;
+  const title = rawTitle.match(/^\[Auto\]/i) ? rawTitle : `[Auto] ${changeTitle}`;
+
+  const lines = normalizeOptionalString(input.lines);
+  const context = [
+    `Surfaced during ${sourceWorkOrderId} review`,
+    `File: ${file}${lines ? ` (${lines})` : ""}`,
+    `Change: ${changeTitle}`,
+    `Rationale: ${rationale}`,
+  ];
+
+  const era = normalizeOptionalString(input.era);
+  const baseBranch = normalizeOptionalString(input.base_branch);
+  const created = createWorkOrder(repoPath, {
+    title,
+    priority: 3,
+    tags: ["auto-generated", "from-scope-creep"],
+    depends_on: [],
+    ...(era ? { era } : {}),
+    ...(baseBranch ? { base_branch: baseBranch } : {}),
+  });
+
+  return patchWorkOrder(repoPath, created.id, {
+    goal: `Evaluate and implement if appropriate: ${changeTitle}`,
+    context,
+  });
 }
 
 export function patchWorkOrder(
