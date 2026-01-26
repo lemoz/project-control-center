@@ -2010,6 +2010,12 @@ function buildBuilderPrompt(params: {
     `- Prefer minimal, high-quality changes; update docs/tests if needed.\n` +
     `- Learn from previous iteration feedback - do not repeat the same mistakes.\n` +
     `\n` +
+    `## Scope Constraints (CRITICAL)\n` +
+    `- Do NOT delete or modify files unrelated to this Work Order.\n` +
+    `- If you find yourself deleting >50 lines of code outside direct WO scope, STOP and escalate.\n` +
+    `- Never remove entire features, components, or files unless explicitly required by the WO.\n` +
+    `- Your changes should be ADDITIVE or TARGETED FIXES - not broad deletions.\n` +
+    `\n` +
     `## Change Classification\n` +
     `For each file you modify, classify the change with type and reason:\n` +
     `- wo_implementation: Directly implements the Work Order (reason can be brief, e.g. "implements WO")\n` +
@@ -2103,6 +2109,13 @@ function buildReviewerPrompt(params: {
     `3. Decide:\n` +
     `   - If legitimate blocker -> allow\n` +
     `   - If disguised scope creep -> reject with note: "This doesn't appear to be a true blocker because..."\n\n` +
+    `## Scope Violation Detection (CRITICAL)\n` +
+    `REJECT the diff if any of these are true:\n` +
+    `- Large deletions (>100 lines) of code from files unrelated to the WO goal\n` +
+    `- Entire features, components, or modules removed without explicit WO requirement\n` +
+    `- Changes to files that have no logical connection to the Work Order\n` +
+    `- "Cleanup" or "refactoring" disguised as blocking fixes\n` +
+    `When rejecting for scope violation, note: "SCOPE VIOLATION: [specific issue]. Only modify files directly related to the WO."\n\n` +
     `Work Order (${params.workOrderId}):\n\n` +
     `${params.workOrderMarkdown}\n\n` +
     `Diff:\n\n` +

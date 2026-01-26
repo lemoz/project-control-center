@@ -93,9 +93,7 @@ test.describe("Project Control Center smoke", () => {
     await expect(alphaCard.getByText("sidecar")).toBeVisible();
   });
 
-  // FIXME: Flaky on mobile - card overlay intercepts star button clicks (WO-2026-152)
-  test("Star/unstar reorder persists after refresh", async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name === "chromium-mobile", "Flaky on mobile - star button click intercepted by card overlay");
+  test("Star/unstar reorder persists after refresh", async ({ page }) => {
     await page.goto("/");
     const cards = page.locator(".grid .card.cardLink");
 
@@ -120,9 +118,7 @@ test.describe("Project Control Center smoke", () => {
     await expect(cards.first()).toContainText("alpha");
   });
 
-  // FIXME: Flaky on mobile - card overlay intercepts star button clicks (WO-2026-152)
-  test("Star persists across repo ID migration", async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name === "chromium-mobile", "Flaky on mobile - star button click intercepted by card overlay");
+  test("Star persists across repo ID migration", async ({ page }) => {
     await page.goto("/");
     const cards = page.locator(".grid .card.cardLink");
 
@@ -238,9 +234,7 @@ test.describe("Project Control Center smoke", () => {
     await expect(cards.first()).toContainText("alpha");
   });
 
-  // FIXME: Flaky on mobile - card overlay intercepts star button clicks (WO-2026-152)
-  test("Repo move preserves stable sidecar id and history", async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name === "chromium-mobile", "Flaky on mobile - star button click intercepted by card overlay");
+  test("Repo move preserves stable sidecar id and history", async ({ page }) => {
     const tmpDir = path.join(e2eDir, ".tmp");
     const betaRepoPath = path.join(tmpDir, "repos", "beta");
     const movedRepoPath = path.join(tmpDir, "repos", "beta-moved");
