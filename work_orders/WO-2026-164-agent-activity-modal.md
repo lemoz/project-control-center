@@ -2,7 +2,7 @@
 id: WO-2026-164
 title: Agent Activity Detail Modal
 status: ready
-priority: 2
+priority: 1
 tags: [live-demo, ui, agent]
 estimate_hours: 3
 depends_on: [WO-2026-163]

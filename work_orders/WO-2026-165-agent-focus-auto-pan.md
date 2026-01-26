@@ -2,7 +2,7 @@
 id: WO-2026-165
 title: Agent Focus Auto-Pan
 status: ready
-priority: 2
+priority: 1
 tags: [live-demo, canvas, agent]
 estimate_hours: 4
 depends_on: [WO-2026-163]
