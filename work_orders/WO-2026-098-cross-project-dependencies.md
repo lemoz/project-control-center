@@ -25,9 +25,9 @@ tags:
   - global-agent
   - multi-repo
 estimate_hours: 3
-status: you_review
+status: done
 created_at: 2026-01-12
-updated_at: 2026-01-23
+updated_at: 2026-01-26
 depends_on:
   - WO-2026-077
 era: v2
