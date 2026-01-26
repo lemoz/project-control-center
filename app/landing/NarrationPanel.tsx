@@ -10,7 +10,11 @@ const STATE_LABELS: Record<string, string> = {
   disabled: "Disabled",
 };
 
-export function NarrationPanel() {
+type NarrationPanelProps = {
+  emptyStateText?: string;
+};
+
+export function NarrationPanel({ emptyStateText }: NarrationPanelProps) {
   const {
     activeCount,
     enabled,
@@ -27,6 +31,8 @@ export function NarrationPanel() {
   const showPrompt = !enabled && !promptDismissed && supported;
   const activeLabel = activeCount === 1 ? "1 active run" : `${activeCount} active runs`;
   const stateLabel = STATE_LABELS[state] ?? "Idle";
+
+  const emptyLabel = emptyStateText ?? "No narration yet.";
 
   return (
     <section className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -110,7 +116,7 @@ export function NarrationPanel() {
             </div>
           ) : (
             <div className="muted" style={{ fontSize: 12 }}>
-              No narration yet.
+              {emptyLabel}
             </div>
           )}
         </div>

@@ -38,14 +38,13 @@ tags:
   - voice
   - visualization
 estimate_hours: 4
-status: blocked
+status: you_review
 created_at: 2026-01-23
-updated_at: 2026-01-23
+updated_at: 2026-01-26
 depends_on:
   - WO-2026-150
 era: v2
 ---
-
 ## Page Layout
 
 ```
