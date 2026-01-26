@@ -1,9 +1,12 @@
 ---
 id: WO-2026-167
 title: Collapsible Voice Guide
-status: ready
+status: done
 priority: 3
-tags: [live-demo, voice, ui]
+tags:
+  - live-demo
+  - voice
+  - ui
 estimate_hours: 2
 updated_at: 2026-01-26
 ---
