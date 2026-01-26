@@ -25,12 +25,11 @@ tags:
   - ui
   - mobile
 estimate_hours: 2
-status: ready
+status: done
 created_at: 2026-01-23
-updated_at: 2026-01-23
+updated_at: 2026-01-26
 era: v2
 ---
-
 ## Problem
 
 The repo card component uses a "stretched link" pattern where an absolutely positioned link covers the entire card for click handling. On mobile viewports, this overlay intercepts clicks intended for the star toggle button, causing test timeouts.
