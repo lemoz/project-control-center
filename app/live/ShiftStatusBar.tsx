@@ -53,26 +53,33 @@ export function ShiftStatusBar({ focus, project, loading }: ShiftStatusBarProps)
     return <span className="badge">No project data</span>;
   }
 
-  const hasActiveShift = Boolean(
+  const hasActiveRun = Boolean(
     focus?.kind === "work_order" && focus.source === "active_run" && focus.workOrderId
   );
   const activeWorkOrderId =
     focus?.kind === "work_order" ? focus.workOrderId ?? null : null;
-  const statusLabel = hasActiveShift ? formatRunStatus(focus?.status ?? "") : null;
+  const statusLabel = hasActiveRun ? formatRunStatus(focus?.status ?? "") : null;
 
-  if (hasActiveShift && activeWorkOrderId) {
+  // Show active run info, but still allow starting a shift
+  if (hasActiveRun && activeWorkOrderId) {
     return (
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <span className="badge">Active shift</span>
-        <Link
-          href={`/projects/${encodeURIComponent(project.id)}/work-orders/${encodeURIComponent(
-            activeWorkOrderId
-          )}`}
-          className="badge"
-        >
-          {activeWorkOrderId}
-        </Link>
-        {statusLabel && <span className="badge">{statusLabel}</span>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span className="badge">Active run</span>
+          <Link
+            href={`/projects/${encodeURIComponent(project.id)}/work-orders/${encodeURIComponent(
+              activeWorkOrderId
+            )}`}
+            className="badge"
+          >
+            {activeWorkOrderId}
+          </Link>
+          {statusLabel && <span className="badge">{statusLabel}</span>}
+          <button className="btn" type="button" onClick={() => void startShift()} disabled={starting}>
+            {starting ? "Starting..." : "Start Shift"}
+          </button>
+        </div>
+        {!!error && <div className="error">{error}</div>}
       </div>
     );
   }
@@ -82,7 +89,7 @@ export function ShiftStatusBar({ focus, project, loading }: ShiftStatusBarProps)
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <span className="badge">No active shift</span>
+        <span className="badge">Idle</span>
         <button className="btn" type="button" onClick={() => void startShift()} disabled={starting}>
           {starting ? "Starting..." : "Start Shift"}
         </button>
