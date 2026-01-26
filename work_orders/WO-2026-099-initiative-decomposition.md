@@ -6,7 +6,7 @@ context:
   - WO-2026-085 (Strategic Planning) sketched initiative model
   - WO-2026-098 (Cross-Project Dependencies) enables the linking
   - Users think in features, not repo boundaries
-  - "Add video upload" naturally spans frontend, API, backend
+  - '"Add video upload" naturally spans frontend, API, backend'
 acceptance_criteria:
   - Initiative model with name, description, target_date, involved_projects
   - POST /global/initiatives creates initiative

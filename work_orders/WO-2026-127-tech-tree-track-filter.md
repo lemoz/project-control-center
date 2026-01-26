@@ -29,6 +29,7 @@ estimate_hours: 2
 status: ready
 depends_on:
   - WO-2026-126
+era: v2
 created_at: 2026-01-22
 updated_at: 2026-01-26
 ---

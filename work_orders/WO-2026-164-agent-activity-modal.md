@@ -6,6 +6,7 @@ priority: 2
 tags: [live-demo, ui, agent]
 estimate_hours: 3
 depends_on: [WO-2026-163]
+era: v2
 updated_at: 2026-01-26
 ---
 ## Goal

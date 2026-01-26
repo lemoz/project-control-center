@@ -743,6 +743,7 @@ export async function generateWorkOrderDraft(params: {
     depends_on,
     era,
     ready_check: rc,
+    validation_warnings: [],
     trackId: null,
     track: null,
   };

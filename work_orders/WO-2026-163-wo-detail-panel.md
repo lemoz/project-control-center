@@ -7,6 +7,8 @@ tags:
   - live-demo
   - ui
 estimate_hours: 3
+depends_on: []
+era: v2
 updated_at: 2026-01-26
 ---
 ## Goal

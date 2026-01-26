@@ -14,7 +14,7 @@ acceptance_criteria:
   - Slack app/bot setup with OAuth for workspace installation
   - Incoming messages create or continue a conversation thread
   - Conversation state tracked (active, ended, processed)
-  - "End conversation" detection (explicit command, timeout, or natural conclusion)
+  - '"End conversation" detection (explicit command, timeout, or natural conclusion)'
   - When conversation ends, context packaged and passed to global agent
   - Global agent can send messages to user via Slack (initiate conversation)
   - Support for DMs and channel mentions

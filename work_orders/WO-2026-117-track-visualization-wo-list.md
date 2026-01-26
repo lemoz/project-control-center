@@ -9,11 +9,11 @@ context:
   - Track badges help quickly identify WO context
 acceptance_criteria:
   - Track badge/chip displayed on each WO card showing track name and color
-  - "Filter by Track" dropdown in WO list header
-  - "Group by Track" toggle that shows WOs organized under track headers
+  - '"Filter by Track" dropdown in WO list header'
+  - '"Group by Track" toggle that shows WOs organized under track headers'
   - Track progress summary showing done/ready/backlog counts per track
   - Clicking track badge filters to that track
-  - "No Track" filter option for unassigned WOs
+  - '"No Track" filter option for unassigned WOs'
   - Track filter state persisted in URL query params
 non_goals:
   - Modifying tech tree view (WO-2026-118)

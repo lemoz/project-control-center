@@ -25,6 +25,7 @@ tags:
 estimate_hours: 2
 status: ready
 created_at: 2026-01-26
+depends_on: []
 era: v2
 updated_at: 2026-01-26
 ---

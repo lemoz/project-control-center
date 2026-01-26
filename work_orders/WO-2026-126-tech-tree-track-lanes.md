@@ -28,6 +28,7 @@ estimate_hours: 3
 status: done
 depends_on:
   - WO-2026-125
+era: v2
 created_at: 2026-01-22
 updated_at: 2026-01-26
 ---

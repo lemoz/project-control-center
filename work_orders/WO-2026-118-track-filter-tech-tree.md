@@ -14,7 +14,7 @@ acceptance_criteria:
   - Optional swimlane view grouping WOs by track horizontally
   - Cross-track dependencies shown as lane-crossing edges
   - Track legend showing track names and colors
-  - "Most recent activity" sorting for tracks in swimlane view
+  - '"Most recent activity" sorting for tracks in swimlane view'
   - Preserve existing chronological layout as default
 non_goals:
   - Replacing the dependency-based layout with pure track grouping

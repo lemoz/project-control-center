@@ -11,7 +11,7 @@ acceptance_criteria:
   - New page at /projects/[id]/tracks showing all tracks for the project
   - Track list displays name, description, goal, color, and WO count
   - Drag-to-reorder tracks (updates sort_order)
-  - "Create Track" button opens modal with name, description, goal, color picker
+  - '"Create Track" button opens modal with name, description, goal, color picker'
   - Click track row to edit (inline or modal)
   - Delete track with confirmation (warns about orphaning WOs)
   - Track color shown as badge/chip in list
