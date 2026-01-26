@@ -817,10 +817,24 @@ app.get("/constitution", (req, res) => {
 
 app.put("/constitution/global", (req, res) => {
   const content = req.body?.content;
-  if (typeof content !== "string") {
+  const statementsRaw = req.body?.statements;
+  const source =
+    typeof req.body?.source === "string" && req.body.source.trim()
+      ? req.body.source.trim()
+      : undefined;
+  if (typeof content !== "string" && !Array.isArray(statementsRaw)) {
     return res.status(400).json({ error: "`content` must be string" });
   }
-  const result = writeGlobalConstitution(content);
+  if (Array.isArray(statementsRaw)) {
+    const invalid = statementsRaw.some((entry: unknown) => typeof entry !== "string");
+    if (invalid) {
+      return res.status(400).json({ error: "`statements` must be string array" });
+    }
+  }
+  const result = writeGlobalConstitution(typeof content === "string" ? content : "", {
+    statements: Array.isArray(statementsRaw) ? statementsRaw : undefined,
+    source,
+  });
   return res.json({ ok: true, version: result.version });
 });
 
@@ -2714,10 +2728,24 @@ app.put("/repos/:id/constitution", (req, res) => {
   const project = findProjectById(id);
   if (!project) return res.status(404).json({ error: "project not found" });
   const content = req.body?.content;
-  if (typeof content !== "string") {
+  const statementsRaw = req.body?.statements;
+  const source =
+    typeof req.body?.source === "string" && req.body.source.trim()
+      ? req.body.source.trim()
+      : undefined;
+  if (typeof content !== "string" && !Array.isArray(statementsRaw)) {
     return res.status(400).json({ error: "`content` must be string" });
   }
-  const result = writeProjectConstitution(project.path, content);
+  if (Array.isArray(statementsRaw)) {
+    const invalid = statementsRaw.some((entry: unknown) => typeof entry !== "string");
+    if (invalid) {
+      return res.status(400).json({ error: "`statements` must be string array" });
+    }
+  }
+  const result = writeProjectConstitution(project.path, typeof content === "string" ? content : "", {
+    statements: Array.isArray(statementsRaw) ? statementsRaw : undefined,
+    source,
+  });
   return res.json({ ok: true, version: result.version });
 });
 

@@ -1,6 +1,13 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
+import {
+  createConstitutionVersion,
+  findProjectByPath,
+  getActiveConstitutionVersion,
+  listConstitutionVersions,
+  type ConstitutionVersion as DbConstitutionVersion,
+} from "./db.js";
 
 export const CONSTITUTION_TEMPLATE = `# Constitution
 
@@ -41,7 +48,7 @@ How to interact with the user.
 - Don't ask for confirmation on small changes
 `;
 
-export type ConstitutionVersion = { timestamp: string; content: string };
+export type ConstitutionVersion = DbConstitutionVersion;
 
 const GLOBAL_DIR = path.join(os.homedir(), ".control-center");
 const GLOBAL_FILE = path.join(GLOBAL_DIR, "constitution.md");
@@ -92,6 +99,11 @@ export type ConstitutionInsightInput = {
 
 export type ConstitutionGenerationMeta = {
   last_generated_at: string | null;
+};
+
+type ConstitutionWriteOptions = {
+  source?: string;
+  statements?: string[];
 };
 
 function ensureDir(dir: string): void {
@@ -298,42 +310,122 @@ function writeVersionedFile(
   return stamp;
 }
 
+function resolveConstitutionWriteInput(
+  content: string,
+  options?: ConstitutionWriteOptions
+): { content: string; statements: string[]; source: string } {
+  const source = options?.source?.trim() || "user";
+  const providedStatements = options?.statements
+    ? options.statements.map((entry) => normalizeStatementText(entry)).filter(Boolean)
+    : [];
+  let statements = providedStatements.length
+    ? providedStatements
+    : extractConstitutionStatements(content);
+  statements = statements.map((entry) => entry.trim()).filter(Boolean);
+  const seen = new Set<string>();
+  statements = statements.filter((entry) => {
+    if (seen.has(entry)) return false;
+    seen.add(entry);
+    return true;
+  });
+
+  let resolvedContent = normalizeNewlines(content ?? "");
+  if (!resolvedContent.trim() && statements.length > 0) {
+    resolvedContent = buildConstitutionFromStatements(statements);
+  }
+  const normalized = resolvedContent.trim()
+    ? ensureTrailingNewline(resolvedContent)
+    : resolvedContent;
+  return { content: normalized, statements, source };
+}
+
 export function readGlobalConstitution(): string {
+  const active = getActiveConstitutionVersion({ scope: "global" });
+  if (active) return active.content;
   if (!fs.existsSync(GLOBAL_FILE)) return "";
-  return fs.readFileSync(GLOBAL_FILE, "utf8");
+  const content = fs.readFileSync(GLOBAL_FILE, "utf8");
+  createConstitutionVersion({
+    scope: "global",
+    content,
+    statements: extractConstitutionStatements(content),
+    source: "filesystem",
+  });
+  return content;
 }
 
 export function readProjectConstitution(repoPath: string): string | null {
+  const project = findProjectByPath(repoPath);
+  if (project) {
+    const active = getActiveConstitutionVersion({
+      scope: "project",
+      projectId: project.id,
+    });
+    if (active) return active.content;
+  }
   const filePath = path.join(repoPath, LOCAL_FILE);
   if (!fs.existsSync(filePath)) return null;
-  return fs.readFileSync(filePath, "utf8");
+  const content = fs.readFileSync(filePath, "utf8");
+  if (project) {
+    createConstitutionVersion({
+      scope: "project",
+      projectId: project.id,
+      content,
+      statements: extractConstitutionStatements(content),
+      source: "filesystem",
+    });
+  }
+  return content;
 }
 
-export function writeGlobalConstitution(content: string): { version: string } {
-  const version = writeVersionedFile(GLOBAL_FILE, GLOBAL_VERSIONS_DIR, content);
-  return { version };
+export function writeGlobalConstitution(
+  content: string,
+  options?: ConstitutionWriteOptions
+): { version: string } {
+  const resolved = resolveConstitutionWriteInput(content, options);
+  const record = createConstitutionVersion({
+    scope: "global",
+    content: resolved.content,
+    statements: resolved.statements,
+    source: resolved.source,
+  });
+  writeVersionedFile(GLOBAL_FILE, GLOBAL_VERSIONS_DIR, resolved.content);
+  return { version: record.created_at };
 }
 
 export function writeProjectConstitution(
   repoPath: string,
-  content: string
+  content: string,
+  options?: ConstitutionWriteOptions
 ): { version: string } {
+  const project = findProjectByPath(repoPath);
   ensureProjectConstitutionIgnored(repoPath);
   const filePath = path.join(repoPath, LOCAL_FILE);
   const versionsDir = path.join(repoPath, LOCAL_VERSIONS_DIR);
-  const version = writeVersionedFile(filePath, versionsDir, content);
-  return { version };
+  const resolved = resolveConstitutionWriteInput(content, options);
+  const version = writeVersionedFile(filePath, versionsDir, resolved.content);
+  if (!project) {
+    return { version };
+  }
+  const record = createConstitutionVersion({
+    scope: "project",
+    projectId: project.id,
+    content: resolved.content,
+    statements: resolved.statements,
+    source: resolved.source,
+  });
+  return { version: record.created_at };
 }
 
 export function listGlobalConstitutionVersions(): ConstitutionVersion[] {
-  return listConstitutionVersions(GLOBAL_VERSIONS_DIR);
+  return listConstitutionVersions({ scope: "global" });
 }
 
 export function listProjectConstitutionVersions(
   repoPath: string
 ): ConstitutionVersion[] {
-  const versionsDir = path.join(repoPath, LOCAL_VERSIONS_DIR);
-  return listConstitutionVersions(versionsDir);
+  const project = findProjectByPath(repoPath);
+  if (!project) return [];
+  return listConstitutionVersions({ scope: "project", projectId: project.id });
 }
 
 function readGenerationMeta(filePath: string): ConstitutionGenerationMeta {
@@ -388,7 +480,10 @@ export function writeProjectConstitutionGenerationMeta(
   return writeGenerationMeta(filePath, meta);
 }
 
-function listConstitutionVersions(dir: string): ConstitutionVersion[] {
+function listFileConstitutionVersions(dir: string): Array<{
+  timestamp: string;
+  content: string;
+}> {
   const versions = listVersionFiles(dir).slice(0, MAX_VERSIONS);
   return versions.map((entry) => ({
     timestamp: entry.timestamp,
@@ -459,6 +554,38 @@ function extractBulletText(line: string): string | null {
 
 function normalizeBulletText(text: string): string {
   return text.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function normalizeStatementText(text: string): string {
+  return text.replace(/^[-*]\s+/, "").trim();
+}
+
+function extractConstitutionStatements(content: string): string[] {
+  const normalized = normalizeNewlines(content ?? "");
+  const lines = normalized.split("\n");
+  const statements: string[] = [];
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const bullet = extractBulletText(line);
+    if (!bullet) continue;
+    const normalizedBullet = normalizeBulletText(bullet);
+    if (!normalizedBullet || seen.has(normalizedBullet)) continue;
+    seen.add(normalizedBullet);
+    statements.push(bullet);
+  }
+  return statements;
+}
+
+function buildConstitutionFromStatements(statements: string[]): string {
+  const cleaned = statements
+    .map((entry) => normalizeStatementText(entry))
+    .filter(Boolean);
+  if (cleaned.length === 0) return "";
+  const lines = ["# Constitution", "", "## Statements"];
+  for (const entry of cleaned) {
+    lines.push(`- ${entry}`);
+  }
+  return lines.join("\n");
 }
 
 function mergeSectionContent(content: string, additions: string[]): string {

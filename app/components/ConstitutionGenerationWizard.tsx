@@ -396,7 +396,7 @@ export function ConstitutionGenerationWizard(props: {
       const res = await fetch(endpoint, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: finalDraft }),
+        body: JSON.stringify({ content: finalDraft, source: "generator" }),
       });
       const json = (await res.json().catch(() => null)) as { error?: string } | null;
       if (!res.ok) {
