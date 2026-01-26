@@ -14,7 +14,11 @@ type AgentActivityPanelProps = {
   focus: AgentFocus | null;
   workOrderNodes: WorkOrderNode[];
   loading: boolean;
+  variant?: "panel" | "overlay";
+  maxEntries?: number;
 };
+
+const DEFAULT_OVERLAY_ENTRIES = 12;
 
 const STATUS_LABELS: Record<RunStatus, string> = {
   queued: "Queued",
@@ -323,7 +327,10 @@ export function AgentActivityPanel({
   focus,
   workOrderNodes,
   loading,
+  variant = "panel",
+  maxEntries = DEFAULT_OVERLAY_ENTRIES,
 }: AgentActivityPanelProps) {
+  const isOverlay = variant === "overlay";
   const projectId = project?.id ?? null;
   const { shift, loading: shiftLoading, error: shiftError } = useActiveShift(projectId);
   const shiftId = shift?.id ?? null;
@@ -335,7 +342,9 @@ export function AgentActivityPanel({
   } = useShiftLogTail(projectId, shiftId, { lines: 120, intervalMs: 2000 });
   const logRef = useRef<HTMLDivElement | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<ActivityEntry | null>(null);
+  const [isCollapsed, setIsCollapsed] = useState(false);
   const closeModal = useCallback(() => setSelectedEntry(null), []);
+  const toggleCollapsed = useCallback(() => setIsCollapsed((prev) => !prev), []);
 
   const activeWorkOrderId =
     focus?.kind === "work_order" && (focus.source === "active_run" || focus.source === "log")
@@ -364,6 +373,14 @@ export function AgentActivityPanel({
   // Parse stream-json log lines into structured activity entries
   const activityEntries = useMemo(() => parseShiftLogLines(logLines), [logLines]);
   const currentState = useMemo(() => extractCurrentState(activityEntries), [activityEntries]);
+  const activityEntriesToShow = useMemo(() => {
+    if (!isOverlay) return activityEntries;
+    if (activityEntries.length <= maxEntries) return activityEntries;
+    return activityEntries.slice(-maxEntries);
+  }, [activityEntries, isOverlay, maxEntries]);
+  const hiddenEntryCount = isOverlay
+    ? Math.max(activityEntries.length - activityEntriesToShow.length, 0)
+    : 0;
 
   // Derive action label from parsed logs or fall back to focus/shift status
   const actionLabel = useMemo(() => {
@@ -378,11 +395,16 @@ export function AgentActivityPanel({
   useEffect(() => {
     const el = logRef.current;
     if (!el) return;
+    if (isOverlay) {
+      if (isCollapsed) return;
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (distanceFromBottom < 40) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [activityEntries]);
+  }, [activityEntriesToShow, isCollapsed, isOverlay]);
 
   useEffect(() => {
     if (!selectedEntry) return;
@@ -395,7 +417,154 @@ export function AgentActivityPanel({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [selectedEntry]);
 
+  const activityModal = selectedEntry ? (
+    <div className={styles.activityModalOverlay} onClick={closeModal}>
+      <div
+        className={styles.activityModalCard}
+        role="dialog"
+        aria-modal="true"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className={styles.activityModalHeader}>
+          <div>
+            <div className={styles.activityModalTitle}>Activity detail</div>
+            <div className={styles.activityModalSubtitle}>{selectedEntry.content}</div>
+            {selectedEntry.details && (
+              <div className={styles.activityModalMeta}>{selectedEntry.details}</div>
+            )}
+          </div>
+          <button
+            type="button"
+            className={styles.activityModalClose}
+            onClick={closeModal}
+            aria-label="Close activity detail"
+          >
+            X
+          </button>
+        </div>
+
+        <div className={styles.activityModalBody}>
+          <div className={styles.activityModalMetaRow}>
+            <span className="badge">{selectedEntry.type}</span>
+            {selectedEntry.timestamp && (
+              <span className="muted">
+                {selectedEntry.timestamp.toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                })}
+              </span>
+            )}
+          </div>
+
+          {selectedEntry.type === "tool"
+            ? (() => {
+                const toolName =
+                  (selectedEntry.toolName ??
+                  selectedEntry.content.replace("→ ", "").trim()) ||
+                  "Tool";
+                const isShellTool = isShellToolName(toolName);
+                const command = extractCommand(selectedEntry.toolInput);
+                const workdir = extractWorkdir(selectedEntry.toolInput);
+                const shellOutput = extractShellOutput(selectedEntry.toolOutput);
+                const normalizedInput = normalizeValue(selectedEntry.toolInput);
+                const inputRecord = isRecord(normalizedInput) ? normalizedInput : null;
+                const hasExtraInput = inputRecord
+                  ? Object.keys(inputRecord).some(
+                      (key) => key !== "command" && key !== "cmd" && key !== "script"
+                    )
+                  : false;
+                const hasShellOutput =
+                  Boolean(shellOutput.stdout?.trim()) ||
+                  Boolean(shellOutput.stderr?.trim()) ||
+                  (shellOutput.exitCode !== null && shellOutput.exitCode !== undefined);
+
+                return (
+                  <>
+                    <div className={styles.activityDetailSection}>
+                      <div className={styles.detailLabel}>Tool</div>
+                      <div className={styles.activityDetailValue}>{toolName}</div>
+                    </div>
+
+                    <div className={styles.activityDetailSection}>
+                      <div className={styles.detailLabel}>Input</div>
+                      {isShellTool ? (
+                        <div className={styles.activityDetailStack}>
+                          <div className={styles.detailSubLabel}>Command</div>
+                          <HighlightedBlock value={command ?? ""} />
+                          {workdir && (
+                            <div className={styles.activityInlineMeta}>
+                              Working dir: <span className={styles.monoText}>{workdir}</span>
+                            </div>
+                          )}
+                          {hasExtraInput && <div className={styles.detailSubLabel}>Full input</div>}
+                          {hasExtraInput && <HighlightedBlock value={selectedEntry.toolInput} />}
+                        </div>
+                      ) : (
+                        <HighlightedBlock value={selectedEntry.toolInput} />
+                      )}
+                    </div>
+
+                    <div className={styles.activityDetailSection}>
+                      <div className={styles.detailLabel}>Output</div>
+                      {isShellTool ? (
+                        <div className={styles.activityDetailStack}>
+                          {shellOutput.exitCode !== null && shellOutput.exitCode !== undefined && (
+                            <div className={styles.activityInlineMeta}>
+                              Exit code:{" "}
+                              <span className={styles.monoText}>{shellOutput.exitCode}</span>
+                            </div>
+                          )}
+                          <div className={styles.detailSubLabel}>Stdout</div>
+                          <HighlightedBlock
+                            value={shellOutput.stdout ?? ""}
+                            className={styles.stdoutBlock}
+                          />
+                          <div className={styles.detailSubLabel}>Stderr</div>
+                          <HighlightedBlock
+                            value={shellOutput.stderr ?? ""}
+                            className={styles.stderrBlock}
+                          />
+                          {!hasShellOutput && <HighlightedBlock value={selectedEntry.toolOutput} />}
+                        </div>
+                      ) : (
+                        <HighlightedBlock value={selectedEntry.toolOutput} />
+                      )}
+                    </div>
+                  </>
+                );
+              })()
+            : (
+              <div className={styles.activityDetailSection}>
+                <div className={styles.detailLabel}>Details</div>
+                <HighlightedBlock
+                  value={
+                    selectedEntry.fullText ??
+                    selectedEntry.details ??
+                    selectedEntry.raw ??
+                    selectedEntry.content
+                  }
+                />
+              </div>
+            )}
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   if (loading) {
+    if (isOverlay) {
+      return (
+        <div className={styles.activityOverlay}>
+          <div className={styles.activityOverlayHeader}>
+            <div>
+              <div className={styles.activityOverlayTitle}>Agent activity</div>
+              <div className={styles.activityOverlaySubtitle}>Loading live context...</div>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <section className={`card ${styles.activityCard}`}>
         <div className={styles.activityHeader}>
@@ -411,6 +580,18 @@ export function AgentActivityPanel({
   }
 
   if (!project) {
+    if (isOverlay) {
+      return (
+        <div className={styles.activityOverlay}>
+          <div className={styles.activityOverlayHeader}>
+            <div>
+              <div className={styles.activityOverlayTitle}>Agent activity</div>
+              <div className={styles.activityOverlaySubtitle}>Project data unavailable.</div>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <section className={`card ${styles.activityCard}`}>
         <div className={styles.activityHeader}>
@@ -422,6 +603,74 @@ export function AgentActivityPanel({
           </div>
         </div>
       </section>
+    );
+  }
+
+  if (isOverlay) {
+    return (
+      <div className={styles.activityOverlay}>
+        <div className={styles.activityOverlayHeader}>
+          <div>
+            <div className={styles.activityOverlayTitle}>Agent activity</div>
+            <div className={styles.activityOverlaySubtitle}>
+              {hasActiveShift ? `Now ${actionLabel}` : "Idle"}
+            </div>
+          </div>
+          <button
+            type="button"
+            className={styles.activityOverlayToggle}
+            onClick={toggleCollapsed}
+            aria-expanded={!isCollapsed}
+            aria-label={isCollapsed ? "Expand activity log" : "Collapse activity log"}
+          >
+            {isCollapsed ? "Expand" : "Collapse"}
+          </button>
+        </div>
+
+        {!isCollapsed && (
+          <>
+            <div className={styles.activityOverlayMeta}>
+              <span className="badge">{hasActiveShift ? "Active shift" : "Idle"}</span>
+              <span className={styles.activityOverlayStatus}>
+                {logLoading && !logLines.length ? "Loading..." : "Live"}
+                {currentState.isComplete && " • Complete"}
+                {currentState.hasError && " • Error"}
+              </span>
+            </div>
+
+            <div className={styles.activityOverlayLog} ref={logRef}>
+              {showLogError ? (
+                <div className={styles.activityOverlayEmpty}>{logError}</div>
+              ) : activityEntriesToShow.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column" }}>
+                  {activityEntriesToShow.map((entry) => (
+                    <ActivityLogEntry key={entry.id} entry={entry} onSelect={setSelectedEntry} />
+                  ))}
+                </div>
+              ) : (
+                <div className={styles.activityOverlayEmpty}>
+                  {hasActiveShift ? "(waiting for activity...)" : "No active shift."}
+                </div>
+              )}
+            </div>
+
+            <div className={styles.activityOverlayFooter}>
+              <div>
+                {activityEntriesToShow.length > 0
+                  ? hiddenEntryCount > 0
+                    ? `Last ${activityEntriesToShow.length} of ${activityEntries.length}`
+                    : `${activityEntriesToShow.length} events`
+                  : logTail?.has_more
+                    ? "Showing latest"
+                    : ""}
+              </div>
+              {logUpdated && <div>Updated {logUpdated}</div>}
+            </div>
+          </>
+        )}
+
+        {activityModal}
+      </div>
     );
   }
 
@@ -534,131 +783,7 @@ export function AgentActivityPanel({
         </div>
       </div>
 
-      {selectedEntry && (
-        <div className={styles.activityModalOverlay} onClick={closeModal}>
-          <div
-            className={styles.activityModalCard}
-            role="dialog"
-            aria-modal="true"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className={styles.activityModalHeader}>
-              <div>
-                <div className={styles.activityModalTitle}>Activity detail</div>
-                <div className={styles.activityModalSubtitle}>{selectedEntry.content}</div>
-                {selectedEntry.details && (
-                  <div className={styles.activityModalMeta}>{selectedEntry.details}</div>
-                )}
-              </div>
-              <button
-                type="button"
-                className={styles.activityModalClose}
-                onClick={closeModal}
-                aria-label="Close activity detail"
-              >
-                X
-              </button>
-            </div>
-
-            <div className={styles.activityModalBody}>
-              <div className={styles.activityModalMetaRow}>
-                <span className="badge">{selectedEntry.type}</span>
-                {selectedEntry.timestamp && (
-                  <span className="muted">
-                    {selectedEntry.timestamp.toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                      second: "2-digit",
-                    })}
-                  </span>
-                )}
-              </div>
-
-              {selectedEntry.type === "tool" ? (() => {
-                const toolName =
-                  (selectedEntry.toolName ??
-                  selectedEntry.content.replace("→ ", "").trim()) ||
-                  "Tool";
-                const isShellTool = isShellToolName(toolName);
-                const command = extractCommand(selectedEntry.toolInput);
-                const workdir = extractWorkdir(selectedEntry.toolInput);
-                const shellOutput = extractShellOutput(selectedEntry.toolOutput);
-                const normalizedInput = normalizeValue(selectedEntry.toolInput);
-                const inputRecord = isRecord(normalizedInput) ? normalizedInput : null;
-                const hasExtraInput = inputRecord
-                  ? Object.keys(inputRecord).some(
-                      (key) => key !== "command" && key !== "cmd" && key !== "script"
-                    )
-                  : false;
-                const hasShellOutput =
-                  Boolean(shellOutput.stdout?.trim()) ||
-                  Boolean(shellOutput.stderr?.trim()) ||
-                  (shellOutput.exitCode !== null && shellOutput.exitCode !== undefined);
-
-                return (
-                  <>
-                    <div className={styles.activityDetailSection}>
-                      <div className={styles.detailLabel}>Tool</div>
-                      <div className={styles.activityDetailValue}>{toolName}</div>
-                    </div>
-
-                    <div className={styles.activityDetailSection}>
-                      <div className={styles.detailLabel}>Input</div>
-                      {isShellTool ? (
-                        <div className={styles.activityDetailStack}>
-                          <div className={styles.detailSubLabel}>Command</div>
-                          <HighlightedBlock value={command ?? ""} />
-                          {workdir && (
-                            <div className={styles.activityInlineMeta}>
-                              Working dir: <span className={styles.monoText}>{workdir}</span>
-                            </div>
-                          )}
-                          {hasExtraInput && <div className={styles.detailSubLabel}>Full input</div>}
-                          {hasExtraInput && <HighlightedBlock value={selectedEntry.toolInput} />}
-                        </div>
-                      ) : (
-                        <HighlightedBlock value={selectedEntry.toolInput} />
-                      )}
-                    </div>
-
-                    <div className={styles.activityDetailSection}>
-                      <div className={styles.detailLabel}>Output</div>
-                      {isShellTool ? (
-                        <div className={styles.activityDetailStack}>
-                          {shellOutput.exitCode !== null && shellOutput.exitCode !== undefined && (
-                            <div className={styles.activityInlineMeta}>
-                              Exit code: <span className={styles.monoText}>{shellOutput.exitCode}</span>
-                            </div>
-                          )}
-                          <div className={styles.detailSubLabel}>Stdout</div>
-                          <HighlightedBlock value={shellOutput.stdout ?? ""} className={styles.stdoutBlock} />
-                          <div className={styles.detailSubLabel}>Stderr</div>
-                          <HighlightedBlock value={shellOutput.stderr ?? ""} className={styles.stderrBlock} />
-                          {!hasShellOutput && <HighlightedBlock value={selectedEntry.toolOutput} />}
-                        </div>
-                      ) : (
-                        <HighlightedBlock value={selectedEntry.toolOutput} />
-                      )}
-                    </div>
-                  </>
-                );
-              })() : (
-                <div className={styles.activityDetailSection}>
-                  <div className={styles.detailLabel}>Details</div>
-                  <HighlightedBlock
-                    value={
-                      selectedEntry.fullText ??
-                      selectedEntry.details ??
-                      selectedEntry.raw ??
-                      selectedEntry.content
-                    }
-                  />
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {activityModal}
     </section>
   );
 }

@@ -23,7 +23,7 @@ tags:
   - e2e
   - stability
 estimate_hours: 2
-status: ready
+status: done
 created_at: 2026-01-26
 depends_on: []
 era: v2

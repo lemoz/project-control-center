@@ -63,18 +63,17 @@ export function LiveLanding() {
 
       <section className={`card ${styles.canvasSection}`}>
         <LiveOrbitalCanvas data={data} loading={loading} error={error} project={project} focus={focus} />
-      </section>
-
-      <CollapsibleVoiceWidget />
-
-      <section className={styles.activitySection}>
         <AgentActivityPanel
           project={project}
           focus={focus}
           workOrderNodes={data.workOrderNodes ?? []}
           loading={loading}
+          variant="overlay"
+          maxEntries={12}
         />
       </section>
+
+      <CollapsibleVoiceWidget />
 
       <section className={styles.narrationSection}>
         <NarrationPanel emptyStateText={emptyNarrationText} />
