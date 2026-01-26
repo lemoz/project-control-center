@@ -88,7 +88,7 @@ export default async function Page() {
                 <div className="muted" style={{ fontSize: 12 }}>{repo.path}</div>
                 {repo.description && <div className="desc">{repo.description}</div>}
               </div>
-              <div style={{ zIndex: 2 }}>
+              <div style={{ zIndex: 2, position: "relative" }}>
                 <StarToggle repoId={repo.id} initialStarred={repo.starred} />
               </div>
             </div>
@@ -152,7 +152,7 @@ export default async function Page() {
                       <div className="muted" style={{ fontSize: 12 }}>{repo.path}</div>
                       {repo.description && <div className="desc">{repo.description}</div>}
                     </div>
-                    <div style={{ zIndex: 2 }}>
+                    <div style={{ zIndex: 2, position: "relative" }}>
                       <StarToggle repoId={repo.id} initialStarred={repo.starred} />
                     </div>
                   </div>

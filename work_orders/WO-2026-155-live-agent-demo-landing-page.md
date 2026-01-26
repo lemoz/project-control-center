@@ -7,7 +7,7 @@ context:
   - WO-2026-146 Ambient Audio Narration (done)
   - WO-2026-147 Agent-Canvas Focus Sync (done)
   - WO-2026-149 ElevenLabs Voice Agent Setup (done)
-  - WO-2026-150 ElevenLabs Voice Widget (ready)
+  - WO-2026-150 ElevenLabs Voice Widget (done)
   - WO-2026-154 Podcast-Style Narration (done)
   - Visitors land on page and see PCC working on itself
   - The view follows the active agent shift
@@ -38,7 +38,7 @@ tags:
   - voice
   - visualization
 estimate_hours: 4
-status: you_review
+status: ready
 created_at: 2026-01-23
 updated_at: 2026-01-26
 depends_on:
