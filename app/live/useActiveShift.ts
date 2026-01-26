@@ -25,18 +25,23 @@ export function useActiveShift(projectId: string | null, intervalMs = DEFAULT_IN
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inFlightRef = useRef(false);
+  const hasLoadedRef = useRef(false);
 
   const load = useCallback(async () => {
     if (!projectId) {
       setShift(null);
       setError(null);
       setLoading(false);
+      hasLoadedRef.current = false;
       return;
     }
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     setError(null);
-    setLoading(true);
+    // Only show loading on initial load, not on refetches
+    if (!hasLoadedRef.current) {
+      setLoading(true);
+    }
     try {
       const res = await fetch(
         `/api/projects/${encodeURIComponent(projectId)}/shifts/active`,
@@ -59,6 +64,7 @@ export function useActiveShift(projectId: string | null, intervalMs = DEFAULT_IN
     } finally {
       setLoading(false);
       inFlightRef.current = false;
+      hasLoadedRef.current = true;
     }
   }, [projectId]);
 

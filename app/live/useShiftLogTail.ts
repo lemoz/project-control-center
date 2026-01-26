@@ -28,18 +28,23 @@ export function useShiftLogTail(
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const inFlightRef = useRef(false);
+  const hasLoadedRef = useRef(false);
 
   const load = useCallback(async () => {
     if (!projectId || !shiftId) {
       setData(null);
       setError(null);
       setLoading(false);
+      hasLoadedRef.current = false;
       return;
     }
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     setError(null);
-    setLoading(true);
+    // Only show loading on initial load, not on refetches
+    if (!hasLoadedRef.current) {
+      setLoading(true);
+    }
     try {
       const url = new URL(
         `/api/projects/${encodeURIComponent(projectId)}/shifts/${encodeURIComponent(
@@ -60,6 +65,7 @@ export function useShiftLogTail(
     } finally {
       setLoading(false);
       inFlightRef.current = false;
+      hasLoadedRef.current = true;
     }
   }, [lines, projectId, shiftId]);
 

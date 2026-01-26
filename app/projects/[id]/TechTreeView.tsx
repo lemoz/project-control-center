@@ -62,8 +62,9 @@ const ERA_LANES = [
   { id: "v1", label: "v1", color: "#0f766e" },
   { id: "v2", label: "v2", color: "#1d4ed8" },
 ] as const;
-const ERA_LANE_IDS = new Set(ERA_LANES.map((lane) => lane.id));
-const UNASSIGNED_ERA_ID = "unassigned";
+type EraId = (typeof ERA_LANES)[number]["id"] | "unassigned";
+const ERA_LANE_IDS = new Set<string>(ERA_LANES.map((lane) => lane.id));
+const UNASSIGNED_ERA_ID: EraId = "unassigned";
 const UNASSIGNED_ERA = { id: UNASSIGNED_ERA_ID, label: "Unassigned", color: "#475569" };
 
 const NODE_WIDTH = 220;
@@ -305,10 +306,10 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       getDepth(node.id, new Set());
     }
 
-    const normalizeEra = (value: string | null) => {
+    const normalizeEra = (value: string | null): EraId => {
       if (!value) return UNASSIGNED_ERA_ID;
       const trimmed = value.trim();
-      return ERA_LANE_IDS.has(trimmed) ? trimmed : UNASSIGNED_ERA_ID;
+      return ERA_LANE_IDS.has(trimmed) ? (trimmed as EraId) : UNASSIGNED_ERA_ID;
     };
 
     const needsUnassigned = nodes.some((node) => normalizeEra(node.era) === UNASSIGNED_ERA_ID);
