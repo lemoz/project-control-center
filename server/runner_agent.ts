@@ -25,6 +25,7 @@ import {
 } from "./db.js";
 import { VmManagerError, startVM } from "./vm_manager.js";
 import {
+  createScopeCreepDraftWorkOrder,
   listWorkOrders,
   patchWorkOrder,
   readWorkOrderMarkdown,
@@ -1880,6 +1881,20 @@ function reviewerSchema(): object {
     properties: {
       status: { type: "string", enum: ["approved", "changes_requested"] },
       notes: { type: "array", items: { type: "string" } },
+      scope_creep_wos: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            title: { type: "string" },
+            file: { type: "string" },
+            lines: { type: "string" },
+            rationale: { type: "string" },
+          },
+          required: ["title", "file", "lines", "rationale"],
+        },
+      },
     },
     required: ["status", "notes"],
   };
@@ -2138,6 +2153,14 @@ function buildReviewerPrompt(params: {
     `- Changes to files that have no logical connection to the Work Order\n` +
     `- "Cleanup" or "refactoring" disguised as blocking fixes\n` +
     `When rejecting for scope violation, note: "SCOPE VIOLATION: [specific issue]. Only modify files directly related to the WO."\n\n` +
+    `## Scope Creep Capture\n` +
+    `If you spot changes that are out of scope but potentially useful:\n` +
+    `- Set status=changes_requested.\n` +
+    `- Add a note instructing the builder to revert the out-of-scope changes.\n` +
+    `- Populate scope_creep_wos with entries describing the change.\n` +
+    `Each entry must include: title, file, lines, rationale.\n` +
+    `Use "unknown" for lines if you cannot determine them.\n` +
+    `If no scope creep, omit scope_creep_wos or return an empty array.\n\n` +
     `Work Order (${params.workOrderId}):\n\n` +
     `${params.workOrderMarkdown}\n\n` +
     `Diff:\n\n` +
@@ -2215,6 +2238,25 @@ type BuilderChange = {
   reason?: string;
 };
 
+type ReviewerVerdict = {
+  status: "approved" | "changes_requested";
+  notes: string[];
+  scope_creep_wos?: unknown;
+};
+
+type ScopeCreepWorkOrderDraft = {
+  title: string;
+  file: string;
+  lines: string;
+  rationale: string;
+};
+
+type ScopeCreepNormalization = {
+  items: ScopeCreepWorkOrderDraft[];
+  hasNonArrayInput: boolean;
+  hasInvalidEntries: boolean;
+};
+
 type RunIterationHistoryEntry = {
   iteration: number;
   builder_summary: string | null;
@@ -2244,6 +2286,70 @@ function normalizeBuilderChanges(value: unknown): BuilderChange[] {
     changes.push(change);
   }
   return changes;
+}
+
+function normalizeScopeCreepWos(value: unknown): ScopeCreepNormalization {
+  if (value === undefined) {
+    return { items: [], hasNonArrayInput: false, hasInvalidEntries: false };
+  }
+  if (!Array.isArray(value)) {
+    return { items: [], hasNonArrayInput: true, hasInvalidEntries: false };
+  }
+  const items: ScopeCreepWorkOrderDraft[] = [];
+  let hasInvalidEntries = false;
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      hasInvalidEntries = true;
+      continue;
+    }
+    const record = entry as {
+      title?: unknown;
+      file?: unknown;
+      lines?: unknown;
+      rationale?: unknown;
+    };
+    const title = typeof record.title === "string" ? record.title.trim() : "";
+    const file = typeof record.file === "string" ? record.file.trim() : "";
+    const lines = typeof record.lines === "string" ? record.lines.trim() : "";
+    const rationale =
+      typeof record.rationale === "string" ? record.rationale.trim() : "";
+    if (!title || !file || !rationale) {
+      hasInvalidEntries = true;
+      continue;
+    }
+    items.push({
+      title,
+      file,
+      lines: lines || "unknown",
+      rationale,
+    });
+  }
+  return { items, hasNonArrayInput: false, hasInvalidEntries };
+}
+
+function logScopeCreepNormalizationIssues(
+  log: (line: string) => void,
+  raw: unknown,
+  normalized: ScopeCreepNormalization,
+  context?: string
+) {
+  if (raw === undefined) return;
+  const prefix = context ? `${context} ` : "";
+  if (normalized.hasNonArrayInput) {
+    log(`${prefix}scope_creep_wos present but not an array; skipping draft WO creation`);
+    return;
+  }
+  if (normalized.hasInvalidEntries) {
+    log(`${prefix}scope_creep_wos contains invalid entries; ignoring invalid entries`);
+  }
+}
+
+function ensureScopeCreepRevertNote(notes: string[]): string[] {
+  if (notes.some((note) => /revert/i.test(note))) return notes;
+  return [
+    ...notes,
+    "Revert out-of-scope changes captured in scope_creep_wos.",
+  ];
 }
 
 function buildConflictContext(params: {
@@ -3703,14 +3809,11 @@ export async function runRun(runId: string) {
         return;
       }
 
-      let verdict:
-        | { status: "approved" | "changes_requested"; notes: string[] }
-        | null = null;
+      let verdict: ReviewerVerdict | null = null;
       try {
-        verdict = JSON.parse(fs.readFileSync(reviewerOutputPath, "utf8")) as {
-          status: "approved" | "changes_requested";
-          notes: string[];
-        };
+        verdict = JSON.parse(
+          fs.readFileSync(reviewerOutputPath, "utf8")
+        ) as ReviewerVerdict;
       } catch {
         verdict = {
           status: "changes_requested",
@@ -3718,9 +3821,22 @@ export async function runRun(runId: string) {
         };
       }
 
-      recordReviewerOutcome(verdict.status);
+      const scopeCreepRaw = verdict.scope_creep_wos;
+      const scopeCreep = normalizeScopeCreepWos(scopeCreepRaw);
+      const scopeCreepWos = scopeCreep.items;
+      logScopeCreepNormalizationIssues(log, scopeCreepRaw, scopeCreep);
+
       reviewerVerdict = verdict.status;
-      reviewerNotes = verdict.notes || [];
+      reviewerNotes = Array.isArray(verdict.notes) ? verdict.notes : [];
+      if (scopeCreepWos.length) {
+        reviewerNotes = ensureScopeCreepRevertNote(reviewerNotes);
+        if (reviewerVerdict === "approved") {
+          log("Reviewer approved but scope_creep_wos present; treating as changes_requested");
+          reviewerVerdict = "changes_requested";
+        }
+      }
+
+      recordReviewerOutcome(reviewerVerdict);
       updateRun(runId, {
         reviewer_verdict: reviewerVerdict,
         reviewer_notes: JSON.stringify(reviewerNotes),
@@ -3731,14 +3847,33 @@ export async function runRun(runId: string) {
       iterationHistory.push(historyEntry);
       writeIterationHistory();
 
-      if (verdict.status === "approved") {
+      if (scopeCreepWos.length) {
+        for (const entry of scopeCreepWos) {
+          try {
+            const draft = createScopeCreepDraftWorkOrder(repoPath, {
+              title: entry.title,
+              file: entry.file,
+              lines: entry.lines,
+              rationale: entry.rationale,
+              sourceWorkOrderId: workOrder.id,
+              era: workOrder.era,
+              base_branch: workOrder.base_branch,
+            });
+            log(`Drafted scope creep WO ${draft.id}: ${draft.title}`);
+          } catch (err) {
+            log(`Failed to draft scope creep WO "${entry.title}": ${String(err)}`);
+          }
+        }
+      }
+
+      if (reviewerVerdict === "approved") {
         approvedSummary = builderResult?.summary || "(no builder summary)";
         log(`Reviewer approved on iteration ${iteration}`);
         break;
       }
 
       log(`Reviewer requested changes on iteration ${iteration}`);
-      reviewerFeedback = verdict.notes.join("\n");
+      reviewerFeedback = reviewerNotes.join("\n");
     }
 
     if (reviewerVerdict !== "approved") {
@@ -4245,13 +4380,11 @@ export async function runRun(runId: string) {
         };
       }
 
-      let mergeVerdict:
-        | { status: "approved" | "changes_requested"; notes: string[] }
-        | null = null;
+      let mergeVerdict: ReviewerVerdict | null = null;
       try {
         mergeVerdict = JSON.parse(
           fs.readFileSync(mergeReviewerOutputPath, "utf8")
-        ) as { status: "approved" | "changes_requested"; notes: string[] };
+        ) as ReviewerVerdict;
       } catch {
         mergeVerdict = {
           status: "changes_requested",
@@ -4259,10 +4392,50 @@ export async function runRun(runId: string) {
         };
       }
 
+      const mergeScopeCreepRaw = mergeVerdict.scope_creep_wos;
+      const mergeScopeCreep = normalizeScopeCreepWos(mergeScopeCreepRaw);
+      const mergeScopeCreepWos = mergeScopeCreep.items;
+      logScopeCreepNormalizationIssues(
+        log,
+        mergeScopeCreepRaw,
+        mergeScopeCreep,
+        "merge reviewer"
+      );
+
+      let mergeReviewerNotes = Array.isArray(mergeVerdict.notes)
+        ? mergeVerdict.notes
+        : [];
+      if (mergeScopeCreepWos.length) {
+        mergeReviewerNotes = ensureScopeCreepRevertNote(mergeReviewerNotes);
+        if (mergeVerdict.status === "approved") {
+          log("Merge reviewer approved but scope_creep_wos present; treating as changes_requested");
+          mergeVerdict.status = "changes_requested";
+        }
+      }
+
+      if (mergeScopeCreepWos.length) {
+        for (const entry of mergeScopeCreepWos) {
+          try {
+            const draft = createScopeCreepDraftWorkOrder(repoPath, {
+              title: entry.title,
+              file: entry.file,
+              lines: entry.lines,
+              rationale: entry.rationale,
+              sourceWorkOrderId: workOrder.id,
+              era: workOrder.era,
+              base_branch: workOrder.base_branch,
+            });
+            log(`Drafted scope creep WO ${draft.id}: ${draft.title}`);
+          } catch (err) {
+            log(`Failed to draft scope creep WO "${entry.title}": ${String(err)}`);
+          }
+        }
+      }
+
       if (mergeVerdict.status !== "approved") {
-        reviewerNotes = mergeVerdict.notes || reviewerNotes;
+        reviewerNotes = mergeReviewerNotes;
         finishMergeConflict(
-          `Merge reviewer requested changes: ${(mergeVerdict.notes || []).join("; ")}`,
+          `Merge reviewer requested changes: ${mergeReviewerNotes.join("; ")}`,
           conflictDetails.conflictingRunId,
           conflictFiles
         );

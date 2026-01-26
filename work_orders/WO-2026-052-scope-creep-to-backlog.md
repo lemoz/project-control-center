@@ -24,7 +24,7 @@ tags:
   - workflow
   - backlog
 estimate_hours: 3
-status: ready
+status: you_review
 created_at: 2026-01-10
 updated_at: 2026-01-26
 depends_on: []
