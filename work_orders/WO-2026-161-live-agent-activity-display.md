@@ -26,7 +26,7 @@ tags:
   - ui
   - agent
 estimate_hours: 3
-status: you_review
+status: done
 created_at: 2026-01-26
 depends_on:
   - WO-2026-155

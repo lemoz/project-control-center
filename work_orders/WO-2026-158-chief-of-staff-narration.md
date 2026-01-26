@@ -34,9 +34,9 @@ tags:
   - llm
   - ux
 estimate_hours: 4
-status: you_review
+status: done
 created_at: 2026-01-25
-updated_at: 2026-01-25
+updated_at: 2026-01-26
 depends_on:
   - WO-2026-154
 era: v2

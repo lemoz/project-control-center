@@ -1,7 +1,7 @@
 ---
 id: WO-2026-160
 title: Start Shift Button on Live Page
-status: you_review
+status: done
 priority: 2
 track: live-demo
 estimate_hours: 2
