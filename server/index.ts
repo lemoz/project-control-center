@@ -3804,23 +3804,43 @@ app.patch("/runs/:runId", (req, res) => {
     return res.status(400).json({ error: "request body required" });
   }
 
-  const allowedFields = ["status", "merge_status", "error"] as const;
-  const patch: Partial<{ status: string; merge_status: string; error: string }> = {};
+  const validStatuses = [
+    "queued", "baseline_failed", "building", "waiting_for_input",
+    "ai_review", "testing", "you_review", "merged", "merge_conflict",
+    "failed", "canceled", "superseded",
+  ] as const;
+  const validMergeStatuses = ["pending", "merged", "conflict"] as const;
 
-  for (const field of allowedFields) {
-    if (field in body && typeof body[field] === "string") {
-      patch[field] = body[field] as string;
+  type RunPatch = Parameters<typeof updateRun>[1];
+  const patch: RunPatch = {};
+
+  if ("status" in body && typeof body.status === "string") {
+    if (validStatuses.includes(body.status as typeof validStatuses[number])) {
+      patch.status = body.status as typeof validStatuses[number];
+    } else {
+      return res.status(400).json({ error: `invalid status: ${body.status}` });
     }
+  }
+
+  if ("merge_status" in body && typeof body.merge_status === "string") {
+    if (validMergeStatuses.includes(body.merge_status as typeof validMergeStatuses[number])) {
+      patch.merge_status = body.merge_status as typeof validMergeStatuses[number];
+    } else {
+      return res.status(400).json({ error: `invalid merge_status: ${body.merge_status}` });
+    }
+  }
+
+  if ("error" in body && typeof body.error === "string") {
+    patch.error = body.error;
   }
 
   if (Object.keys(patch).length === 0) {
     return res.status(400).json({ error: "no valid fields to update" });
   }
 
-  // Add finished_at if transitioning to a terminal status
-  const terminalStatuses = ["merged", "failed", "canceled", "rejected"];
+  const terminalStatuses = ["merged", "failed", "canceled"];
   if (patch.status && terminalStatuses.includes(patch.status) && !run.finished_at) {
-    (patch as Record<string, string>).finished_at = new Date().toISOString();
+    patch.finished_at = new Date().toISOString();
   }
 
   const updated = updateRun(req.params.runId, patch);

@@ -99,6 +99,7 @@ export function LiveOrbitalCanvas({
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0, dpr: 1 });
   const [mode, setMode] = useState<CanvasMode>("follow");
   const [highlightedWorkOrderId, setHighlightedWorkOrderId] = useState<string | null>(null);
+  const [showAllWOs, setShowAllWOs] = useState(false);
   const lastFrame = useRef<number | null>(null);
   const lastInteractionRef = useRef(Date.now());
   const focusRef = useRef<AgentFocus | null>(null);
@@ -132,11 +133,15 @@ export function LiveOrbitalCanvas({
   }, [data.workOrderNodes, projectId]);
 
   const workOrderFilter = useMemo<WorkOrderFilter>(() => {
+    // User override takes precedence
+    if (showAllWOs) {
+      return "all";
+    }
     if (!hasActiveShift || activeWorkOrderNodes.length === 0) {
       return "all";
     }
     return "active";
-  }, [activeWorkOrderNodes.length, hasActiveShift]);
+  }, [activeWorkOrderNodes.length, hasActiveShift, showAllWOs]);
 
   const initialWorkOrderFilter = useRef<WorkOrderFilter>(workOrderFilter);
 
@@ -603,6 +608,34 @@ export function LiveOrbitalCanvas({
       )}
 
       {overlayContent}
+
+      {/* Filter toggle */}
+      <div
+        style={{
+          position: "absolute",
+          top: 12,
+          left: 12,
+          display: "flex",
+          gap: 6,
+          zIndex: 5,
+        }}
+      >
+        <button
+          type="button"
+          className={showAllWOs ? "btn" : "btnSecondary"}
+          style={{ fontSize: 12, padding: "4px 10px" }}
+          onClick={() => setShowAllWOs((prev) => !prev)}
+          title={showAllWOs ? "Showing all WOs" : "Showing active WOs only"}
+        >
+          {showAllWOs ? "All WOs" : "Active only"}
+        </button>
+        <span
+          className="muted"
+          style={{ fontSize: 11, alignSelf: "center" }}
+        >
+          {workOrderNodes.length} visible
+        </span>
+      </div>
     </div>
   );
 }
