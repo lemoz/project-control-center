@@ -1,4 +1,7 @@
+"use client";
+
 import Link from "next/link";
+import { useCallback, useState } from "react";
 import type { AgentFocus } from "../playground/canvas/useAgentFocus";
 import type { ProjectNode } from "../playground/canvas/types";
 
@@ -14,6 +17,34 @@ function formatRunStatus(status?: string): string | null {
 }
 
 export function ShiftStatusBar({ focus, project, loading }: ShiftStatusBarProps) {
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const projectId = project?.id ?? null;
+
+  const startShift = useCallback(async () => {
+    if (!projectId) return;
+    setStarting(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/projects/${encodeURIComponent(projectId)}/shifts/spawn`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }
+      );
+      const json = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok) {
+        throw new Error(json?.error || "Failed to start shift.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start shift.");
+    } finally {
+      setStarting(false);
+    }
+  }, [projectId]);
+
   if (loading) {
     return <span className="badge">Loading shift...</span>;
   }
@@ -49,27 +80,33 @@ export function ShiftStatusBar({ focus, project, loading }: ShiftStatusBarProps)
   const lastFocusWorkOrder = activeWorkOrderId;
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-      <span className="badge">No active shift</span>
-      {lastFocusWorkOrder ? (
-        <Link
-          href={`/projects/${encodeURIComponent(project.id)}/work-orders/${encodeURIComponent(
-            lastFocusWorkOrder
-          )}`}
-          className="muted"
-          style={{ fontSize: 12 }}
-        >
-          Last focus {lastFocusWorkOrder}
-        </Link>
-      ) : (
-        <Link
-          href={`/projects/${encodeURIComponent(project.id)}`}
-          className="muted"
-          style={{ fontSize: 12 }}
-        >
-          Explore {project.name}
-        </Link>
-      )}
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span className="badge">No active shift</span>
+        <button className="btn" type="button" onClick={() => void startShift()} disabled={starting}>
+          {starting ? "Starting..." : "Start Shift"}
+        </button>
+        {lastFocusWorkOrder ? (
+          <Link
+            href={`/projects/${encodeURIComponent(project.id)}/work-orders/${encodeURIComponent(
+              lastFocusWorkOrder
+            )}`}
+            className="muted"
+            style={{ fontSize: 12 }}
+          >
+            Last focus {lastFocusWorkOrder}
+          </Link>
+        ) : (
+          <Link
+            href={`/projects/${encodeURIComponent(project.id)}`}
+            className="muted"
+            style={{ fontSize: 12 }}
+          >
+            Explore {project.name}
+          </Link>
+        )}
+      </div>
+      {!!error && <div className="error">{error}</div>}
     </div>
   );
 }
