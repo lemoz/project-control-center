@@ -113,6 +113,8 @@ type Viewport = {
   height: number;
 };
 
+type ViewMode = "era" | "depth";
+
 export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: () => void }) {
   const [data, setData] = useState<TechTreeResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -121,6 +123,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [collapsedLanes, setCollapsedLanes] = useState<Record<string, boolean>>({});
   const [scale, setScale] = useState(1);
+  const [viewMode, setViewMode] = useState<ViewMode>("depth");
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, width: 0, height: 0 });
   const [isScaleReady, setIsScaleReady] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -263,8 +266,8 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
     void load();
   }, [load]);
 
-  // Calculate node positions based on era lanes + track lanes
-  const { nodePositions, svgWidth, svgHeight, lanes, eraColumns } = useMemo(() => {
+  // Calculate node positions based on view mode (era lanes or depth) + track lanes
+  const { nodePositions, svgWidth, svgHeight, lanes, eraColumns, maxDepth } = useMemo(() => {
     if (!data)
       return {
         nodePositions: new Map<string, { x: number; y: number }>(),
@@ -272,6 +275,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
         svgHeight: 600,
         lanes: [] as LaneLayout[],
         eraColumns: [] as EraLaneLayout[],
+        maxDepth: 0,
       };
 
     const nodes = data.nodes;
@@ -306,19 +310,24 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       getDepth(node.id, new Set());
     }
 
+    const computedMaxDepth = Math.max(...Array.from(depths.values()), 0);
+
     const normalizeEra = (value: string | null): EraId => {
       if (!value) return UNASSIGNED_ERA_ID;
       const trimmed = value.trim();
       return ERA_LANE_IDS.has(trimmed) ? (trimmed as EraId) : UNASSIGNED_ERA_ID;
     };
 
+    // Era columns only used in era view mode
     const needsUnassigned = nodes.some((node) => normalizeEra(node.era) === UNASSIGNED_ERA_ID);
     const eraList = needsUnassigned ? [...ERA_LANES, UNASSIGNED_ERA] : [...ERA_LANES];
-    const eraLayouts: EraLaneLayout[] = eraList.map((lane, index) => ({
-      ...lane,
-      x: LEFT_PADDING + index * ERA_COLUMN_WIDTH,
-      width: ERA_COLUMN_WIDTH,
-    }));
+    const eraLayouts: EraLaneLayout[] = viewMode === "era"
+      ? eraList.map((lane, index) => ({
+          ...lane,
+          x: LEFT_PADDING + index * ERA_COLUMN_WIDTH,
+          width: ERA_COLUMN_WIDTH,
+        }))
+      : [];
     const eraIndexById = new Map(eraLayouts.map((lane, index) => [lane.id, index]));
 
     const lanesById = new Map<string, { id: string; name: string; color: string | null; nodes: DependencyNode[]; isUnassigned: boolean }>();
@@ -385,10 +394,18 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       });
 
       visibleNodes.forEach((node, idx) => {
-        const eraId = normalizeEra(node.era);
-        const eraIndex = eraIndexById.get(eraId) ?? 0;
+        let xPos: number;
+        if (viewMode === "era") {
+          const eraId = normalizeEra(node.era);
+          const eraIndex = eraIndexById.get(eraId) ?? 0;
+          xPos = LEFT_PADDING + eraIndex * ERA_COLUMN_WIDTH;
+        } else {
+          // Depth-based positioning
+          const nodeDepth = depths.get(node.id) ?? 0;
+          xPos = LEFT_PADDING + nodeDepth * (NODE_WIDTH + HORIZONTAL_GAP);
+        }
         positions.set(node.id, {
-          x: LEFT_PADDING + eraIndex * ERA_COLUMN_WIDTH,
+          x: xPos,
           y: laneTop + LANE_HEADER_HEIGHT + LANE_PADDING_Y + idx * (NODE_HEIGHT + VERTICAL_GAP),
         });
       });
@@ -396,9 +413,14 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       yOffset += laneHeight + LANE_GAP;
     }
 
-    const columnCount = Math.max(1, eraLayouts.length);
-    const width =
-      LEFT_PADDING + columnCount * ERA_COLUMN_WIDTH - HORIZONTAL_GAP + RIGHT_PADDING;
+    let width: number;
+    if (viewMode === "era") {
+      const columnCount = Math.max(1, eraLayouts.length);
+      width = LEFT_PADDING + columnCount * ERA_COLUMN_WIDTH - HORIZONTAL_GAP + RIGHT_PADDING;
+    } else {
+      // Depth-based width
+      width = LEFT_PADDING + (computedMaxDepth + 1) * (NODE_WIDTH + HORIZONTAL_GAP) + RIGHT_PADDING;
+    }
     const height = Math.max(400, yOffset - LANE_GAP + BOTTOM_PADDING);
 
     return {
@@ -407,8 +429,9 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       svgHeight: height,
       lanes: laneLayouts,
       eraColumns: eraLayouts,
+      maxDepth: computedMaxDepth,
     };
-  }, [data, collapsedLanes]);
+  }, [data, collapsedLanes, viewMode]);
 
   const fitToScreen = useCallback(() => {
     const container = containerRef.current;
@@ -595,6 +618,23 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
           )}
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center", pointerEvents: "auto" }}>
+          {/* View mode toggle */}
+          <div style={{ display: "flex", alignItems: "center", gap: 4, marginRight: 8 }}>
+            <button
+              className={viewMode === "depth" ? "btn" : "btnSecondary"}
+              onClick={() => setViewMode("depth")}
+              style={{ padding: "4px 10px", fontSize: 11 }}
+            >
+              Depth
+            </button>
+            <button
+              className={viewMode === "era" ? "btn" : "btnSecondary"}
+              onClick={() => setViewMode("era")}
+              style={{ padding: "4px 10px", fontSize: 11 }}
+            >
+              Era
+            </button>
+          </div>
           {/* Legend */}
           {Object.entries(STATUS_COLORS).map(([status, color]) => (
             <div key={status} style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -602,7 +642,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
               <span style={{ fontSize: 11, color: "#aaa" }}>{STATUS_LABELS[status as WorkOrderStatus]}</span>
             </div>
           ))}
-          {eraColumns.length > 0 && (
+          {viewMode === "era" && eraColumns.length > 0 && (
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: 10 }}>
               {eraColumns.map((lane) => (
                 <div key={lane.id} style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -619,6 +659,11 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
                 </div>
               ))}
             </div>
+          )}
+          {viewMode === "depth" && (
+            <span style={{ fontSize: 11, color: "#aaa", marginLeft: 10 }}>
+              {maxDepth + 1} depth levels
+            </span>
           )}
           <button className="btnSecondary" onClick={() => void load()} style={{ marginLeft: 12 }}>
             Refresh
@@ -651,8 +696,8 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
               willChange: "transform",
             }}
           >
-            {/* Era lanes */}
-            {eraColumns.map((lane) => (
+            {/* Era lanes - only in era view mode */}
+            {viewMode === "era" && eraColumns.map((lane) => (
               <rect
                 key={`era-bg-${lane.id}`}
                 x={lane.x}
@@ -664,8 +709,8 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
               />
             ))}
 
-            {/* Era labels */}
-            {eraColumns.map((lane) => (
+            {/* Era labels - only in era view mode */}
+            {viewMode === "era" && eraColumns.map((lane) => (
               <text
                 key={`era-label-${lane.id}`}
                 x={lane.x + NODE_WIDTH / 2}
@@ -676,6 +721,21 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
                 fontWeight={600}
               >
                 {lane.label}
+              </text>
+            ))}
+
+            {/* Depth labels - only in depth view mode */}
+            {viewMode === "depth" && Array.from({ length: maxDepth + 1 }, (_, i) => (
+              <text
+                key={`depth-label-${i}`}
+                x={LEFT_PADDING + i * (NODE_WIDTH + HORIZONTAL_GAP) + NODE_WIDTH / 2}
+                y={TOP_PADDING - 18}
+                textAnchor="middle"
+                fill="#94a3b8"
+                fontSize={12}
+                fontWeight={600}
+              >
+                Depth {i}
               </text>
             ))}
 
