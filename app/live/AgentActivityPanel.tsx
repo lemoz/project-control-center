@@ -338,7 +338,7 @@ export function AgentActivityPanel({
   const closeModal = useCallback(() => setSelectedEntry(null), []);
 
   const activeWorkOrderId =
-    focus?.kind === "work_order" && focus.source === "active_run"
+    focus?.kind === "work_order" && (focus.source === "active_run" || focus.source === "log")
       ? focus.workOrderId ?? null
       : null;
   const lastFocusWorkOrderId =

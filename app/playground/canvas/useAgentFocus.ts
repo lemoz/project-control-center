@@ -27,7 +27,7 @@ export type AgentFocus = {
   workOrderId?: string;
   runId?: string;
   status?: RunStatus;
-  source: "active_run" | "handoff" | "idle";
+  source: "active_run" | "handoff" | "log" | "idle";
   updatedAt: string;
 };
 
@@ -35,6 +35,17 @@ type FocusSyncOptions = {
   intervalMs?: number;
   hiddenIntervalMs?: number;
   debounceMs?: number;
+};
+
+type ActiveShift = {
+  id: string;
+  started_at?: string | null;
+};
+
+type ShiftLogTail = {
+  lines: string[];
+  has_more: boolean;
+  log_path?: string;
 };
 
 const RUN_STATUS_PRIORITY: RunStatus[][] = [
@@ -45,6 +56,8 @@ const RUN_STATUS_PRIORITY: RunStatus[][] = [
 ];
 
 const WO_ID_REGEX = /WO-\d{4}-\d+/;
+const WO_ID_REGEX_GLOBAL = /WO-\d{4}-\d+/g;
+const LOG_TAIL_LINES = 160;
 
 function usePageVisibility(): boolean {
   const [isVisible, setIsVisible] = useState(
@@ -71,6 +84,21 @@ function extractWorkOrderIdFromText(text: string): string | null {
   return match ? match[0] : null;
 }
 
+function extractLatestWorkOrderIdFromText(text: string): string | null {
+  const matches = text.match(WO_ID_REGEX_GLOBAL);
+  if (!matches || matches.length === 0) return null;
+  return matches[matches.length - 1] ?? null;
+}
+
+function extractWorkOrderIdFromLogLines(lines: string[]): string | null {
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    const match = extractLatestWorkOrderIdFromText(line);
+    if (match) return match;
+  }
+  return null;
+}
+
 function extractWorkOrderIdFromHandoff(handoff: ShiftContextHandoff | null): string | null {
   if (!handoff) return null;
   for (const line of handoff.next_priorities ?? []) {
@@ -84,6 +112,10 @@ function extractWorkOrderIdFromHandoff(handoff: ShiftContextHandoff | null): str
     if (matchRationale) return matchRationale;
   }
   return null;
+}
+
+function isActiveShift(value: unknown): value is ActiveShift {
+  return Boolean(value && typeof value === "object" && "id" in value);
 }
 
 function resolveAgentFocus(context: ShiftContext): AgentFocus {
@@ -149,6 +181,50 @@ async function fetchShiftContext(projectId: string): Promise<ShiftContext | null
   return json as ShiftContext;
 }
 
+async function fetchActiveShift(projectId: string): Promise<ActiveShift | null> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/shifts/active`,
+    { cache: "no-store" }
+  ).catch(() => null);
+  if (!res) return null;
+  const json = (await res.json().catch(() => null)) as unknown;
+  if (!res.ok) return null;
+  return isActiveShift(json) ? (json as ActiveShift) : null;
+}
+
+async function fetchShiftLogTail(
+  projectId: string,
+  shiftId: string,
+  tailLines = LOG_TAIL_LINES
+): Promise<ShiftLogTail | null> {
+  const url = new URL(
+    `/api/projects/${encodeURIComponent(projectId)}/shifts/${encodeURIComponent(shiftId)}/logs`,
+    window.location.origin
+  );
+  url.searchParams.set("tail", String(tailLines));
+  const res = await fetch(url.toString(), { cache: "no-store" }).catch(() => null);
+  if (!res) return null;
+  const json = (await res.json().catch(() => null)) as ShiftLogTail | { error?: string } | null;
+  if (!res.ok) return null;
+  if (!json || typeof json !== "object") return null;
+  if (!("lines" in json)) return null;
+  return json as ShiftLogTail;
+}
+
+async function resolveLogFocus(projectId: string): Promise<AgentFocus | null> {
+  const shift = await fetchActiveShift(projectId);
+  if (!shift?.id) return null;
+  const logTail = await fetchShiftLogTail(projectId, shift.id);
+  const workOrderId = extractWorkOrderIdFromLogLines(logTail?.lines ?? []);
+  if (!workOrderId) return null;
+  return {
+    kind: "work_order",
+    workOrderId,
+    source: "log",
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export function useAgentFocusSync(
   projectId: string | null,
   options: FocusSyncOptions = {}
@@ -193,9 +269,27 @@ export function useAgentFocusSync(
       if (!active || inFlightRef.current) return;
       inFlightRef.current = true;
       try {
-        const context = await fetchShiftContext(projectId);
-        if (!context) return;
-        const nextFocus = resolveAgentFocus(context);
+        const [context, logFocus] = await Promise.all([
+          fetchShiftContext(projectId),
+          resolveLogFocus(projectId),
+        ]);
+        if (!context && !logFocus) return;
+        const contextFocus = context ? resolveAgentFocus(context) : null;
+        let nextFocus = logFocus ?? contextFocus;
+        if (!nextFocus) return;
+        if (
+          logFocus &&
+          contextFocus &&
+          logFocus.kind === "work_order" &&
+          contextFocus.kind === "work_order" &&
+          logFocus.workOrderId === contextFocus.workOrderId
+        ) {
+          nextFocus = {
+            ...logFocus,
+            runId: contextFocus.runId,
+            status: contextFocus.status,
+          };
+        }
         if (!isSameFocus(nextFocus, focusRef.current)) {
           applyFocus(nextFocus);
         }
