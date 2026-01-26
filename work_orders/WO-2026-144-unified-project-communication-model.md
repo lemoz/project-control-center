@@ -35,9 +35,9 @@ tags:
   - communication
   - database
 estimate_hours: 6
-status: you_review
+status: done
 created_at: 2026-01-22
-updated_at: 2026-01-23
+updated_at: 2026-01-26
 depends_on:
   - WO-2026-137
 era: v2
