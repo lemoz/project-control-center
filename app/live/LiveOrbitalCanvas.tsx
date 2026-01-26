@@ -34,6 +34,7 @@ import {
 const IDLE_TIMEOUT_MS = 30000;
 const FOCUS_CENTER_ATTEMPTS = 60;
 const MAX_VOICE_CONTEXT_ITEMS = 16;
+const FOLLOW_ANIMATION_MS = 650;
 
 const FOCUS_RING_COLORS: Record<string, string> = {
   waiting_for_input: "#fbbf24",
@@ -61,6 +62,10 @@ function formatActivity(value: Date | null): string {
 
 function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
+}
+
+function easeOutCubic(value: number): number {
+  return 1 - Math.pow(1 - value, 3);
 }
 
 function toVoiceNode(node: VisualizationNode): CanvasVoiceNode {
@@ -120,6 +125,8 @@ export function LiveOrbitalCanvas({
   const [highlightedWorkOrderId, setHighlightedWorkOrderId] = useState<string | null>(null);
   const [showAllWOs, setShowAllWOs] = useState(false);
   const lastFrame = useRef<number | null>(null);
+  const followAnimationRef = useRef<number | null>(null);
+  const autoSelectRef = useRef<string | null>(null);
   const lastInteractionRef = useRef(Date.now());
   const focusRef = useRef<AgentFocus | null>(null);
   const focusNodeRef = useRef<WorkOrderNode | null>(null);
@@ -136,7 +143,9 @@ export function LiveOrbitalCanvas({
 
   const projectId = project?.id ?? null;
   const hasActiveShift = Boolean(
-    focus?.kind === "work_order" && focus.source === "active_run" && focus.workOrderId
+    focus?.kind === "work_order" &&
+      focus.workOrderId &&
+      (focus.source === "active_run" || focus.source === "log")
   );
 
   const focusNodeId = useMemo(() => {
@@ -200,6 +209,7 @@ export function LiveOrbitalCanvas({
     tooltipPosition,
     isPanning,
     clearSelection,
+    selectNode,
     handlers,
   } = useCanvasInteraction({
     canvasRef,
@@ -291,6 +301,39 @@ export function LiveOrbitalCanvas({
     lastInteractionRef.current = Date.now();
     setMode("follow");
   }, []);
+
+  const startFollowAnimation = useCallback(
+    (targetOffsetX: number, targetOffsetY: number) => {
+      if (followAnimationRef.current) {
+        window.cancelAnimationFrame(followAnimationRef.current);
+      }
+      const startTransform = transformRef.current;
+      const startOffsetX = startTransform.offsetX;
+      const startOffsetY = startTransform.offsetY;
+      const distance = Math.hypot(targetOffsetX - startOffsetX, targetOffsetY - startOffsetY);
+      if (distance < 1) return;
+      const startedAt = performance.now();
+
+      const step = (now: number) => {
+        const elapsed = now - startedAt;
+        const progress = Math.min(1, elapsed / FOLLOW_ANIMATION_MS);
+        const eased = easeOutCubic(progress);
+        const nextOffsetX = startOffsetX + (targetOffsetX - startOffsetX) * eased;
+        const nextOffsetY = startOffsetY + (targetOffsetY - startOffsetY) * eased;
+        setTransform((prev) => ({
+          ...prev,
+          offsetX: nextOffsetX,
+          offsetY: nextOffsetY,
+        }));
+        if (progress < 1) {
+          followAnimationRef.current = window.requestAnimationFrame(step);
+        }
+      };
+
+      followAnimationRef.current = window.requestAnimationFrame(step);
+    },
+    [setTransform]
+  );
 
   const focusCanvasNode = useCallback(
     (nodeId: string) => {
@@ -431,6 +474,14 @@ export function LiveOrbitalCanvas({
   }, [focusNode]);
 
   useEffect(() => {
+    if (mode !== "follow") return;
+    if (!focusNode) return;
+    if (autoSelectRef.current === focusNode.id) return;
+    autoSelectRef.current = focusNode.id;
+    selectNode(focusNode.id);
+  }, [focusNode, mode, selectNode]);
+
+  useEffect(() => {
     highlightedNodeRef.current = highlightedNode;
   }, [highlightedNode]);
 
@@ -476,11 +527,10 @@ export function LiveOrbitalCanvas({
       attempts += 1;
       if (focusNode.x !== undefined && focusNode.y !== undefined) {
         const { x, y } = focusNode;
-        setTransform((prev) => ({
-          ...prev,
-          offsetX: canvasSize.width / 2 - x * prev.scale,
-          offsetY: canvasSize.height / 2 - y * prev.scale,
-        }));
+        const scale = transformRef.current.scale;
+        const targetOffsetX = canvasSize.width / 2 - x * scale;
+        const targetOffsetY = canvasSize.height / 2 - y * scale;
+        startFollowAnimation(targetOffsetX, targetOffsetY);
         return;
       }
       if (attempts < FOCUS_CENTER_ATTEMPTS) {
@@ -489,8 +539,14 @@ export function LiveOrbitalCanvas({
     };
 
     rafId = window.requestAnimationFrame(attemptCenter);
-    return () => window.cancelAnimationFrame(rafId);
-  }, [canvasSize.height, canvasSize.width, focusNode, hasActiveShift, mode, setTransform]);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      if (followAnimationRef.current) {
+        window.cancelAnimationFrame(followAnimationRef.current);
+        followAnimationRef.current = null;
+      }
+    };
+  }, [canvasSize.height, canvasSize.width, focusNode, hasActiveShift, mode, startFollowAnimation]);
 
   useEffect(() => {
     return subscribeCanvasCommands((command) => {
@@ -530,22 +586,22 @@ export function LiveOrbitalCanvas({
 
         const agentFocus = focusRef.current;
         const agentNode = focusNodeRef.current;
-        const isActiveFocus =
-          agentFocus?.kind === "work_order" && agentFocus.source === "active_run";
+        const isActiveFocus = agentFocus?.kind === "work_order" && agentFocus.workOrderId;
         if (
           isActiveFocus &&
           agentNode &&
           agentNode.x !== undefined &&
           agentNode.y !== undefined
         ) {
-          const radius = (agentNode.radius ?? 16) + 8;
+          const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 280);
+          const radius = (agentNode.radius ?? 16) + 8 + pulse * 4;
           const ringColor = resolveFocusRingColor(agentFocus.status);
           ctx.save();
           ctx.strokeStyle = ringColor;
-          ctx.lineWidth = 2.2;
-          ctx.shadowBlur = 18;
+          ctx.lineWidth = 2.2 + pulse * 0.4;
+          ctx.shadowBlur = 18 + pulse * 6;
           ctx.shadowColor = ringColor;
-          ctx.globalAlpha = 0.9;
+          ctx.globalAlpha = 0.7 + pulse * 0.3;
           ctx.beginPath();
           ctx.arc(agentNode.x, agentNode.y, radius, 0, Math.PI * 2);
           ctx.stroke();

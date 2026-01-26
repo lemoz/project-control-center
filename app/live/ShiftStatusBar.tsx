@@ -57,7 +57,9 @@ export function ShiftStatusBar({ focus, project, loading }: ShiftStatusBarProps)
   }
 
   const hasActiveRun = Boolean(
-    focus?.kind === "work_order" && focus.source === "active_run" && focus.workOrderId
+    focus?.kind === "work_order" &&
+      focus.workOrderId &&
+      (focus.source === "active_run" || focus.source === "log")
   );
   const activeWorkOrderId =
     focus?.kind === "work_order" ? focus.workOrderId ?? null : null;

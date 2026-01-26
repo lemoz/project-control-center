@@ -35,7 +35,9 @@ export function LiveLanding() {
     debounceMs: 400,
   });
   const hasActiveShift = Boolean(
-    focus?.kind === "work_order" && focus.source === "active_run" && focus.workOrderId
+    focus?.kind === "work_order" &&
+      focus.workOrderId &&
+      (focus.source === "active_run" || focus.source === "log")
   );
   const emptyNarrationText =
     !loading && !hasActiveShift
