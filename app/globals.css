@@ -365,6 +365,150 @@ a {
   padding-bottom: calc(12px + env(safe-area-inset-bottom));
 }
 
+.voice-widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.voice-widget-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.voice-widget-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.voice-widget-text {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.voice-widget-text .input {
+  flex: 1;
+  min-width: 220px;
+}
+
+.voice-button {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+  border: 1px solid #2b3347;
+  background: #0f1320;
+  color: #e6e8ee;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.35);
+}
+
+.voice-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.voice-button-ring {
+  position: absolute;
+  inset: -6px;
+  border-radius: 999px;
+  border: 1px solid rgba(90, 198, 255, 0.4);
+  opacity: 0;
+}
+
+.voice-button--listening .voice-button-ring {
+  animation: voicePulse 1.4s ease-out infinite;
+  opacity: 1;
+}
+
+.voice-button--speaking {
+  background: #162238;
+  border-color: #1f3b64;
+  color: #9ad9ff;
+}
+
+.voice-button--error {
+  border-color: #5a1f2a;
+  color: #ffb4c0;
+}
+
+.voice-speaking {
+  display: inline-flex;
+  gap: 3px;
+  align-items: flex-end;
+  height: 16px;
+}
+
+.voice-speaking span {
+  width: 3px;
+  height: 8px;
+  border-radius: 4px;
+  background: #59c6ff;
+  animation: voiceWave 0.9s ease-in-out infinite;
+}
+
+.voice-speaking span:nth-child(2) {
+  height: 12px;
+  animation-delay: 0.12s;
+}
+
+.voice-speaking span:nth-child(3) {
+  height: 6px;
+  animation-delay: 0.24s;
+}
+
+.voice-speaking span:nth-child(4) {
+  height: 10px;
+  animation-delay: 0.36s;
+}
+
+.voice-transcript {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.voice-transcript-line {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+@keyframes voicePulse {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.6;
+  }
+  70% {
+    transform: scale(1.2);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.2);
+    opacity: 0;
+  }
+}
+
+@keyframes voiceWave {
+  0%,
+  100% {
+    transform: scaleY(0.6);
+  }
+  50% {
+    transform: scaleY(1.2);
+  }
+}
+
 .chat-thread-list {
   display: flex;
   flex-direction: column;

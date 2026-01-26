@@ -22,11 +22,18 @@ import { defaultVisualizationId, findVisualization, visualizations } from "./vis
 import type { RiverBubbleDetails } from "./visualizations/TimelineRiverViz";
 import type { HeatmapGrouping } from "./visualizations/HeatmapGridViz";
 import { selectWorkOrderNodes, type WorkOrderFilter } from "./visualizations/OrbitalGravityViz";
+import {
+  setCanvasVoiceState,
+  subscribeCanvasCommands,
+  type CanvasVoiceNode,
+} from "../../landing/components/VoiceWidget/voiceClientTools";
+import { VoiceWidget } from "../../landing/components/VoiceWidget/VoiceWidget";
 
 const TOOLTIP_OFFSET = 14;
 const CLICK_THRESHOLD = 4;
 const IDLE_TIMEOUT_MS = 30000;
 const FOCUS_CENTER_ATTEMPTS = 60;
+const MAX_VOICE_CONTEXT_ITEMS = 16;
 
 type CanvasMode = "follow" | "manual";
 
@@ -139,6 +146,25 @@ function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
+function toVoiceNode(node: VisualizationNode): CanvasVoiceNode {
+  if (node.type === "work_order") {
+    return {
+      id: node.id,
+      type: "work_order",
+      label: node.workOrderId,
+      title: node.title,
+      projectId: node.projectId,
+      workOrderId: node.workOrderId,
+    };
+  }
+  return {
+    id: node.id,
+    type: "project",
+    label: node.name,
+    projectId: node.id,
+  };
+}
+
 function FocusModeChip({
   mode,
   focus,
@@ -203,11 +229,14 @@ export function CanvasShell() {
   const [heatmapGrouping, setHeatmapGrouping] = useState<HeatmapGrouping>("status");
   const [workOrderFilter, setWorkOrderFilter] = useState<WorkOrderFilter>("active");
   const [mode, setMode] = useState<CanvasMode>("follow");
+  const [detailPanelOpen, setDetailPanelOpen] = useState(true);
+  const [highlightedWorkOrderId, setHighlightedWorkOrderId] = useState<string | null>(null);
   const lastFrame = useRef<number | null>(null);
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
   const lastInteractionRef = useRef<number>(Date.now());
   const focusRef = useRef<AgentFocus | null>(null);
   const focusNodeRef = useRef<WorkOrderNode | null>(null);
+  const highlightedNodeRef = useRef<WorkOrderNode | null>(null);
 
   const { data, loading, error, refresh, lastUpdated } = useProjectsVisualization();
   const dataRef = useRef(data);
@@ -274,6 +303,12 @@ export function CanvasShell() {
     return orbitalWorkOrderNodes.find((node) => node.id === focusNodeId) ?? null;
   }, [focusNodeId, orbitalWorkOrderNodes]);
 
+  const highlightedNode = useMemo(() => {
+    if (!highlightedWorkOrderId) return null;
+    const match = interactionNodes.find((node) => node.id === highlightedWorkOrderId);
+    return match && match.type === "work_order" ? match : null;
+  }, [highlightedWorkOrderId, interactionNodes]);
+
   const {
     transform,
     setTransform,
@@ -317,6 +352,62 @@ export function CanvasShell() {
     lastInteractionRef.current = Date.now();
     setMode("follow");
   }, []);
+
+  const focusCanvasNode = useCallback(
+    (nodeId: string) => {
+      const trimmed = nodeId.trim();
+      if (!trimmed) return;
+      setMode("manual");
+      let attempts = 0;
+      const normalized = trimmed.toLowerCase();
+      const matchesNormalized = (value?: string | null) =>
+        typeof value === "string" && value.toLowerCase() === normalized;
+
+      const resolveNode = () =>
+        combinedNodes.find((item) => item.id === trimmed) ??
+        combinedNodes.find(
+          (item) => item.type === "work_order" && item.workOrderId === trimmed
+        ) ??
+        combinedNodes.find((item) => matchesNormalized(item.id)) ??
+        combinedNodes.find(
+          (item) => item.type === "work_order" && matchesNormalized(item.workOrderId)
+        ) ??
+        combinedNodes.find(
+          (item) => item.type === "project" && matchesNormalized(item.name)
+        ) ??
+        combinedNodes.find(
+          (item) => item.type === "project" && matchesNormalized(item.label)
+        ) ??
+        null;
+
+      const attempt = () => {
+        attempts += 1;
+        const node = resolveNode();
+        if (!node) return;
+        if (
+          node.x !== undefined &&
+          node.y !== undefined &&
+          canvasSize.width > 0 &&
+          canvasSize.height > 0
+        ) {
+          const nodeX = node.x;
+          const nodeY = node.y;
+          setTransform((prev) => ({
+            ...prev,
+            offsetX: canvasSize.width / 2 - nodeX * prev.scale,
+            offsetY: canvasSize.height / 2 - nodeY * prev.scale,
+          }));
+          return;
+        }
+        if (attempts < FOCUS_CENTER_ATTEMPTS) {
+          window.requestAnimationFrame(attempt);
+        }
+      };
+
+      window.requestAnimationFrame(attempt);
+    },
+    [canvasSize.height, canvasSize.width, combinedNodes, setTransform]
+  );
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -419,12 +510,43 @@ export function CanvasShell() {
   }, [focusNode]);
 
   useEffect(() => {
+    highlightedNodeRef.current = highlightedNode;
+  }, [highlightedNode]);
+
+  useEffect(() => {
     vizRef.current?.onNodeHover?.(hoveredNode);
   }, [hoveredNode]);
 
   useEffect(() => {
     sizeRef.current = canvasSize;
   }, [canvasSize]);
+
+  useEffect(() => {
+    const visibleProjects = interactionNodes
+      .filter((node) => node.type === "project")
+      .slice(0, MAX_VOICE_CONTEXT_ITEMS)
+      .map(toVoiceNode);
+    const visibleWorkOrders = interactionNodes
+      .filter((node) => node.type === "work_order")
+      .slice(0, MAX_VOICE_CONTEXT_ITEMS)
+      .map(toVoiceNode);
+
+    setCanvasVoiceState({
+      contextLabel: "Canvas",
+      focusedNode: focusNode ? toVoiceNode(focusNode) : null,
+      selectedNode: selectedNode ? toVoiceNode(selectedNode) : null,
+      visibleProjects,
+      visibleWorkOrders,
+      highlightedWorkOrderId,
+      detailPanelOpen,
+    });
+  }, [
+    detailPanelOpen,
+    focusNode,
+    highlightedWorkOrderId,
+    interactionNodes,
+    selectedNode,
+  ]);
 
   useEffect(() => {
     if (mode !== "manual") return;
@@ -462,6 +584,25 @@ export function CanvasShell() {
     rafId = window.requestAnimationFrame(attemptCenter);
     return () => window.cancelAnimationFrame(rafId);
   }, [canvasSize.height, canvasSize.width, focusNode, mode, setTransform]);
+
+  useEffect(() => {
+    return subscribeCanvasCommands((command) => {
+      if (command.type === "focusNode") {
+        focusCanvasNode(command.nodeId);
+        return;
+      }
+      if (command.type === "highlightWorkOrder") {
+        const resolvedId =
+          data.workOrderNodes?.find((node) => node.workOrderId === command.workOrderId)?.id ??
+          null;
+        setHighlightedWorkOrderId(resolvedId);
+        return;
+      }
+      if (command.type === "toggleDetailPanel") {
+        setDetailPanelOpen(command.open);
+      }
+    });
+  }, [data.workOrderNodes, focusCanvasNode]);
 
   const handlePointerDown = useCallback<PointerEventHandler<HTMLCanvasElement>>(
     (event) => {
@@ -562,6 +703,21 @@ export function CanvasShell() {
           ctx.globalAlpha = 0.9;
           ctx.beginPath();
           ctx.arc(agentNode.x, agentNode.y, radius, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        const highlighted = highlightedNodeRef.current;
+        if (highlighted && highlighted.x !== undefined && highlighted.y !== undefined) {
+          const radius = (highlighted.radius ?? 16) + 10;
+          ctx.save();
+          ctx.strokeStyle = "#38bdf8";
+          ctx.lineWidth = 2.4;
+          ctx.shadowBlur = 20;
+          ctx.shadowColor = "rgba(56, 189, 248, 0.8)";
+          ctx.globalAlpha = 0.85;
+          ctx.beginPath();
+          ctx.arc(highlighted.x, highlighted.y, radius, 0, Math.PI * 2);
           ctx.stroke();
           ctx.restore();
         }
@@ -680,6 +836,8 @@ export function CanvasShell() {
         </div>
       </section>
 
+      <VoiceWidget />
+
       <section
         className={isFullscreen ? "" : "card"}
         style={{
@@ -771,10 +929,10 @@ export function CanvasShell() {
             </div>
           )}
 
-          {selectedNode && !selectedRun && isProjectNode(selectedNode) && (
+          {detailPanelOpen && selectedNode && !selectedRun && isProjectNode(selectedNode) && (
             <ProjectPopup node={selectedNode} />
           )}
-          {selectedNode && !selectedRun && isWorkOrderNode(selectedNode) && (
+          {detailPanelOpen && selectedNode && !selectedRun && isWorkOrderNode(selectedNode) && (
             <WorkOrderPopup node={selectedNode} />
           )}
 

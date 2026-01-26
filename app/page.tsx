@@ -1,5 +1,7 @@
 import { StarToggle } from "./components/StarToggle";
 import { NarrationPanel } from "./landing/NarrationPanel";
+import { LandingVoiceContextBridge } from "./landing/components/VoiceWidget/LandingVoiceContextBridge";
+import { VoiceWidget } from "./landing/components/VoiceWidget/VoiceWidget";
 import Link from "next/link";
 import path from "path";
 
@@ -42,6 +44,14 @@ export default async function Page() {
     acc.set(repo.name, (acc.get(repo.name) || 0) + 1);
     return acc;
   }, new Map<string, number>());
+  const voiceContextProjects = visibleRepos.map((repo) => ({
+    id: repo.id,
+    name: repo.name,
+    nextWorkOrders: repo.next_work_orders?.map((wo) => ({
+      id: wo.id,
+      title: wo.title,
+    })),
+  }));
 
   const displayName = (repo: RepoSummary) => {
     const count = nameCounts.get(repo.name) || 0;
@@ -52,6 +62,8 @@ export default async function Page() {
   return (
     <main style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <NarrationPanel />
+      <LandingVoiceContextBridge projects={voiceContextProjects} />
+      <VoiceWidget />
       <section className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h2 style={{ margin: 0, fontSize: 16 }}>Portfolio</h2>

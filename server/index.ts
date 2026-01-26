@@ -371,6 +371,69 @@ function isLoopbackAddress(value: string | undefined): boolean {
   return normalized.startsWith("127.");
 }
 
+async function requestElevenLabsSignedUrl(): Promise<string> {
+  const agentId =
+    process.env.CONTROL_CENTER_ELEVENLABS_AGENT_ID ||
+    process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID;
+  if (!agentId) {
+    throw new Error("ElevenLabs agent ID not configured.");
+  }
+
+  const apiKey =
+    process.env.CONTROL_CENTER_ELEVENLABS_API_KEY || process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) {
+    throw new Error("ElevenLabs API key not configured.");
+  }
+
+  const ttlSeconds = Number.parseInt(
+    process.env.CONTROL_CENTER_ELEVENLABS_SIGNED_URL_TTL_SECONDS ?? "300",
+    10
+  );
+  const includeTtl = Number.isFinite(ttlSeconds) && ttlSeconds > 0;
+  const baseUrl = new URL(
+    "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url"
+  );
+  baseUrl.searchParams.set("agent_id", agentId);
+
+  const requestUrl = async (url: URL): Promise<string> => {
+    const response = await fetch(url.toString(), {
+      headers: {
+        "xi-api-key": apiKey,
+      },
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(
+        `Failed to mint ElevenLabs signed URL (${response.status}). ${detail}`.trim()
+      );
+    }
+
+    const payload = (await response.json().catch(() => null)) as {
+      signed_url?: string;
+      signedUrl?: string;
+    } | null;
+    const signedUrl = payload?.signed_url ?? payload?.signedUrl;
+    if (!signedUrl) {
+      throw new Error("ElevenLabs signed URL missing from response.");
+    }
+
+    return signedUrl;
+  };
+
+  if (includeTtl) {
+    const urlWithTtl = new URL(baseUrl.toString());
+    urlWithTtl.searchParams.set("ttl", String(ttlSeconds));
+    try {
+      return await requestUrl(urlWithTtl);
+    } catch {
+      return await requestUrl(baseUrl);
+    }
+  }
+
+  return await requestUrl(baseUrl);
+}
+
 function cleanupThreadWorktree(thread: {
   id: string;
   scope: string;
@@ -451,6 +514,17 @@ app.use(express.json({ verify: captureRawBody }));
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });
+});
+
+app.post("/api/voice/session", async (_req, res) => {
+  try {
+    const signedUrl = await requestElevenLabsSignedUrl();
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ signedUrl });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to mint voice session.";
+    return res.status(500).json({ error: message });
+  }
 });
 
 app.post("/api/voice/global-context", verifyElevenLabsWebhook, (_req, res) => {
