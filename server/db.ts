@@ -231,6 +231,33 @@ export type RunPhaseMetricsSummary = {
   recent_runs: Array<{ wo_id: string; iterations: number; total_seconds: number }>;
 };
 
+export type EstimationContextAverages = {
+  setup_seconds: number;
+  builder_seconds: number;
+  reviewer_seconds: number;
+  test_seconds: number;
+  iterations: number;
+  total_seconds: number;
+};
+
+export type EstimationContextRunRow = {
+  run_id: string;
+  project_id: string;
+  work_order_id: string;
+  work_order_title: string | null;
+  work_order_tags: string[];
+  iterations: number;
+  total_seconds: number;
+  status: RunRow["status"];
+  reviewer_verdict: RunRow["reviewer_verdict"];
+  created_at: string;
+};
+
+export type EstimationContextSummary = {
+  averages: EstimationContextAverages;
+  sample_size: number;
+};
+
 export type WorkOrderRunDuration = {
   work_order_id: string;
   avg_seconds: number;
@@ -2313,6 +2340,161 @@ export function getRunPhaseMetricsSummary(
       total_seconds: normalizeCount(row.total_seconds),
     })),
   };
+}
+
+const ESTIMATION_RUN_STATUSES = [
+  "merged",
+  "you_review",
+  "failed",
+  "merge_conflict",
+  "baseline_failed",
+] as const;
+
+function buildEstimationRunFilter(
+  alias: string,
+  projectId: string | null
+): { clause: string; params: string[] } {
+  const placeholders = ESTIMATION_RUN_STATUSES.map(() => "?").join(", ");
+  const clauses = [`${alias}.status IN (${placeholders})`];
+  const params: string[] = [...ESTIMATION_RUN_STATUSES];
+  if (projectId) {
+    clauses.push(`${alias}.project_id = ?`);
+    params.push(projectId);
+  }
+  return { clause: clauses.join(" AND "), params };
+}
+
+export function getEstimationContextSummary(
+  projectId: string | null
+): EstimationContextSummary {
+  const database = getDb();
+  const { clause, params } = buildEstimationRunFilter("r", projectId);
+  const sampleRow = database
+    .prepare(`SELECT COUNT(1) AS sample_size FROM runs r WHERE ${clause}`)
+    .get(...params) as { sample_size: number | null } | undefined;
+  const iterationsRow = database
+    .prepare(`SELECT AVG(r.iteration) AS avg_iterations FROM runs r WHERE ${clause}`)
+    .get(...params) as { avg_iterations: number | null } | undefined;
+  const phaseRows = database
+    .prepare(
+      `SELECT m.phase AS phase, AVG(m.duration_seconds) AS avg_seconds
+       FROM run_phase_metrics m
+       JOIN runs r ON r.id = m.run_id
+       WHERE ${clause} AND m.duration_seconds IS NOT NULL
+       GROUP BY m.phase`
+    )
+    .all(...params) as Array<{ phase: RunPhaseMetricPhase; avg_seconds: number | null }>;
+  const totalRow = database
+    .prepare(
+      `SELECT AVG(total_seconds) AS avg_total_seconds
+       FROM (
+         SELECT r.id AS run_id, COALESCE(SUM(m.duration_seconds), 0) AS total_seconds
+         FROM runs r
+         LEFT JOIN run_phase_metrics m
+           ON m.run_id = r.id AND m.duration_seconds IS NOT NULL
+         WHERE ${clause}
+         GROUP BY r.id
+       ) totals`
+    )
+    .get(...params) as { avg_total_seconds: number | null } | undefined;
+
+  const phaseAverages = new Map<RunPhaseMetricPhase, number>();
+  for (const row of phaseRows) {
+    if (typeof row.avg_seconds === "number" && Number.isFinite(row.avg_seconds)) {
+      phaseAverages.set(row.phase, row.avg_seconds);
+    }
+  }
+
+  const normalizeAverage = (value: unknown): number => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+    return value;
+  };
+
+  const normalizeCount = (value: unknown): number => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+    return Math.trunc(value);
+  };
+
+  return {
+    averages: {
+      setup_seconds: normalizeAverage(phaseAverages.get("setup")),
+      builder_seconds: normalizeAverage(phaseAverages.get("builder")),
+      reviewer_seconds: normalizeAverage(phaseAverages.get("reviewer")),
+      test_seconds: normalizeAverage(phaseAverages.get("test")),
+      iterations: normalizeAverage(iterationsRow?.avg_iterations ?? null),
+      total_seconds: normalizeAverage(totalRow?.avg_total_seconds ?? null),
+    },
+    sample_size: normalizeCount(sampleRow?.sample_size ?? null),
+  };
+}
+
+export function listEstimationContextRuns(
+  projectId: string | null,
+  limit = 5
+): EstimationContextRunRow[] {
+  const database = getDb();
+  const normalizedLimit =
+    typeof limit === "number" && Number.isFinite(limit)
+      ? Math.max(1, Math.min(200, Math.trunc(limit)))
+      : 5;
+  const { clause, params } = buildEstimationRunFilter("r", projectId);
+  const rows = database
+    .prepare(
+      `SELECT r.id AS run_id,
+              r.project_id AS project_id,
+              r.work_order_id AS work_order_id,
+              r.iteration AS iterations,
+              r.status AS status,
+              r.reviewer_verdict AS reviewer_verdict,
+              r.created_at AS created_at,
+              wo.title AS work_order_title,
+              wo.tags AS work_order_tags,
+              COALESCE(SUM(m.duration_seconds), 0) AS total_seconds
+       FROM runs r
+       LEFT JOIN work_orders wo
+         ON wo.project_id = r.project_id AND wo.id = r.work_order_id
+       LEFT JOIN run_phase_metrics m
+         ON m.run_id = r.id AND m.duration_seconds IS NOT NULL
+       WHERE ${clause}
+       GROUP BY r.id
+       ORDER BY r.created_at DESC
+       LIMIT ?`
+    )
+    .all(...params, normalizedLimit) as Array<{
+    run_id: string;
+    project_id: string;
+    work_order_id: string;
+    iterations: number | null;
+    status: RunRow["status"];
+    reviewer_verdict: RunRow["reviewer_verdict"];
+    created_at: string;
+    work_order_title: string | null;
+    work_order_tags: string | null;
+    total_seconds: number | null;
+  }>;
+
+  const normalizeSeconds = (value: unknown): number => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+    return Math.max(0, value);
+  };
+
+  const normalizeCount = (value: unknown): number => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+    return Math.max(0, Math.trunc(value));
+  };
+
+  return rows.map((row) => ({
+    run_id: row.run_id,
+    project_id: row.project_id,
+    work_order_id: row.work_order_id,
+    work_order_title: typeof row.work_order_title === "string" ? row.work_order_title : null,
+    work_order_tags: parseJsonStringArray(row.work_order_tags),
+    iterations: normalizeCount(row.iterations),
+    total_seconds: normalizeSeconds(row.total_seconds),
+    status: row.status,
+    reviewer_verdict: row.reviewer_verdict,
+    created_at: row.created_at,
+  }));
 }
 
 export function getWorkOrderRunDurations(
