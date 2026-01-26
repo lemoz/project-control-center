@@ -1,7 +1,7 @@
 ---
 id: WO-2026-163
 title: Work Order Detail Panel
-status: you_review
+status: done
 priority: 2
 tags:
   - live-demo

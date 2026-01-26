@@ -79,6 +79,82 @@
   z-index: 4;
 }
 
+.voiceFloating {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 100;
+}
+
+.voiceFab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px;
+  background: linear-gradient(135deg, #5a4fcf 0%, #7c4dff 100%);
+  border: none;
+  border-radius: 28px;
+  color: #fff;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(92, 79, 207, 0.4);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.voiceFab:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(92, 79, 207, 0.5);
+}
+
+.voiceFab:active {
+  transform: translateY(0);
+}
+
+.voiceExpanded {
+  position: relative;
+  width: 360px;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 100px);
+  overflow: auto;
+  animation: voiceSlideUp 0.2s ease;
+}
+
+.voiceCloseBtn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  border-radius: 50%;
+  color: #a9b0c2;
+  font-size: 20px;
+  cursor: pointer;
+  z-index: 2;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.voiceCloseBtn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+@keyframes voiceSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .activitySection {
   width: 100%;
 }

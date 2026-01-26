@@ -3,11 +3,11 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import { NarrationPanel } from "../landing/NarrationPanel";
-import { VoiceWidget } from "../landing/components/VoiceWidget/VoiceWidget";
 import { useAgentFocusSync } from "../playground/canvas/useAgentFocus";
 import { useProjectsVisualization } from "../playground/canvas/useProjectsVisualization";
 import type { ProjectNode } from "../playground/canvas/types";
 import { AgentActivityPanel } from "./AgentActivityPanel";
+import { CollapsibleVoiceWidget } from "./CollapsibleVoiceWidget";
 import { LiveOrbitalCanvas } from "./LiveOrbitalCanvas";
 import { ShiftStatusBar } from "./ShiftStatusBar";
 import styles from "./live.module.css";
@@ -61,10 +61,9 @@ export function LiveLanding() {
 
       <section className={`card ${styles.canvasSection}`}>
         <LiveOrbitalCanvas data={data} loading={loading} error={error} project={project} focus={focus} />
-        <aside className={styles.voiceDock}>
-          <VoiceWidget />
-        </aside>
       </section>
+
+      <CollapsibleVoiceWidget />
 
       <section className={styles.activitySection}>
         <AgentActivityPanel
