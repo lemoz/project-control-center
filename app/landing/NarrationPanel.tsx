@@ -48,7 +48,7 @@ export function NarrationPanel({ emptyStateText }: NarrationPanelProps) {
         <div>
           <div style={{ fontWeight: 600 }}>Ambient narration</div>
           <div className="muted" style={{ fontSize: 12 }}>
-            {supported ? activeLabel : "Web Speech API unavailable in this browser."}
+            {supported ? activeLabel : "Narration audio unavailable in this browser."}
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>

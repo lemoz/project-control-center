@@ -97,6 +97,7 @@ import {
 } from "./work_order_dependencies.js";
 import { generateWorkOrderDraft } from "./wo_generation.js";
 import { generateNarration } from "./narration.js";
+import { generateNarrationAudio } from "./narration_tts.js";
 import {
   getChatSettingsResponse,
   getRunnerSettingsResponse,
@@ -676,6 +677,19 @@ app.post("/narration", async (req, res) => {
     provider: result.provider,
     model: result.model,
   });
+});
+
+app.post("/narration/speak", async (req, res) => {
+  const result = await generateNarrationAudio(req.body);
+  if (!result.ok) {
+    return res.status(result.status).json({
+      error: result.error,
+      retry_after_ms: result.retryAfterMs,
+    });
+  }
+  res.setHeader("Content-Type", result.contentType);
+  res.setHeader("Cache-Control", "no-store");
+  return res.send(result.audio);
 });
 
 app.get("/observability/vm-health", async (req, res) => {
