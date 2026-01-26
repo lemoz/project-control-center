@@ -1,12 +1,12 @@
 ---
 id: WO-2026-160
 title: Start Shift Button on Live Page
-status: ready
+status: you_review
 priority: 2
 track: live-demo
 estimate_hours: 2
+updated_at: 2026-01-26
 ---
-
 ## Goal
 
 Add a "Start Shift" button to the `/live` page that allows users to launch an agent shift directly from the live demo interface.
