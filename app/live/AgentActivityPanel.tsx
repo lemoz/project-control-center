@@ -104,6 +104,18 @@ function tryParseJson(value: string): unknown | null {
   }
 }
 
+/**
+ * Unescape common escape sequences that may have been double-escaped in logs.
+ * Handles \\n -> newline, \\t -> tab, \\r -> carriage return, \\\\ -> backslash.
+ */
+function unescapeText(value: string): string {
+  return value
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\r/g, "\r")
+    .replace(/\\\\/g, "\\");
+}
+
 function flattenText(value: unknown): string | null {
   if (typeof value === "string") return value;
   if (!value) return null;
@@ -139,7 +151,8 @@ function formatValueForHighlight(value: unknown): { text: string; isJson: boolea
     if (parsed !== null) {
       return { text: JSON.stringify(parsed, null, 2), isJson: true };
     }
-    return { text: value, isJson: false };
+    // Unescape common escape sequences for plain text display
+    return { text: unescapeText(value), isJson: false };
   }
   if (typeof value === "object") {
     return { text: JSON.stringify(value, null, 2), isJson: true };
