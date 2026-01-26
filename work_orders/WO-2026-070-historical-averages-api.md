@@ -24,7 +24,7 @@ tags:
   - api
   - estimation
 estimate_hours: 1.5
-status: you_review
+status: done
 created_at: 2026-01-12
 updated_at: 2026-01-26
 depends_on:
