@@ -7,6 +7,7 @@ import { VoiceWidget } from "../landing/components/VoiceWidget/VoiceWidget";
 import { useAgentFocusSync } from "../playground/canvas/useAgentFocus";
 import { useProjectsVisualization } from "../playground/canvas/useProjectsVisualization";
 import type { ProjectNode } from "../playground/canvas/types";
+import { AgentActivityPanel } from "./AgentActivityPanel";
 import { LiveOrbitalCanvas } from "./LiveOrbitalCanvas";
 import { ShiftStatusBar } from "./ShiftStatusBar";
 import styles from "./live.module.css";
@@ -29,7 +30,7 @@ export function LiveLanding() {
   const { data, loading, error } = useProjectsVisualization();
   const project = useMemo(() => selectLandingProject(data.nodes), [data.nodes]);
   const focus = useAgentFocusSync(project?.id ?? null, {
-    intervalMs: 5000,
+    intervalMs: 3000,
     hiddenIntervalMs: 15000,
     debounceMs: 400,
   });
@@ -63,6 +64,15 @@ export function LiveLanding() {
         <aside className={styles.voiceDock}>
           <VoiceWidget />
         </aside>
+      </section>
+
+      <section className={styles.activitySection}>
+        <AgentActivityPanel
+          project={project}
+          focus={focus}
+          workOrderNodes={data.workOrderNodes ?? []}
+          loading={loading}
+        />
       </section>
 
       <section className={styles.narrationSection}>
