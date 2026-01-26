@@ -662,6 +662,14 @@ export class OrbitalGravityVisualization implements Visualization {
     this.drawZones(ctx, layout);
     this.drawSun(ctx, layout);
 
+    // First pass: calculate positions and sizes
+    const nodeData: Array<{
+      node: OrbitalNode;
+      state: OrbitalNodeState;
+      runPhase: WorkOrderRunPhase | null;
+      focusBlend: number;
+    }> = [];
+
     for (const node of this.visibleNodes) {
       const state = this.nodeStates.get(node.id);
       if (!state) continue;
@@ -699,17 +707,62 @@ export class OrbitalGravityVisualization implements Visualization {
       );
       state.angle += state.angularVelocity * delta;
 
-      const orbitX = Math.cos(state.angle) * state.radius;
-      const orbitY = Math.sin(state.angle) * state.radius;
       const hoverBoost = this.hoveredId === node.id ? 0.12 : 0;
-      const focusBoost = focusBlend > 0 ? 0.18 : 0;
+      const focusBoostSize = focusBlend > 0 ? 0.18 : 0;
       const sizeScale = isWorkOrderNode(node) ? workOrderSizeScale(node.status) : 1;
       const size =
-        state.baseRadius * sizeScale * (1 + state.heat * 0.25 + hoverBoost + focusBoost);
+        state.baseRadius * sizeScale * (1 + state.heat * 0.25 + hoverBoost + focusBoostSize);
 
-      node.x = orbitX;
-      node.y = orbitY;
+      node.x = Math.cos(state.angle) * state.radius;
+      node.y = Math.sin(state.angle) * state.radius;
       node.radius = size;
+
+      nodeData.push({ node, state, runPhase, focusBlend });
+    }
+
+    // Second pass: collision avoidance (push overlapping nodes apart angularly)
+    for (let iter = 0; iter < COLLISION_ITERATIONS; iter++) {
+      for (let i = 0; i < nodeData.length; i++) {
+        for (let j = i + 1; j < nodeData.length; j++) {
+          const a = nodeData[i];
+          const b = nodeData[j];
+          const dx = (b.node.x ?? 0) - (a.node.x ?? 0);
+          const dy = (b.node.y ?? 0) - (a.node.y ?? 0);
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const minDist = (a.node.radius ?? 10) + (b.node.radius ?? 10) + COLLISION_PADDING;
+
+          if (dist < minDist && dist > 0) {
+            // Push apart by adjusting angles
+            const overlap = (minDist - dist) / 2;
+            const pushAngle = overlap / Math.max(a.state.radius, b.state.radius, 1);
+
+            // Determine push direction based on angle difference
+            const angleDiff = b.state.angle - a.state.angle;
+            const normalizedDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff));
+
+            if (normalizedDiff >= 0) {
+              a.state.angle -= pushAngle * 0.5;
+              b.state.angle += pushAngle * 0.5;
+            } else {
+              a.state.angle += pushAngle * 0.5;
+              b.state.angle -= pushAngle * 0.5;
+            }
+
+            // Recalculate positions
+            a.node.x = Math.cos(a.state.angle) * a.state.radius;
+            a.node.y = Math.sin(a.state.angle) * a.state.radius;
+            b.node.x = Math.cos(b.state.angle) * b.state.radius;
+            b.node.y = Math.sin(b.state.angle) * b.state.radius;
+          }
+        }
+      }
+    }
+
+    // Third pass: render all nodes
+    for (const { node, state, runPhase, focusBlend } of nodeData) {
+      const orbitX = node.x ?? 0;
+      const orbitY = node.y ?? 0;
+      const size = node.radius ?? 10;
 
       const palette = isProjectNode(node)
         ? paletteForProject(node)
