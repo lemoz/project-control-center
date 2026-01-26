@@ -18,7 +18,7 @@ type AgentActivityPanelProps = {
   maxEntries?: number;
 };
 
-const DEFAULT_OVERLAY_ENTRIES = 12;
+const DEFAULT_OVERLAY_ENTRIES = 6;
 
 const STATUS_LABELS: Record<RunStatus, string> = {
   queued: "Queued",

@@ -224,7 +224,7 @@
 }
 
 .activityOverlayLog {
-  max-height: 220px;
+  max-height: 160px;
   overflow: auto;
   padding: 8px;
   background: #0b0d12;
