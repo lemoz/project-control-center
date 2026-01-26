@@ -26,11 +26,12 @@ tags:
   - ui
   - agent
 estimate_hours: 3
-status: ready
+status: you_review
 created_at: 2026-01-26
 depends_on:
   - WO-2026-155
 era: v2
+updated_at: 2026-01-26
 ---
 ## UI Options
 

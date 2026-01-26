@@ -79,6 +79,95 @@
   z-index: 4;
 }
 
+.activitySection {
+  width: 100%;
+}
+
+.activityCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.activityHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.activityTitle {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.activityMeta {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.activityItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.activityLabel {
+  font-size: 12px;
+  color: #a9b0c2;
+}
+
+.activityValue {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.logPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: #101522;
+  border: 1px solid #22293a;
+  border-radius: 12px;
+}
+
+.logHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.logScroller {
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px;
+  background: #0b0d12;
+  border-radius: 10px;
+  border: 1px solid #1f2433;
+}
+
+.logText {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.logMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #a9b0c2;
+}
+
 .narrationSection {
   width: 100%;
 }
