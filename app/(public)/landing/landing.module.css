@@ -25,11 +25,6 @@
   box-sizing: border-box;
 }
 
-:global(html) {
-  scroll-behavior: smooth;
-  scroll-padding-top: 96px;
-}
-
 .pageBody {
   display: flex;
   flex-direction: column;
