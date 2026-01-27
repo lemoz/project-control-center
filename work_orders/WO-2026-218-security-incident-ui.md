@@ -1,7 +1,7 @@
 ---
 id: WO-2026-218
 title: Security incident UI
-status: backlog
+status: ready
 priority: 2
 tags:
   - ui

@@ -1,7 +1,7 @@
 ---
 id: WO-2026-168
 title: Sandbox awareness for builder/reviewer prompts
-status: backlog
+status: ready
 priority: 2
 tags:
   - runner
@@ -11,7 +11,7 @@ tags:
 estimate_hours: 1
 depends_on: []
 era: v2
-updated_at: 2026-01-26
+updated_at: 2026-01-27
 goal: Add execution environment context to builder and reviewer prompts so they know they're sandboxed without internet access and won't waste iterations trying to fetch external resources.
 context:
   - Builder runs with --sandbox workspace-write, reviewer with --sandbox read-only
