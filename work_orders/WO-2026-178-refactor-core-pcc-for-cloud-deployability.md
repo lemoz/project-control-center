@@ -1,7 +1,7 @@
 ---
 id: WO-2026-178
 title: Refactor core PCC for cloud deployability
-status: you_review
+status: done
 priority: 1
 tags:
   - cloud

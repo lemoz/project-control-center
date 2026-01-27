@@ -1,7 +1,7 @@
 ---
 id: WO-2026-187
 title: PCC deployment to VMs
-status: backlog
+status: ready
 priority: 1
 tags:
   - cloud

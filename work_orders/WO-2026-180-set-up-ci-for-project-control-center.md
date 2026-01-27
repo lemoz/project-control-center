@@ -1,7 +1,7 @@
 ---
 id: WO-2026-180
 title: Set up CI for project-control-center
-status: backlog
+status: ready
 priority: 2
 tags:
   - foundation

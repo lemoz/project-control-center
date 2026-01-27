@@ -1,7 +1,7 @@
 ---
 id: WO-2026-216
 title: Agent monitoring settings and whitelist
-status: you_review
+status: done
 priority: 1
 tags:
   - monitoring

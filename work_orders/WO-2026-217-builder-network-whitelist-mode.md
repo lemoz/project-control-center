@@ -1,7 +1,7 @@
 ---
 id: WO-2026-217
 title: Builder network whitelist mode
-status: backlog
+status: ready
 priority: 1
 tags:
   - sandbox
