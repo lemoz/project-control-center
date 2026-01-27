@@ -1,5 +1,5 @@
 ---
-id: WO-2026-221
+id: WO-2026-228
 title: Targeted conversation retrieval for constitution signals
 goal: Replace random sampling with targeted retrieval for v2 signal extraction, while keeping a small fallback sample for coverage.
 context:
