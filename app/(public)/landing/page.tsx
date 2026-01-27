@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
+import EmailSignup from "./EmailSignup";
 import { LiveHeroEmbed } from "./LiveHeroEmbed";
 import styles from "./landing.module.css";
+import FeatureGrid from "./components/FeatureGrid";
 
 export const metadata: Metadata = {
   title: "Project Control Center | Public Landing",
@@ -98,6 +100,20 @@ export default function LandingPage() {
         </div>
       </section>
 
+      <section className={styles.section} id="features">
+        <div className={styles.sectionInner}>
+          <div className={`${styles.sectionHeader} ${styles.reveal} ${styles.delay1}`}>
+            <div className={styles.sectionKicker}>Feature set</div>
+            <h2 className={styles.sectionTitle}>Six pillars of the PCC workflow.</h2>
+            <p className={styles.sectionCopy}>
+              Every capability is designed to keep builders aligned, runs visible,
+              and shipping decisions intentional.
+            </p>
+          </div>
+          <FeatureGrid />
+        </div>
+      </section>
+
       <section className={styles.section} id="how-it-works">
         <div className={styles.sectionInner}>
           <div className={`${styles.sectionHeader} ${styles.reveal} ${styles.delay1}`}>
@@ -143,24 +159,10 @@ export default function LandingPage() {
               <div className={styles.sectionKicker}>Email updates</div>
               <h2 className={styles.signupTitle}>Stay close to the launch.</h2>
               <p className={styles.signupCopy}>
-                Email signup is coming soon. Leave your address to get launch notes
-                and early access details.
+                Join the early access list to get launch notes and preview invites.
               </p>
             </div>
-            <div className={styles.signupForm}>
-              <input
-                className="input"
-                type="email"
-                placeholder="you@domain.com"
-                aria-label="Email address"
-              />
-              <button className="btn" type="button" disabled>
-                Join the list
-              </button>
-            </div>
-            <div className={styles.signupNote}>
-              Email capture is disabled in this release.
-            </div>
+            <EmailSignup />
           </div>
         </div>
       </section>
