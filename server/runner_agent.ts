@@ -45,6 +45,7 @@ import {
   selectRelevantConstitutionSections,
   type ConstitutionSelection,
 } from "./constitution.js";
+import { buildEstimationContext, estimateRunTime, type RunEstimate } from "./estimation.js";
 import {
   remoteDownload,
   remoteExec,
@@ -2885,16 +2886,6 @@ export async function runRun(runId: string) {
     ensureDir(path.dirname(logPath));
     runLog = fs.createWriteStream(logPath, { flags: "a" });
 
-    const startedAt = nowIso();
-    updateRun(runId, {
-      status: "building",
-      started_at: startedAt,
-      error: null,
-    });
-    log(
-      `Run ${runId} started for ${repoPath} work_order=${run.work_order_id}`
-    );
-
     let workOrder: WorkOrder;
     let workOrderMarkdown: string;
     try {
@@ -2912,6 +2903,36 @@ export async function runRun(runId: string) {
 
     const workOrderFilePath = path.join(runDir, "work_order.md");
     fs.writeFileSync(workOrderFilePath, workOrderMarkdown, "utf8");
+
+    let estimate: RunEstimate | null = null;
+    try {
+      const estimationContext = buildEstimationContext({
+        projectId: project.id,
+        workOrderTags: workOrder.tags,
+      });
+      estimate = await estimateRunTime(workOrderMarkdown, estimationContext);
+      updateRun(runId, {
+        estimated_iterations: estimate.estimated_iterations,
+        estimated_minutes: estimate.estimated_minutes,
+        estimate_confidence: estimate.confidence,
+        estimate_reasoning: estimate.reasoning,
+      });
+      log(
+        `[estimate] iterations=${estimate.estimated_iterations} minutes=${estimate.estimated_minutes} confidence=${estimate.confidence}`
+      );
+    } catch (err) {
+      log(`[estimate] failed to generate estimate: ${String(err)}`);
+    }
+
+    const startedAt = nowIso();
+    updateRun(runId, {
+      status: "building",
+      started_at: startedAt,
+      error: null,
+    });
+    log(
+      `Run ${runId} started for ${repoPath} work_order=${run.work_order_id}`
+    );
 
     const mergedConstitution = getConstitutionForProject(repoPath);
     const builderConstitution = selectRelevantConstitutionSections({
@@ -4790,6 +4811,10 @@ export function enqueueCodexRun(
     reviewer_verdict: null,
     reviewer_notes: null,
     summary: null,
+    estimated_iterations: null,
+    estimated_minutes: null,
+    estimate_confidence: null,
+    estimate_reasoning: null,
     branch_name: branchName,
     source_branch: sourceBranchNormalized,
     merge_status: null,
