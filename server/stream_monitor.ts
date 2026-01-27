@@ -1,4 +1,5 @@
 import type { ChildProcess } from "child_process";
+import { createSecurityIncident } from "./db.js";
 
 type PatternCategory =
   | "prompt_injection"
@@ -7,6 +8,8 @@ type PatternCategory =
   | "sandbox_escape";
 
 export type StreamMonitorContext = {
+  runId?: string;
+  projectId?: string;
   workOrderId?: string;
   goal: string;
   acceptanceCriteria: string[];
@@ -24,7 +27,8 @@ export type StreamMonitorIncident = {
   recentOutput: string;
   verdict: StreamMonitorVerdict;
   reason: string;
-  action: "none" | "killed" | "error";
+  geminiLatencyMs: number | null;
+  action: "killed" | "warned" | "allowed" | "error";
 };
 
 type PatternDefinition = {
@@ -444,7 +448,10 @@ export class StreamMonitor {
 
   private async handleIncident(incident: PendingIncident): Promise<void> {
     let verdict: GeminiVerdict;
-    let action: StreamMonitorIncident["action"] = "none";
+    let action: StreamMonitorIncident["action"] = "allowed";
+    let geminiLatencyMs: number | null = null;
+    let geminiError = false;
+    const startedAt = Date.now();
     try {
       const prompt = buildGeminiPrompt({
         context: incident.context,
@@ -453,6 +460,7 @@ export class StreamMonitor {
         flaggedContent: incident.flaggedContent,
       });
       verdict = await requestGeminiVerdict(prompt);
+      geminiLatencyMs = Date.now() - startedAt;
       if (verdict.verdict === "KILL" && this.autoKillOnThreat) {
         if (incident.child.pid && incident.child.exitCode === null) {
           try {
@@ -464,11 +472,19 @@ export class StreamMonitor {
         }
       }
     } catch (err) {
+      geminiLatencyMs = Date.now() - startedAt;
+      geminiError = true;
       verdict = {
         verdict: "WARN",
         reason: err instanceof Error ? err.message : "Gemini request failed.",
       };
-      action = "error";
+    }
+
+    if (verdict.verdict === "WARN" && action !== "killed") {
+      action = geminiError ? "error" : "warned";
+    }
+    if (verdict.verdict === "SAFE" && action !== "killed") {
+      action = "allowed";
     }
 
     const record: StreamMonitorIncident = {
@@ -480,12 +496,45 @@ export class StreamMonitor {
       recentOutput: incident.recentOutput,
       verdict: verdict.verdict,
       reason: verdict.reason,
+      geminiLatencyMs,
       action,
     };
     this.incidents.push(record);
     this.log?.(
       `[stream-monitor] ${record.timestamp} ${record.verdict} ${record.patternId} action=${record.action}`
     );
+
+    const runId = incident.context.runId;
+    const projectId = incident.context.projectId;
+    if (runId && projectId) {
+      const actionTaken =
+        record.action === "killed"
+          ? "killed"
+          : record.action === "allowed"
+            ? "allowed"
+            : "warned";
+      try {
+        createSecurityIncident({
+          run_id: runId,
+          project_id: projectId,
+          timestamp: record.timestamp,
+          pattern_category: record.category,
+          pattern_matched: `/${incident.definition.regex.source}/${incident.definition.regex.flags}`,
+          trigger_content: incident.flaggedContent,
+          agent_output_snippet: incident.recentOutput,
+          wo_id: incident.context.workOrderId ?? null,
+          wo_goal: incident.context.goal?.trim() || null,
+          gemini_verdict: record.verdict,
+          gemini_reason: record.reason,
+          gemini_latency_ms: record.geminiLatencyMs ?? null,
+          action_taken: actionTaken,
+        });
+      } catch (err) {
+        this.log?.(
+          `[stream-monitor] failed to log incident: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
   }
 }
 

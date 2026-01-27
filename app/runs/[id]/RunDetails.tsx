@@ -51,6 +51,16 @@ type RunIterationHistory = {
   reviewer_notes: string[] | null;
 };
 
+type SecurityIncidentSummary = {
+  id: string;
+  pattern_category: string;
+  pattern_matched: string;
+  gemini_verdict: string;
+  timestamp: string;
+  false_positive: number;
+  user_resolution: string | null;
+};
+
 type RunDetails = {
   id: string;
   project_id: string;
@@ -82,6 +92,7 @@ type RunDetails = {
   reviewer_log_tail?: string;
   tests_log_tail?: string;
   iteration_history?: RunIterationHistory[];
+  security_incident?: SecurityIncidentSummary | null;
 };
 
 export function RunDetails({ runId }: { runId: string }) {
@@ -94,6 +105,7 @@ export function RunDetails({ runId }: { runId: string }) {
   const [escalationCreatedAt, setEscalationCreatedAt] = useState<string | null>(null);
   const [canceling, setCanceling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const [falsePositive, setFalsePositive] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -149,6 +161,13 @@ export function RunDetails({ runId }: { runId: string }) {
     setEscalationCreatedAt(escalation.created_at);
   }, [run?.escalation, escalationCreatedAt]);
 
+  const securityIncident = run?.security_incident ?? null;
+  const incidentId = securityIncident?.id ?? null;
+
+  useEffect(() => {
+    setFalsePositive(false);
+  }, [incidentId]);
+
   const notes: string[] = (() => {
     if (!run?.reviewer_notes) return [];
     try {
@@ -203,10 +222,13 @@ export function RunDetails({ runId }: { runId: string }) {
       for (const input of escalation.inputs) {
         payload[input.key] = inputValues[input.key] ?? "";
       }
+      const body: Record<string, unknown> = { inputs: payload };
+      if (incidentId) body.incident_id = incidentId;
+      if (falsePositive) body.false_positive = true;
       const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/provide-input`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ inputs: payload }),
+        body: JSON.stringify(body),
       });
       const json = (await res.json().catch(() => null)) as { error?: string } | null;
       if (!res.ok) throw new Error(json?.error || "failed to submit inputs");
@@ -216,7 +238,7 @@ export function RunDetails({ runId }: { runId: string }) {
     } finally {
       setSubmitting(false);
     }
-  }, [escalation, inputValues, load, runId]);
+  }, [escalation, falsePositive, incidentId, inputValues, load, runId]);
 
   const latestChanges = (() => {
     const history = run?.iteration_history;
@@ -330,6 +352,22 @@ export function RunDetails({ runId }: { runId: string }) {
                 />
               </label>
             ))}
+            {securityIncident && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div className="muted" style={{ fontSize: 12 }}>
+                  Security incident: {securityIncident.pattern_category} · {securityIncident.gemini_verdict} ·{" "}
+                  <code>{securityIncident.pattern_matched}</code>
+                </div>
+                <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+                  <input
+                    type="checkbox"
+                    checked={falsePositive}
+                    onChange={(event) => setFalsePositive(event.target.checked)}
+                  />
+                  Was this a false positive?
+                </label>
+              </div>
+            )}
             {missingInputs.length > 0 && (
               <div className="muted" style={{ fontSize: 12 }}>
                 Fill out all fields to resume the run.

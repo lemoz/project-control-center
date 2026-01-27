@@ -19,6 +19,7 @@ import {
   getActiveShift,
   getActiveGlobalShift,
   getEscalationById,
+  getIncidentStats,
   getOpenEscalationForProject,
   getProjectCommunicationById,
   getProjectVm,
@@ -30,6 +31,7 @@ import {
   getShiftByProjectId,
   listGlobalPatterns,
   listEscalations,
+  listSecurityIncidents,
   listProjectCommunications,
   listGlobalShifts,
   searchGlobalPatternsByTags,
@@ -39,6 +41,7 @@ import {
   listShifts,
   listProjects,
   listSubscribers,
+  markSecurityIncidentFalsePositive,
   markInProgressRunsFailed,
   markWorkOrderRunsMerged,
   setProjectStar,
@@ -831,6 +834,76 @@ app.get("/observability/alerts", async (req, res) => {
       error: err instanceof Error ? err.message : "failed to fetch alerts",
     });
   }
+});
+
+app.get("/security-incidents", (req, res) => {
+  const start = typeof req.query.start === "string" ? req.query.start.trim() : "";
+  const end = typeof req.query.end === "string" ? req.query.end.trim() : "";
+  if (start && Number.isNaN(Date.parse(start))) {
+    return res.status(400).json({ error: "invalid start date" });
+  }
+  if (end && Number.isNaN(Date.parse(end))) {
+    return res.status(400).json({ error: "invalid end date" });
+  }
+
+  const verdictRaw = typeof req.query.verdict === "string" ? req.query.verdict.trim() : "";
+  const verdict = verdictRaw ? verdictRaw.toUpperCase() : "";
+  if (verdict && !["SAFE", "WARN", "KILL"].includes(verdict)) {
+    return res.status(400).json({ error: "invalid verdict filter" });
+  }
+
+  let falsePositive: boolean | undefined;
+  if (typeof req.query.false_positive === "string") {
+    const raw = req.query.false_positive.trim().toLowerCase();
+    if (raw === "true" || raw === "1") falsePositive = true;
+    else if (raw === "false" || raw === "0") falsePositive = false;
+    else return res.status(400).json({ error: "invalid false_positive filter" });
+  }
+
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit = Number.isFinite(limitRaw)
+    ? Math.max(1, Math.min(500, Math.trunc(limitRaw)))
+    : 200;
+
+  return res.json(
+    listSecurityIncidents({
+      start: start || undefined,
+      end: end || undefined,
+      verdict: verdict ? (verdict as "SAFE" | "WARN" | "KILL") : undefined,
+      false_positive: falsePositive,
+      limit,
+      order: "desc",
+    })
+  );
+});
+
+app.get("/security-incidents/stats", (_req, res) => {
+  return res.json(getIncidentStats());
+});
+
+app.patch("/security-incidents/:id", (req, res) => {
+  const body = req.body as Record<string, unknown> | null;
+  if (!body || typeof body !== "object") {
+    return res.status(400).json({ error: "request body required" });
+  }
+  let falsePositive: boolean | null = null;
+  if ("false_positive" in body) {
+    const raw = body.false_positive;
+    if (typeof raw === "boolean") falsePositive = raw;
+    else if (raw === 0 || raw === 1) falsePositive = raw === 1;
+  }
+  if (falsePositive === null) {
+    return res.status(400).json({ error: "`false_positive` must be boolean" });
+  }
+  const resolutionNotes =
+    typeof body.resolution_notes === "string" ? body.resolution_notes.trim() : undefined;
+  const updated = markSecurityIncidentFalsePositive({
+    id: req.params.id,
+    false_positive: falsePositive,
+    resolution_notes: resolutionNotes,
+  });
+  if (!updated) return res.status(404).json({ error: "incident not found" });
+  return res.json(updated);
 });
 
 app.get("/settings", (_req, res) => {
@@ -4080,7 +4153,34 @@ app.post("/runs/:runId/provide-input", (req, res) => {
   if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) {
     return res.status(400).json({ error: "inputs object required" });
   }
-  const result = provideRunInput(req.params.runId, inputs);
+  const incidentIdRaw =
+    req.body && typeof req.body === "object" && "incident_id" in req.body
+      ? req.body.incident_id
+      : null;
+  const incidentId =
+    typeof incidentIdRaw === "string" && incidentIdRaw.trim() ? incidentIdRaw.trim() : null;
+
+  let falsePositive: boolean | undefined;
+  if (req.body && typeof req.body === "object" && "false_positive" in req.body) {
+    if (typeof req.body.false_positive === "boolean") {
+      falsePositive = req.body.false_positive;
+    } else {
+      return res.status(400).json({ error: "`false_positive` must be boolean" });
+    }
+  }
+
+  const resolutionNotesRaw =
+    req.body && typeof req.body === "object" && "resolution_notes" in req.body
+      ? req.body.resolution_notes
+      : null;
+  const resolutionNotes =
+    typeof resolutionNotesRaw === "string" ? resolutionNotesRaw.trim() : undefined;
+
+  const result = provideRunInput(req.params.runId, inputs, {
+    incidentId,
+    falsePositive,
+    resolutionNotes,
+  });
   if (!result.ok) return res.status(400).json({ error: result.error });
   try {
     createUserInteraction({

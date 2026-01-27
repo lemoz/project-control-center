@@ -9,18 +9,21 @@ import {
   createRun,
   createRunPhaseMetric,
   findProjectById,
+  getLatestUnresolvedSecurityIncident,
   getDb,
   getMergeLock,
   getProjectVm,
   getRunById,
   listRunsByProject,
   releaseMergeLock,
+  type SecurityIncidentRow,
   type CostCategory,
   type ProjectVmRow,
   type RunPhaseMetricOutcome,
   type RunPhaseMetricPhase,
   type RunRow,
   type RunTrigger,
+  updateIncidentResolution,
   updateProjectVm,
   updateRun,
 } from "./db.js";
@@ -3036,6 +3039,8 @@ export async function runRun(runId: string) {
         })
       : null;
     const streamContext: StreamMonitorContext = {
+      runId,
+      projectId: project.id,
       workOrderId: workOrder.id,
       goal: workOrder.goal ?? "",
       acceptanceCriteria: workOrder.acceptance_criteria,
@@ -5079,6 +5084,10 @@ export type RunDetails = Omit<RunRow, "escalation" | "eta_history"> & {
   reviewer_log_tail: string;
   tests_log_tail: string;
   iteration_history: RunIterationHistoryEntry[];
+  security_incident: Pick<
+    SecurityIncidentRow,
+    "id" | "pattern_category" | "pattern_matched" | "gemini_verdict" | "timestamp" | "false_positive" | "user_resolution"
+  > | null;
 };
 
 export function getRun(runId: string): RunDetails | null {
@@ -5106,6 +5115,7 @@ export function getRun(runId: string): RunDetails | null {
   const escalation = parseEscalationRecord(run.escalation);
   const etaHistory = parseEtaHistory(run.eta_history);
   const initialEstimate = buildInitialEstimate(run);
+  const incident = getLatestUnresolvedSecurityIncident(runId);
 
   return {
     ...run,
@@ -5117,12 +5127,28 @@ export function getRun(runId: string): RunDetails | null {
     reviewer_log_tail: tailFile(reviewerLogPath),
     tests_log_tail: tailFile(testsLogPath),
     iteration_history: iterationHistory,
+    security_incident: incident
+      ? {
+          id: incident.id,
+          pattern_category: incident.pattern_category,
+          pattern_matched: incident.pattern_matched,
+          gemini_verdict: incident.gemini_verdict,
+          timestamp: incident.timestamp,
+          false_positive: incident.false_positive,
+          user_resolution: incident.user_resolution,
+        }
+      : null,
   };
 }
 
 export function provideRunInput(
   runId: string,
-  inputs: Record<string, unknown>
+  inputs: Record<string, unknown>,
+  options?: {
+    incidentId?: string | null;
+    falsePositive?: boolean;
+    resolutionNotes?: string | null;
+  }
 ): { ok: true } | { ok: false; error: string } {
   const run = getRunById(runId);
   if (!run) return { ok: false, error: "Run not found" };
@@ -5156,6 +5182,17 @@ export function provideRunInput(
     status: "building",
     escalation: JSON.stringify(updated),
   });
+  try {
+    updateIncidentResolution({
+      run_id: runId,
+      resolution: "resumed",
+      incident_id: options?.incidentId ?? null,
+      false_positive: options?.falsePositive,
+      resolution_notes: options?.resolutionNotes,
+    });
+  } catch {
+    // Ignore incident resolution failures.
+  }
   return { ok: true };
 }
 
@@ -5287,6 +5324,11 @@ export async function cancelRun(runId: string): Promise<CancelRunResult> {
     log("Runner pid missing; marking run canceled.");
     const finishedAt = nowIso();
     updateRun(runId, { status: "canceled", finished_at: finishedAt, error: "canceled by user" });
+    try {
+      updateIncidentResolution({ run_id: runId, resolution: "aborted" });
+    } catch {
+      // Ignore incident resolution failures.
+    }
     return { ok: true, run: getRunById(runId) ?? run };
   }
 
@@ -5303,6 +5345,11 @@ export async function cancelRun(runId: string): Promise<CancelRunResult> {
   clearRunnerPid(run.run_dir);
   const finishedAt = nowIso();
   updateRun(runId, { status: "canceled", finished_at: finishedAt, error: "canceled by user" });
+  try {
+    updateIncidentResolution({ run_id: runId, resolution: "aborted" });
+  } catch {
+    // Ignore incident resolution failures.
+  }
   return { ok: true, run: getRunById(runId) ?? run };
 }
 
