@@ -273,11 +273,36 @@
 .signupForm {
   display: grid;
   gap: 10px;
+  position: relative;
+}
+
+.honeypot {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.signupInputError {
+  border-color: rgba(255, 149, 149, 0.85);
+  box-shadow: 0 0 0 1px rgba(255, 149, 149, 0.35);
 }
 
 .signupNote {
   font-size: 12px;
   color: #a9b0c2;
+  min-height: 16px;
+}
+
+.signupNoteSuccess {
+  color: #8fe6b2;
+}
+
+.signupNoteError {
+  color: #ff9b9b;
 }
 
 .reveal {

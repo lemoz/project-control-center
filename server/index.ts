@@ -6,6 +6,7 @@ import express, { type Response, type NextFunction } from "express";
 import cors from "cors";
 import {
   createUserInteraction,
+  createSubscriber,
   createEscalation,
   createProjectCommunication,
   createGlobalPattern,
@@ -37,6 +38,7 @@ import {
   listRunPhaseMetrics,
   listShifts,
   listProjects,
+  listSubscribers,
   markInProgressRunsFailed,
   markWorkOrderRunsMerged,
   setProjectStar,
@@ -561,6 +563,34 @@ app.use(express.json({ verify: captureRawBody }));
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });
+});
+
+app.post("/subscribe", (req, res) => {
+  const email = typeof req.body?.email === "string" ? req.body.email.trim() : "";
+  const rawSource = typeof req.body?.source === "string" ? req.body.source.trim() : "";
+  const source = rawSource || "landing";
+  const honeypot =
+    typeof req.body?.company === "string" ? req.body.company.trim() : "";
+  if (honeypot) {
+    return res.json({ status: "success" });
+  }
+  if (!email || !email.includes("@")) {
+    return res.status(400).json({ error: "valid email required" });
+  }
+  try {
+    const result = createSubscriber({ email, source });
+    return res.json({ status: result.status });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "failed to subscribe";
+    return res.status(500).json({ error: message });
+  }
+});
+
+app.get("/subscribers", (req, res) => {
+  const limitParam = typeof req.query.limit === "string" ? req.query.limit : null;
+  const parsedLimit = limitParam ? Number.parseInt(limitParam, 10) : NaN;
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
+  return res.json({ subscribers: listSubscribers(limit) });
 });
 
 app.post("/api/voice/session", async (_req, res) => {
