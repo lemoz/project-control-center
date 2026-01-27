@@ -34,7 +34,7 @@
 .landingHeader {
   position: sticky;
   top: 16px;
-  z-index: 50;
+  z-index: 100;
 }
 
 .headerInner {
@@ -185,6 +185,57 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+/* Compact hero - title and CTAs only */
+.heroCompact {
+  position: relative;
+  text-align: center;
+  padding: 24px 16px 0;
+}
+
+.heroCompactInner {
+  max-width: 800px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.heroTitleCompact {
+  margin: 12px 0;
+  font-size: clamp(28px, 3.5vw, 42px);
+  line-height: 1.1;
+  text-align: center;
+}
+
+.heroCopyCompact {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #cbd5f5;
+  max-width: 560px;
+  text-align: center;
+}
+
+/* Full-width canvas section */
+.canvasSection {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 16px;
+  scroll-margin-top: 96px;
+}
+
+.canvasSection .liveDemoCard {
+  min-height: 60vh;
+  max-height: 70vh;
+}
+
+.canvasSection .liveDemoStage {
+  flex: 1;
+  min-height: 400px;
 }
 
 .eyebrow {

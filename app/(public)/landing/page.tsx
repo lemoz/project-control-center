@@ -39,72 +39,31 @@ export default function LandingPage() {
     <main className={styles.page}>
       <LandingHeader />
       <div className={styles.pageBody}>
-        <section className={styles.hero}>
-          <div className={styles.heroInner}>
-            <div className={styles.heroContent}>
-              <span className={`${styles.eyebrow} ${styles.reveal} ${styles.delay1}`}>
-                Project Control Center
-              </span>
-              <h1 className={`${styles.heroTitle} ${styles.reveal} ${styles.delay2}`}>
-                Local-first command center for AI-built projects.
-              </h1>
-              <p className={`${styles.heroCopy} ${styles.reveal} ${styles.delay3}`}>
-                Define work orders, orchestrate builders, and watch every run ship with
-                live visibility and gated reviews.
-              </p>
-              <div className={`${styles.ctaRow} ${styles.reveal} ${styles.delay4}`}>
-                <a className={`btn ${styles.primaryCta}`} href="/live">
-                  See it Live
-                </a>
-                <a className={`btnSecondary ${styles.secondaryCta}`} href="#signup">
-                  Join the email list
-                </a>
-              </div>
-              <div className={`${styles.valueRow} ${styles.reveal} ${styles.delay5}`}>
-                <div className={styles.valueItem}>
-                  <div className={styles.valueLabel}>Spec-first execution</div>
-                  <div className={styles.valueCopy}>
-                    Goals, acceptance criteria, and stop conditions drive every run.
-                  </div>
-                </div>
-                <div className={styles.valueItem}>
-                  <div className={styles.valueLabel}>Live telemetry</div>
-                  <div className={styles.valueCopy}>
-                    Track active work orders and agent focus in real time.
-                  </div>
-                </div>
-                <div className={styles.valueItem}>
-                  <div className={styles.valueLabel}>Local control</div>
-                  <div className={styles.valueCopy}>
-                    SQLite state and local runners keep everything on your machine.
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div
-              className={`${styles.heroPanel} ${styles.reveal} ${styles.delay4}`}
-              id="live-demo"
-            >
-              <LiveHeroEmbed />
-              <div className={`card ${styles.heroCardSecondary}`}>
-                <div className={styles.heroCardTitle}>Why teams use PCC</div>
-                <div className={styles.heroStatGrid}>
-                  <div>
-                    <div className={styles.heroStatLabel}>Work order clarity</div>
-                    <div className={styles.heroStatValue}>Goals and criteria up front.</div>
-                  </div>
-                  <div>
-                    <div className={styles.heroStatLabel}>Run visibility</div>
-                    <div className={styles.heroStatValue}>See shifts and logs live.</div>
-                  </div>
-                  <div>
-                    <div className={styles.heroStatLabel}>Safe shipping</div>
-                    <div className={styles.heroStatValue}>Review gates before merge.</div>
-                  </div>
-                </div>
-              </div>
+        <section className={styles.heroCompact}>
+          <div className={styles.heroCompactInner}>
+            <span className={`${styles.eyebrow} ${styles.reveal} ${styles.delay1}`}>
+              Project Control Center
+            </span>
+            <h1 className={`${styles.heroTitleCompact} ${styles.reveal} ${styles.delay2}`}>
+              Local-first command center for AI-built projects.
+            </h1>
+            <p className={`${styles.heroCopyCompact} ${styles.reveal} ${styles.delay3}`}>
+              Define work orders, orchestrate builders, and watch every run ship with
+              live visibility and gated reviews.
+            </p>
+            <div className={`${styles.ctaRow} ${styles.reveal} ${styles.delay4}`}>
+              <a className={`btn ${styles.primaryCta}`} href="/live">
+                See it Live
+              </a>
+              <a className={`btnSecondary ${styles.secondaryCta}`} href="#signup">
+                Join the email list
+              </a>
             </div>
           </div>
+        </section>
+
+        <section className={styles.canvasSection} id="live-demo">
+          <LiveHeroEmbed />
         </section>
 
         <section className={styles.section} id="features">

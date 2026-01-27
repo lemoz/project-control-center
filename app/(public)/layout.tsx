@@ -7,6 +7,12 @@ const publicLayoutStyles = `
   .container > header {
     display: none !important;
   }
+  /* Hide chat widget on public pages */
+  [class*="chatWidget"],
+  [class*="ChatWidget"],
+  .chat-widget {
+    display: none !important;
+  }
 `;
 
 export default function PublicLayout({ children }: { children: React.ReactNode }) {
