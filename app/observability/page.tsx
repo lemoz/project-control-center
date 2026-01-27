@@ -7,11 +7,13 @@ import { BudgetPanel } from "./components/BudgetPanel";
 import { FailureBreakdownPanel } from "./components/FailureBreakdownPanel";
 import { LiveLogs } from "./components/LiveLogs";
 import { RunTimeline } from "./components/RunTimeline";
+import { SecurityIncidentsPanel } from "./components/SecurityIncidentsPanel";
 import { VMHealthPanel } from "./components/VMHealthPanel";
 import { useActiveRuns } from "./hooks/useActiveRuns";
 import { useAlerts } from "./hooks/useAlerts";
 import { useBudgetSummary } from "./hooks/useBudgetSummary";
 import { useFailureBreakdown } from "./hooks/useFailureBreakdown";
+import { useIncidentStats } from "./hooks/useIncidentStats";
 import { useRunTimeline } from "./hooks/useRunTimeline";
 import { useVMHealth } from "./hooks/useVMHealth";
 
@@ -45,6 +47,7 @@ export default function ObservabilityPage() {
   const failures = useFailureBreakdown(refreshToken);
   const timeline = useRunTimeline(refreshToken, TIMELINE_HOURS);
   const alerts = useAlerts(refreshToken);
+  const incidents = useIncidentStats(refreshToken);
 
   useEffect(() => {
     if (!activeRuns.data.length) {
@@ -79,6 +82,11 @@ export default function ObservabilityPage() {
         <VMHealthPanel data={vmHealth.data} loading={vmHealth.loading} error={vmHealth.error} />
         <BudgetPanel data={budget.data} loading={budget.loading} error={budget.error} />
         <FailureBreakdownPanel data={failures.data} loading={failures.loading} error={failures.error} />
+        <SecurityIncidentsPanel
+          data={incidents.data}
+          loading={incidents.loading}
+          error={incidents.error}
+        />
         <ActiveRunsPanel
           data={activeRuns.data}
           loading={activeRuns.loading}

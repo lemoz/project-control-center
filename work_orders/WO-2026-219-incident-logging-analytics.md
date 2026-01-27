@@ -1,7 +1,7 @@
 ---
 id: WO-2026-219
 title: Incident logging and analytics
-status: backlog
+status: you_review
 priority: 2
 tags:
   - monitoring

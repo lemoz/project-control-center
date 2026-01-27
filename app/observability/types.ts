@@ -80,6 +80,16 @@ export type ObservabilityAlert = {
   waiting_since?: string;
 };
 
+export type IncidentStats = {
+  total: number;
+  by_verdict: { SAFE: number; WARN: number; KILL: number };
+  by_category: Record<string, number>;
+  false_positive_rate: number;
+  avg_gemini_latency_ms: number;
+  last_7_days: number;
+  last_30_days: number;
+};
+
 export type LogTail = {
   lines: string[];
   has_more: boolean;

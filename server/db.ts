@@ -119,6 +119,69 @@ export type RunRow = {
   escalation: string | null;
 };
 
+export type SecurityIncidentVerdict = "SAFE" | "WARN" | "KILL";
+export type SecurityIncidentAction = "killed" | "warned" | "allowed";
+export type SecurityIncidentResolution = "resumed" | "aborted";
+
+export type SecurityIncidentRow = {
+  id: string;
+  run_id: string;
+  project_id: string;
+  timestamp: string;
+  pattern_category: string;
+  pattern_matched: string;
+  trigger_content: string;
+  agent_output_snippet: string | null;
+  wo_id: string | null;
+  wo_goal: string | null;
+  gemini_verdict: SecurityIncidentVerdict;
+  gemini_reason: string | null;
+  gemini_latency_ms: number | null;
+  action_taken: SecurityIncidentAction;
+  user_resolution: SecurityIncidentResolution | null;
+  false_positive: 0 | 1;
+  resolution_timestamp: string | null;
+  resolution_notes: string | null;
+  created_at: string;
+  archived_at: string | null;
+};
+
+export type CreateSecurityIncidentInput = {
+  run_id: string;
+  project_id: string;
+  timestamp: string;
+  pattern_category: string;
+  pattern_matched: string;
+  trigger_content: string;
+  agent_output_snippet?: string | null;
+  wo_id?: string | null;
+  wo_goal?: string | null;
+  gemini_verdict: SecurityIncidentVerdict;
+  gemini_reason?: string | null;
+  gemini_latency_ms?: number | null;
+  action_taken: SecurityIncidentAction;
+  created_at?: string;
+};
+
+export type SecurityIncidentQuery = {
+  start?: string;
+  end?: string;
+  verdict?: SecurityIncidentVerdict;
+  false_positive?: boolean;
+  order?: "asc" | "desc";
+  limit?: number;
+};
+
+export type IncidentStats = {
+  total: number;
+  by_verdict: { SAFE: number; WARN: number; KILL: number };
+  by_category: Record<string, number>;
+  false_positive_rate: number;
+  avg_gemini_latency_ms: number;
+  last_7_days: number;
+  last_30_days: number;
+};
+
 export type MergeLockRow = {
   project_id: string;
   run_id: string;
@@ -669,6 +732,34 @@ function initSchema(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_runs_project_id_created_at ON runs(project_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_runs_status_created_at ON runs(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS security_incidents (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      timestamp TEXT NOT NULL,
+      pattern_category TEXT NOT NULL,
+      pattern_matched TEXT NOT NULL,
+      trigger_content TEXT NOT NULL,
+      agent_output_snippet TEXT,
+      wo_id TEXT,
+      wo_goal TEXT,
+      gemini_verdict TEXT NOT NULL,
+      gemini_reason TEXT,
+      gemini_latency_ms INTEGER,
+      action_taken TEXT NOT NULL,
+      user_resolution TEXT,
+      false_positive INTEGER DEFAULT 0,
+      resolution_timestamp TEXT,
+      resolution_notes TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      archived_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_incidents_run ON security_incidents(run_id);
+    CREATE INDEX IF NOT EXISTS idx_incidents_project ON security_incidents(project_id);
+    CREATE INDEX IF NOT EXISTS idx_incidents_timestamp ON security_incidents(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_incidents_verdict ON security_incidents(gemini_verdict);
 
     CREATE TABLE IF NOT EXISTS merge_locks (
       project_id TEXT PRIMARY KEY,
@@ -1892,6 +1983,325 @@ export function createCostRecord(record: CostRecord): void {
         (@id, @project_id, @run_id, @category, @input_tokens, @output_tokens, @is_actual, @model, @input_cost_per_1k, @output_cost_per_1k, @total_cost_usd, @description, @created_at)`
     )
     .run(record);
+}
+
+const INCIDENT_ARCHIVE_DAYS = 90;
+
+function normalizeLatency(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.trunc(value));
+}
+
+function archiveStaleSecurityIncidents(database: Database.Database): void {
+  const cutoff = new Date(
+    Date.now() - INCIDENT_ARCHIVE_DAYS * 24 * 60 * 60 * 1000
+  ).toISOString();
+  database
+    .prepare(
+      `UPDATE security_incidents
+       SET archived_at = ?
+       WHERE archived_at IS NULL AND timestamp < ?`
+    )
+    .run(new Date().toISOString(), cutoff);
+}
+
+export function createSecurityIncident(
+  input: CreateSecurityIncidentInput
+): SecurityIncidentRow {
+  const database = getDb();
+  archiveStaleSecurityIncidents(database);
+  const createdAt = input.created_at ?? new Date().toISOString();
+  const row: SecurityIncidentRow = {
+    id: crypto.randomUUID(),
+    run_id: input.run_id,
+    project_id: input.project_id,
+    timestamp: input.timestamp,
+    pattern_category: input.pattern_category,
+    pattern_matched: input.pattern_matched,
+    trigger_content: input.trigger_content,
+    agent_output_snippet: input.agent_output_snippet ?? null,
+    wo_id: input.wo_id ?? null,
+    wo_goal: input.wo_goal ?? null,
+    gemini_verdict: input.gemini_verdict,
+    gemini_reason: input.gemini_reason ?? null,
+    gemini_latency_ms: normalizeLatency(input.gemini_latency_ms),
+    action_taken: input.action_taken,
+    user_resolution: null,
+    false_positive: 0,
+    resolution_timestamp: null,
+    resolution_notes: null,
+    created_at: createdAt,
+    archived_at: null,
+  };
+  database
+    .prepare(
+      `INSERT INTO security_incidents
+        (id, run_id, project_id, timestamp, pattern_category, pattern_matched, trigger_content, agent_output_snippet, wo_id, wo_goal, gemini_verdict, gemini_reason, gemini_latency_ms, action_taken, user_resolution, false_positive, resolution_timestamp, resolution_notes, created_at, archived_at)
+       VALUES
+        (@id, @run_id, @project_id, @timestamp, @pattern_category, @pattern_matched, @trigger_content, @agent_output_snippet, @wo_id, @wo_goal, @gemini_verdict, @gemini_reason, @gemini_latency_ms, @action_taken, @user_resolution, @false_positive, @resolution_timestamp, @resolution_notes, @created_at, @archived_at)`
+    )
+    .run(row);
+  return row;
+}
+
+export function getLatestUnresolvedSecurityIncident(
+  runId: string
+): SecurityIncidentRow | null {
+  const database = getDb();
+  archiveStaleSecurityIncidents(database);
+  const row = database
+    .prepare(
+      `SELECT *
+       FROM security_incidents
+       WHERE run_id = ?
+         AND archived_at IS NULL
+         AND user_resolution IS NULL
+       ORDER BY timestamp DESC
+       LIMIT 1`
+    )
+    .get(runId) as SecurityIncidentRow | undefined;
+  return row || null;
+}
+
+export function listSecurityIncidents(
+  query: SecurityIncidentQuery = {}
+): SecurityIncidentRow[] {
+  const database = getDb();
+  archiveStaleSecurityIncidents(database);
+  const clauses: string[] = ["archived_at IS NULL"];
+  const params: Array<string | number> = [];
+
+  if (query.start) {
+    clauses.push("timestamp >= ?");
+    params.push(query.start);
+  }
+  if (query.end) {
+    clauses.push("timestamp <= ?");
+    params.push(query.end);
+  }
+  if (query.verdict) {
+    clauses.push("gemini_verdict = ?");
+    params.push(query.verdict);
+  }
+  if (query.false_positive !== undefined) {
+    clauses.push("false_positive = ?");
+    params.push(query.false_positive ? 1 : 0);
+  }
+
+  const whereClause = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const order = query.order === "asc" ? "ASC" : "DESC";
+  const limit =
+    typeof query.limit === "number" && Number.isFinite(query.limit)
+      ? Math.max(1, Math.min(500, Math.trunc(query.limit)))
+      : 200;
+
+  return database
+    .prepare(
+      `SELECT *
+       FROM security_incidents
+       ${whereClause}
+       ORDER BY timestamp ${order}
+       LIMIT ?`
+    )
+    .all(...params, limit) as SecurityIncidentRow[];
+}
+
+export function updateIncidentResolution(params: {
+  run_id: string;
+  resolution: SecurityIncidentResolution;
+  incident_id?: string | null;
+  false_positive?: boolean;
+  resolution_notes?: string | null;
+  resolved_at?: string;
+}): SecurityIncidentRow | null {
+  const database = getDb();
+  archiveStaleSecurityIncidents(database);
+  const resolvedAt = params.resolved_at ?? new Date().toISOString();
+
+  const incidentId = (() => {
+    if (params.incident_id) return params.incident_id;
+    const row = database
+      .prepare(
+        `SELECT id
+         FROM security_incidents
+         WHERE run_id = ?
+           AND archived_at IS NULL
+           AND user_resolution IS NULL
+         ORDER BY timestamp DESC
+         LIMIT 1`
+      )
+      .get(params.run_id) as { id: string } | undefined;
+    return row?.id ?? null;
+  })();
+
+  if (!incidentId) return null;
+
+  const patch: Partial<SecurityIncidentRow> = {
+    user_resolution: params.resolution,
+    resolution_timestamp: resolvedAt,
+  };
+  if (params.false_positive !== undefined) {
+    patch.false_positive = params.false_positive ? 1 : 0;
+  }
+  if (params.resolution_notes !== undefined) {
+    patch.resolution_notes = params.resolution_notes ?? null;
+  }
+
+  const fields: Array<{ key: keyof typeof patch; column: string }> = [
+    { key: "user_resolution", column: "user_resolution" },
+    { key: "false_positive", column: "false_positive" },
+    { key: "resolution_timestamp", column: "resolution_timestamp" },
+    { key: "resolution_notes", column: "resolution_notes" },
+  ];
+  const sets = fields
+    .filter((field) => patch[field.key] !== undefined)
+    .map((field) => `${field.column} = @${field.key}`);
+  if (!sets.length) return null;
+
+  database
+    .prepare(`UPDATE security_incidents SET ${sets.join(", ")} WHERE id = @id`)
+    .run({ id: incidentId, ...patch });
+
+  const updated = database
+    .prepare("SELECT * FROM security_incidents WHERE id = ? LIMIT 1")
+    .get(incidentId) as SecurityIncidentRow | undefined;
+  return updated || null;
+}
+
+export function markSecurityIncidentFalsePositive(params: {
+  id: string;
+  false_positive: boolean;
+  resolution_notes?: string | null;
+}): SecurityIncidentRow | null {
+  const database = getDb();
+  archiveStaleSecurityIncidents(database);
+  const patch: Partial<SecurityIncidentRow> = {
+    false_positive: params.false_positive ? 1 : 0,
+  };
+  if (params.resolution_notes !== undefined) {
+    patch.resolution_notes = params.resolution_notes ?? null;
+  }
+
+  const fields: Array<{ key: keyof typeof patch; column: string }> = [
+    { key: "false_positive", column: "false_positive" },
+    { key: "resolution_notes", column: "resolution_notes" },
+  ];
+  const sets = fields
+    .filter((field) => patch[field.key] !== undefined)
+    .map((field) => `${field.column} = @${field.key}`);
+  if (!sets.length) return null;
+
+  const result = database
+    .prepare(`UPDATE security_incidents SET ${sets.join(", ")} WHERE id = @id`)
+    .run({ id: params.id, ...patch });
+  if (result.changes === 0) return null;
+
+  const updated = database
+    .prepare("SELECT * FROM security_incidents WHERE id = ? LIMIT 1")
+    .get(params.id) as SecurityIncidentRow | undefined;
+  return updated || null;
+}
+
+export function getIncidentStats(): IncidentStats {
+  const database = getDb();
+  archiveStaleSecurityIncidents(database);
+  const baseWhere = "WHERE archived_at IS NULL";
+
+  const totalRow = database
+    .prepare(`SELECT COUNT(1) AS total FROM security_incidents ${baseWhere}`)
+    .get() as { total: number | null } | undefined;
+
+  const verdictRows = database
+    .prepare(
+      `SELECT gemini_verdict AS verdict, COUNT(1) AS count
+       FROM security_incidents
+       ${baseWhere}
+       GROUP BY gemini_verdict`
+    )
+    .all() as Array<{ verdict: SecurityIncidentVerdict; count: number }>;
+
+  const categoryRows = database
+    .prepare(
+      `SELECT pattern_category AS category, COUNT(1) AS count
+       FROM security_incidents
+       ${baseWhere}
+       GROUP BY pattern_category`
+    )
+    .all() as Array<{ category: string; count: number }>;
+
+  const resolutionRow = database
+    .prepare(
+      `SELECT
+        SUM(CASE WHEN user_resolution IS NOT NULL THEN 1 ELSE 0 END) AS resolved_count,
+        SUM(CASE WHEN user_resolution IS NOT NULL AND false_positive = 1 THEN 1 ELSE 0 END) AS false_positives
+       FROM security_incidents
+       ${baseWhere}`
+    )
+    .get() as { resolved_count: number | null; false_positives: number | null } | undefined;
+
+  const avgLatencyRow = database
+    .prepare(
+      `SELECT AVG(gemini_latency_ms) AS avg_latency
+       FROM security_incidents
+       ${baseWhere}
+       AND gemini_latency_ms IS NOT NULL`
+    )
+    .get() as { avg_latency: number | null } | undefined;
+
+  const cutoff7 = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+  const last7Row = database
+    .prepare(
+      `SELECT COUNT(1) AS count
+       FROM security_incidents
+       ${baseWhere}
+       AND timestamp >= ?`
+    )
+    .get(cutoff7) as { count: number | null } | undefined;
+
+  const last30Row = database
+    .prepare(
+      `SELECT COUNT(1) AS count
+       FROM security_incidents
+       ${baseWhere}
+       AND timestamp >= ?`
+    )
+    .get(cutoff30) as { count: number | null } | undefined;
+
+  const byVerdict = { SAFE: 0, WARN: 0, KILL: 0 };
+  for (const row of verdictRows) {
+    if (row.verdict in byVerdict) {
+      byVerdict[row.verdict] = Number.isFinite(row.count) ? row.count : 0;
+    }
+  }
+
+  const byCategory: Record<string, number> = {};
+  for (const row of categoryRows) {
+    if (!row.category) continue;
+    byCategory[row.category] = Number.isFinite(row.count) ? row.count : 0;
+  }
+
+  const resolvedCount = Number.isFinite(resolutionRow?.resolved_count ?? null)
+    ? (resolutionRow?.resolved_count as number)
+    : 0;
+  const falsePositives = Number.isFinite(resolutionRow?.false_positives ?? null)
+    ? (resolutionRow?.false_positives as number)
+    : 0;
+
+  return {
+    total: Number.isFinite(totalRow?.total ?? null) ? (totalRow?.total as number) : 0,
+    by_verdict: byVerdict,
+    by_category: byCategory,
+    false_positive_rate: resolvedCount > 0 ? falsePositives / resolvedCount : 0,
+    avg_gemini_latency_ms: Number.isFinite(avgLatencyRow?.avg_latency ?? null)
+      ? (avgLatencyRow?.avg_latency as number)
+      : 0,
+    last_7_days: Number.isFinite(last7Row?.count ?? null) ? (last7Row?.count as number) : 0,
+    last_30_days: Number.isFinite(last30Row?.count ?? null)
+      ? (last30Row?.count as number)
+      : 0,
+  };
 }
 
 export function updateRun(
