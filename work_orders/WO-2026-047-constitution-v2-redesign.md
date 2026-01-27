@@ -23,9 +23,9 @@ tags:
   - autonomous
   - v2
 estimate_hours: 2
-status: ready
+status: you_review
 created_at: 2026-01-10
-updated_at: 2026-01-26
+updated_at: 2026-01-27
 depends_on:
   - WO-2026-025
 era: v2
