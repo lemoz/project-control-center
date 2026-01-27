@@ -1,7 +1,7 @@
 ---
 id: WO-2026-173
 title: Landing page live demo embed
-status: backlog
+status: ready
 priority: 2
 tags:
   - landing-page
@@ -11,7 +11,7 @@ estimate_hours: 2
 depends_on:
   - WO-2026-171
 era: v2
-updated_at: 2026-01-26
+updated_at: 2026-01-27
 goal: Embed the existing LiveOrbitalCanvas and AgentActivityPanel components on the landing page hero section so visitors see real live activity.
 context:
   - Landing page hero at app/(public)/landing/page.tsx (WO-2026-171)

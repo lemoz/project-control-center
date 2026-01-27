@@ -1,7 +1,7 @@
 ---
 id: WO-2026-171
 title: Public landing page foundation
-status: you_review
+status: done
 priority: 2
 tags:
   - landing-page

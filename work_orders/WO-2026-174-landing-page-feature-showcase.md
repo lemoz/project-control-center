@@ -1,7 +1,7 @@
 ---
 id: WO-2026-174
 title: Landing page feature showcase
-status: backlog
+status: ready
 priority: 3
 tags:
   - landing-page
@@ -10,7 +10,7 @@ estimate_hours: 1.5
 depends_on:
   - WO-2026-171
 era: v2
-updated_at: 2026-01-26
+updated_at: 2026-01-27
 goal: Add a feature grid section to the landing page highlighting PCC's key capabilities with icons and descriptions.
 context:
   - Landing page at app/(public)/landing/page.tsx (WO-2026-171)

@@ -1,7 +1,7 @@
 ---
 id: WO-2026-172
 title: Landing page email collection system
-status: backlog
+status: ready
 priority: 2
 tags:
   - landing-page
@@ -11,7 +11,7 @@ estimate_hours: 2
 depends_on:
   - WO-2026-171
 era: v2
-updated_at: 2026-01-26
+updated_at: 2026-01-27
 goal: Set up email collection for early access signups on the landing page with SQLite storage and spam protection.
 context:
   - Landing page foundation at app/(public)/landing/page.tsx (WO-2026-171)
