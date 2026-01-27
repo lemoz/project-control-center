@@ -1,7 +1,7 @@
 ---
 id: WO-2026-215
 title: Stream monitor service
-status: you_review
+status: done
 priority: 1
 tags:
   - monitoring
