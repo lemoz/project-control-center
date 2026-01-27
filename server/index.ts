@@ -2,7 +2,7 @@ import "./env.js";
 import fs from "fs";
 import crypto from "crypto";
 import YAML from "yaml";
-import express, { type Response, type NextFunction } from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
 import {
   createUserInteraction,
@@ -235,6 +235,8 @@ const app = express();
 const port = Number(process.env.CONTROL_CENTER_PORT || 4010);
 const host = process.env.CONTROL_CENTER_HOST || "127.0.0.1";
 const allowLan = process.env.CONTROL_CENTER_ALLOW_LAN === "1";
+const allowRemoteHealth = process.env.CONTROL_CENTER_ALLOW_REMOTE_HEALTH === "1";
+const healthToken = (process.env.CONTROL_CENTER_HEALTH_TOKEN || "").trim();
 const DEFAULT_ESCALATION_TIMEOUT_HOURS = 24;
 const ESCALATION_TIMEOUT_SWEEP_MS = 10 * 60 * 1000;
 
@@ -427,6 +429,20 @@ function isLoopbackAddress(value: string | undefined): boolean {
   return normalized.startsWith("127.");
 }
 
+const HEALTH_PATHS = new Set(["/health", "/observability/vm-health"]);
+
+function normalizeHealthPath(value: string): string {
+  if (value.length > 1 && value.endsWith("/")) return value.slice(0, -1);
+  return value;
+}
+
+function hasValidHealthToken(req: Request): boolean {
+  if (!healthToken) return true;
+  const queryToken = typeof req.query?.token === "string" ? req.query.token.trim() : "";
+  const headerToken = req.get("x-health-token")?.trim() ?? "";
+  return queryToken === healthToken || headerToken === healthToken;
+}
+
 async function requestElevenLabsSignedUrl(): Promise<string> {
   const agentId =
     process.env.CONTROL_CENTER_ELEVENLABS_AGENT_ID ||
@@ -547,6 +563,18 @@ app.use((req, res, next) => {
   if (allowLan) return next();
   const remote = req.socket.remoteAddress;
   if (isLoopbackAddress(remote)) return next();
+  if (allowRemoteHealth) {
+    const normalizedPath = normalizeHealthPath(req.path);
+    if (HEALTH_PATHS.has(normalizedPath)) {
+      if (!hasValidHealthToken(req)) {
+        return res.status(401).json({
+          error: "unauthorized",
+          message: "Missing or invalid health token.",
+        });
+      }
+      return next();
+    }
+  }
   return res.status(403).json({
     error: "forbidden",
     message:
