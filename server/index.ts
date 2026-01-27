@@ -3530,8 +3530,14 @@ app.get("/repos/:id/tech-tree", (req, res) => {
     if (wo.era) erasSet.add(wo.era);
   }
   const eras = Array.from(erasSet).sort();
+  const tracks = listTracks(project.id).map((track) => ({
+    id: track.id,
+    name: track.name,
+    color: track.color,
+    sortOrder: track.sortOrder,
+  }));
 
-  return res.json({ nodes, cycles, eras });
+  return res.json({ nodes, cycles, eras, tracks });
 });
 
 const ESTIMATION_SCOPES = ["project", "global"] as const;

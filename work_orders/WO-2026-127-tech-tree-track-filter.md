@@ -26,12 +26,12 @@ tags:
   - visualization
   - filtering
 estimate_hours: 2
-status: ready
+status: you_review
 depends_on:
   - WO-2026-126
 era: v2
 created_at: 2026-01-22
-updated_at: 2026-01-26
+updated_at: 2026-01-27
 ---
 ## Summary
 
