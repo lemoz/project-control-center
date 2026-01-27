@@ -24,7 +24,7 @@ acceptance_criteria:
   - Landing page shows actual AgentActivityPanel with real activity
   - Reuses existing hooks (useProjectsVisualization, useAgentFocusSync)
   - Component container is appropriately sized for hero section
-  - "Live" indicator visible
+  - Live indicator badge visible
   - CTA link to /live for full-screen experience
   - Graceful handling if no active data (empty state)
 non_goals:

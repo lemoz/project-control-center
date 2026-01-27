@@ -20,9 +20,9 @@ context:
 acceptance_criteria:
   - New route at app/(public)/landing/page.tsx (route group with separate layout)
   - Landing-specific layout without app header/sidebar (app/(public)/layout.tsx)
-  - Hero section with tagline and primary CTA ("See it Live" → /live)
+  - Hero section with tagline and primary CTA (See it Live button links to /live)
   - Secondary CTA for email signup (anchor to #signup section)
-  - "How It Works" section with 3 value cards (Define WOs → AI Builds → Ship)
+  - How It Works section with 3 value cards (Define WOs, AI Builds, Ship)
   - Responsive mobile-first design
   - Dark theme consistent with existing design system
   - Meta tags for SEO (title, description, Open Graph, Twitter card)
