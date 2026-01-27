@@ -1,7 +1,7 @@
 ---
 id: WO-2026-176
 title: Automated shift scheduler
-status: you_review
+status: done
 priority: 1
 tags:
   - shift-agent

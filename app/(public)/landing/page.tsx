@@ -63,6 +63,12 @@ export default function LandingPage() {
         </section>
 
         <section className={styles.canvasSection} id="live-demo">
+          <div className={styles.canvasCaption}>
+            <p className={styles.canvasCaptionText}>
+              Every dot is a work order. Inner rings need attention first.
+              Watch them move as builders and reviewers work.
+            </p>
+          </div>
           <LiveHeroEmbed />
         </section>
 
