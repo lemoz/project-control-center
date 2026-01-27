@@ -318,6 +318,20 @@ export type UserInteractionRow = {
   created_at: string;
 };
 
+export type SubscriberRow = {
+  id: string;
+  email: string;
+  source: string;
+  created_at: string;
+  confirmed_at: string | null;
+  unsubscribed_at: string | null;
+};
+
+export type SubscriberCreateResult = {
+  status: "success" | "already_exists";
+  subscriber: SubscriberRow;
+};
+
 export type WorkOrderDepRow = {
   project_id: string;
   work_order_id: string;
@@ -794,6 +808,18 @@ function initSchema(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_user_interactions_created
       ON user_interactions(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS subscribers (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      source TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      confirmed_at TEXT,
+      unsubscribed_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_subscribers_created
+      ON subscribers(created_at DESC);
 
     CREATE TABLE IF NOT EXISTS work_order_deps (
       project_id TEXT NOT NULL,
@@ -2858,6 +2884,82 @@ export function listUserInteractions(params?: {
        LIMIT ?`
     )
     .all(limit) as UserInteractionRow[];
+}
+
+export function createSubscriber(input: {
+  email: string;
+  source?: string;
+}): SubscriberCreateResult {
+  const database = getDb();
+  const email = input.email.trim().toLowerCase();
+  if (!email) {
+    throw new Error("email is required");
+  }
+  const source = input.source?.trim() || "unknown";
+  const existing = database
+    .prepare(
+      `SELECT id, email, source, created_at, confirmed_at, unsubscribed_at
+       FROM subscribers
+       WHERE email = ?`
+    )
+    .get(email) as SubscriberRow | undefined;
+  if (existing) {
+    if (existing.unsubscribed_at) {
+      database
+        .prepare(
+          `UPDATE subscribers
+           SET unsubscribed_at = NULL,
+               source = @source
+           WHERE id = @id`
+        )
+        .run({ id: existing.id, source });
+      return {
+        status: "success",
+        subscriber: { ...existing, unsubscribed_at: null, source },
+      };
+    }
+    return { status: "already_exists", subscriber: existing };
+  }
+  const now = new Date().toISOString();
+  const row: SubscriberRow = {
+    id: crypto.randomUUID(),
+    email,
+    source,
+    created_at: now,
+    confirmed_at: null,
+    unsubscribed_at: null,
+  };
+  database
+    .prepare(
+      `INSERT INTO subscribers
+        (id, email, source, created_at, confirmed_at, unsubscribed_at)
+       VALUES
+        (@id, @email, @source, @created_at, @confirmed_at, @unsubscribed_at)`
+    )
+    .run(row);
+  return { status: "success", subscriber: row };
+}
+
+export function listSubscribers(limit?: number): SubscriberRow[] {
+  const database = getDb();
+  if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) {
+    const safeLimit = Math.min(5000, Math.trunc(limit));
+    return database
+      .prepare(
+        `SELECT id, email, source, created_at, confirmed_at, unsubscribed_at
+         FROM subscribers
+         ORDER BY created_at DESC
+         LIMIT ?`
+      )
+      .all(safeLimit) as SubscriberRow[];
+  }
+  return database
+    .prepare(
+      `SELECT id, email, source, created_at, confirmed_at, unsubscribed_at
+       FROM subscribers
+       ORDER BY created_at DESC`
+    )
+    .all() as SubscriberRow[];
 }
 
 type TrackCounts = Partial<

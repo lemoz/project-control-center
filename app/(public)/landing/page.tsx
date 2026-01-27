@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import EmailSignup from "./EmailSignup";
 import styles from "./landing.module.css";
 import FeatureGrid from "./components/FeatureGrid";
 
@@ -169,24 +170,10 @@ export default function LandingPage() {
               <div className={styles.sectionKicker}>Email updates</div>
               <h2 className={styles.signupTitle}>Stay close to the launch.</h2>
               <p className={styles.signupCopy}>
-                Email signup is coming soon. Leave your address to get launch notes
-                and early access details.
+                Join the early access list to get launch notes and preview invites.
               </p>
             </div>
-            <div className={styles.signupForm}>
-              <input
-                className="input"
-                type="email"
-                placeholder="you@domain.com"
-                aria-label="Email address"
-              />
-              <button className="btn" type="button" disabled>
-                Join the list
-              </button>
-            </div>
-            <div className={styles.signupNote}>
-              Email capture is disabled in this release.
-            </div>
+            <EmailSignup />
           </div>
         </div>
       </section>
