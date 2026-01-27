@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent, WheelEvent } from "react";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 type WorkOrderStatus =
   | "backlog"
@@ -29,10 +30,18 @@ type DependencyNode = {
   isExternal: boolean;
 };
 
+type TrackSummary = {
+  id: string;
+  name: string;
+  color: string | null;
+  sortOrder?: number;
+};
+
 type TechTreeResponse = {
   nodes: DependencyNode[];
   cycles: string[][];
   eras: string[];
+  tracks?: TrackSummary[];
 };
 
 const STATUS_COLORS: Record<WorkOrderStatus, string> = {
@@ -86,6 +95,11 @@ const SCALE_STEP = 1.15;
 const FIT_PADDING = 0.94;
 const MINIMAP_WIDTH = 220;
 const MINIMAP_HEIGHT = 160;
+const HIDDEN_EDGE_STUB = 40;
+
+const resolveTrackId = (node: DependencyNode): string => {
+  return node.track?.id ?? node.trackId ?? UNASSIGNED_LANE_ID;
+};
 
 type LaneLayout = {
   id: string;
@@ -115,6 +129,14 @@ type Viewport = {
 
 type ViewMode = "era" | "depth";
 
+type TrackFilterItem = {
+  id: string;
+  name: string;
+  color: string | null;
+  sortOrder: number | null;
+  isUnassigned: boolean;
+};
+
 export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: () => void }) {
   const [data, setData] = useState<TechTreeResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -129,6 +151,9 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
   const containerRef = useRef<HTMLDivElement>(null);
   const scaleRef = useRef(scale);
   const zoomStorageKey = `pcc.techTree.zoom.${repoId}`;
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   const toggleLane = useCallback((laneId: string) => {
     setCollapsedLanes((prev) => ({ ...prev, [laneId]: !prev[laneId] }));
@@ -266,11 +291,179 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
     void load();
   }, [load]);
 
+  const tracksParam = searchParams.get("tracks");
+
+  const trackOptions = useMemo<TrackFilterItem[]>(() => {
+    if (!data) return [];
+    const byId = new Map<string, TrackFilterItem>();
+
+    for (const track of data.tracks ?? []) {
+      byId.set(track.id, {
+        id: track.id,
+        name: track.name,
+        color: track.color ?? null,
+        sortOrder: track.sortOrder ?? null,
+        isUnassigned: false,
+      });
+    }
+
+    for (const node of data.nodes) {
+      const trackId = node.track?.id ?? node.trackId;
+      if (!trackId) continue;
+      const existing = byId.get(trackId);
+      const nodeName = node.track?.name ?? trackId;
+      const nodeColor = node.track?.color ?? null;
+      if (existing) {
+        if (node.track?.name && existing.name === trackId) {
+          existing.name = node.track.name;
+        }
+        if (!existing.color && nodeColor) {
+          existing.color = nodeColor;
+        }
+      } else {
+        byId.set(trackId, {
+          id: trackId,
+          name: nodeName,
+          color: nodeColor,
+          sortOrder: null,
+          isUnassigned: false,
+        });
+      }
+    }
+
+    const hasUnassigned = data.nodes.some((node) => !node.track?.id && !node.trackId);
+    if (hasUnassigned && !byId.has(UNASSIGNED_LANE_ID)) {
+      byId.set(UNASSIGNED_LANE_ID, {
+        id: UNASSIGNED_LANE_ID,
+        name: "Unassigned",
+        color: "#334155",
+        sortOrder: Number.MAX_SAFE_INTEGER,
+        isUnassigned: true,
+      });
+    }
+
+    const list = Array.from(byId.values());
+    list.sort((a, b) => {
+      if (a.isUnassigned !== b.isUnassigned) return a.isUnassigned ? 1 : -1;
+      const orderA = a.sortOrder ?? Number.MAX_SAFE_INTEGER;
+      const orderB = b.sortOrder ?? Number.MAX_SAFE_INTEGER;
+      if (orderA !== orderB) return orderA - orderB;
+      return a.name.localeCompare(b.name);
+    });
+    return list;
+  }, [data]);
+
+  const parsedTracks = useMemo(() => {
+    if (tracksParam === null) return null;
+    return tracksParam
+      .split(",")
+      .map((trackId) => trackId.trim())
+      .filter(Boolean);
+  }, [tracksParam]);
+
+  const visibleTrackIds = useMemo(() => {
+    if (!trackOptions.length) return null;
+    if (!parsedTracks) return new Set(trackOptions.map((track) => track.id));
+    const allowed = new Set(trackOptions.map((track) => track.id));
+    const selected = new Set<string>();
+    for (const trackId of parsedTracks) {
+      if (allowed.has(trackId)) selected.add(trackId);
+    }
+    return selected;
+  }, [parsedTracks, trackOptions]);
+
+  const isTrackVisible = useCallback(
+    (trackId: string) => {
+      if (!visibleTrackIds) return true;
+      return visibleTrackIds.has(trackId);
+    },
+    [visibleTrackIds],
+  );
+
+  const nodeTrackIds = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!data) return map;
+    for (const node of data.nodes) {
+      map.set(node.id, resolveTrackId(node));
+    }
+    return map;
+  }, [data]);
+
+  const visibleNodeIds = useMemo(() => {
+    if (!data) return new Set<string>();
+    if (!visibleTrackIds) return new Set(data.nodes.map((node) => node.id));
+    const set = new Set<string>();
+    for (const node of data.nodes) {
+      const trackId = nodeTrackIds.get(node.id) ?? UNASSIGNED_LANE_ID;
+      if (visibleTrackIds.has(trackId)) set.add(node.id);
+    }
+    return set;
+  }, [data, nodeTrackIds, visibleTrackIds]);
+
+  const nodeCountLabel = useMemo(() => {
+    if (!data) return "";
+    const visibleCount = visibleNodeIds.size;
+    const total = data.nodes.length;
+    if (visibleCount === total) return `${total} work orders`;
+    return `${visibleCount} of ${total} work orders`;
+  }, [data, visibleNodeIds]);
+
+  const updateTracksParam = useCallback(
+    (nextTrackIds: string[] | null) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (!nextTrackIds) params.delete("tracks");
+      else params.set("tracks", nextTrackIds.join(","));
+      const query = params.toString();
+      const href = query ? `${pathname}?${query}` : pathname;
+      router.replace(href, { scroll: false });
+    },
+    [pathname, router, searchParams],
+  );
+
+  const showAllTracks = useCallback(() => {
+    if (!trackOptions.length) return;
+    updateTracksParam(null);
+  }, [trackOptions.length, updateTracksParam]);
+
+  const hideAllTracks = useCallback(() => {
+    if (!trackOptions.length) return;
+    updateTracksParam([]);
+  }, [trackOptions.length, updateTracksParam]);
+
+  const toggleTrackVisibility = useCallback(
+    (trackId: string) => {
+      if (!trackOptions.length) return;
+      const allTrackIds = trackOptions.map((track) => track.id);
+      const current = visibleTrackIds ? new Set(visibleTrackIds) : new Set(allTrackIds);
+      if (current.has(trackId)) current.delete(trackId);
+      else current.add(trackId);
+      const nextIds = allTrackIds.filter((id) => current.has(id));
+      if (nextIds.length === allTrackIds.length) updateTracksParam(null);
+      else updateTracksParam(nextIds);
+    },
+    [trackOptions, updateTracksParam, visibleTrackIds],
+  );
+
+  const activeTrackCount = visibleTrackIds ? visibleTrackIds.size : trackOptions.length;
+
+  useEffect(() => {
+    if (selectedId && !visibleNodeIds.has(selectedId)) {
+      setSelectedId(null);
+    }
+  }, [selectedId, visibleNodeIds]);
+
+  useEffect(() => {
+    if (hoveredId && !visibleNodeIds.has(hoveredId)) {
+      setHoveredId(null);
+    }
+  }, [hoveredId, visibleNodeIds]);
+
   // Calculate node positions based on view mode (era lanes or depth) + track lanes
-  const { nodePositions, svgWidth, svgHeight, lanes, eraColumns, maxDepth } = useMemo(() => {
+  const { nodePositions, nodeXPositions, svgWidth, svgHeight, lanes, eraColumns, maxDepth } = useMemo(() => {
     if (!data)
       return {
         nodePositions: new Map<string, { x: number; y: number }>(),
+        nodeXPositions: new Map<string, number>(),
         svgWidth: 800,
         svgHeight: 600,
         lanes: [] as LaneLayout[],
@@ -279,8 +472,10 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       };
 
     const nodes = data.nodes;
+    const visibleNodes = nodes.filter((node) => visibleNodeIds.has(node.id));
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
     const positions = new Map<string, { x: number; y: number }>();
+    const xPositions = new Map<string, number>();
 
     // Calculate depth for each node (max distance from a root)
     const depths = new Map<string, number>();
@@ -330,9 +525,20 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       : [];
     const eraIndexById = new Map(eraLayouts.map((lane, index) => [lane.id, index]));
 
+    for (const node of nodes) {
+      if (viewMode === "era") {
+        const eraId = normalizeEra(node.era);
+        const eraIndex = eraIndexById.get(eraId) ?? 0;
+        xPositions.set(node.id, LEFT_PADDING + eraIndex * ERA_COLUMN_WIDTH);
+      } else {
+        const nodeDepth = depths.get(node.id) ?? 0;
+        xPositions.set(node.id, LEFT_PADDING + nodeDepth * (NODE_WIDTH + HORIZONTAL_GAP));
+      }
+    }
+
     const lanesById = new Map<string, { id: string; name: string; color: string | null; nodes: DependencyNode[]; isUnassigned: boolean }>();
 
-    for (const node of nodes) {
+    for (const node of visibleNodes) {
       const trackId = node.track?.id ?? node.trackId ?? null;
       const isUnassigned = !trackId;
       const laneId = trackId ?? UNASSIGNED_LANE_ID;
@@ -377,8 +583,8 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
 
     for (const lane of laneList) {
       const isCollapsed = collapsedLanes[lane.id] ?? false;
-      const visibleNodes = isCollapsed ? [] : lane.nodes;
-      const nodeCount = visibleNodes.length;
+      const laneNodes = isCollapsed ? [] : lane.nodes;
+      const nodeCount = laneNodes.length;
       const nodesHeight =
         nodeCount === 0 ? 0 : nodeCount * NODE_HEIGHT + (nodeCount - 1) * VERTICAL_GAP;
       const laneHeight = isCollapsed
@@ -393,17 +599,8 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
         isCollapsed,
       });
 
-      visibleNodes.forEach((node, idx) => {
-        let xPos: number;
-        if (viewMode === "era") {
-          const eraId = normalizeEra(node.era);
-          const eraIndex = eraIndexById.get(eraId) ?? 0;
-          xPos = LEFT_PADDING + eraIndex * ERA_COLUMN_WIDTH;
-        } else {
-          // Depth-based positioning
-          const nodeDepth = depths.get(node.id) ?? 0;
-          xPos = LEFT_PADDING + nodeDepth * (NODE_WIDTH + HORIZONTAL_GAP);
-        }
+      laneNodes.forEach((node, idx) => {
+        const xPos = xPositions.get(node.id) ?? LEFT_PADDING;
         positions.set(node.id, {
           x: xPos,
           y: laneTop + LANE_HEADER_HEIGHT + LANE_PADDING_Y + idx * (NODE_HEIGHT + VERTICAL_GAP),
@@ -425,13 +622,14 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
 
     return {
       nodePositions: positions,
+      nodeXPositions: xPositions,
       svgWidth: Math.max(800, width),
       svgHeight: height,
       lanes: laneLayouts,
       eraColumns: eraLayouts,
       maxDepth: computedMaxDepth,
     };
-  }, [data, collapsedLanes, viewMode]);
+  }, [collapsedLanes, data, viewMode, visibleNodeIds]);
 
   const fitToScreen = useCallback(() => {
     const container = containerRef.current;
@@ -522,7 +720,8 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
   }, [data, selectedId, hoveredId]);
 
   const focusId = selectedId || hoveredId;
-  const selectedNode = data?.nodes.find((n) => n.id === selectedId) ?? null;
+  const selectedNode =
+    data?.nodes.find((n) => n.id === selectedId && visibleNodeIds.has(n.id)) ?? null;
   const nodeIndex = useMemo(() => {
     if (!data) return new Map<string, DependencyNode>();
     return new Map(data.nodes.map((node) => [node.id, node]));
@@ -609,7 +808,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
             Tech Tree
           </div>
           <div style={{ color: "#888", fontSize: 13 }}>
-            {data.nodes.length} work orders
+            {nodeCountLabel}
           </div>
           {data.cycles.length > 0 && (
             <div className="error" style={{ fontSize: 13 }}>
@@ -670,6 +869,84 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
           </button>
         </div>
       </div>
+
+      {trackOptions.length > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            top: 64,
+            left: 16,
+            zIndex: 9,
+            pointerEvents: "auto",
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              padding: 12,
+              width: 240,
+              maxHeight: "calc(100vh - 160px)",
+              overflow: "auto",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <div style={{ fontWeight: 600, fontSize: 13, color: "#e5e7eb" }}>Tracks</div>
+              <div style={{ fontSize: 11, color: "#9ca3af" }}>
+                {activeTrackCount}/{trackOptions.length}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+              <button
+                className="btnSecondary"
+                onClick={showAllTracks}
+                style={{ padding: "4px 8px", fontSize: 11 }}
+              >
+                Show all
+              </button>
+              <button
+                className="btnSecondary"
+                onClick={hideAllTracks}
+                style={{ padding: "4px 8px", fontSize: 11 }}
+              >
+                Hide all
+              </button>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {trackOptions.map((track) => {
+                const trackColor = track.color ?? "#334155";
+                return (
+                  <label
+                    key={track.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: 12,
+                      color: "#e5e7eb",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isTrackVisible(track.id)}
+                      onChange={() => toggleTrackVisibility(track.id)}
+                    />
+                    <span
+                      style={{
+                        width: 10,
+                        height: 10,
+                        backgroundColor: trackColor,
+                        borderRadius: 2,
+                        opacity: track.isUnassigned ? 0.5 : 0.85,
+                      }}
+                    />
+                    <span style={{ flex: 1 }}>{track.name}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Full-screen SVG Graph */}
       <div
@@ -740,7 +1017,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
             ))}
 
             {/* Lane backgrounds */}
-            {lanes.map((lane) => {
+            {lanes.filter((lane) => isTrackVisible(lane.id)).map((lane) => {
               const laneColor = lane.color ?? "#334155";
               return (
                 <rect
@@ -757,12 +1034,11 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
 
             {/* Edges */}
             {data.nodes.map((node) => {
-              const to = nodePositions.get(node.id);
-              if (!to) return null;
+              const nodeVisible = visibleNodeIds.has(node.id);
 
               return node.dependsOn.map((depId) => {
-                const from = nodePositions.get(depId);
-                if (!from) return null;
+                const depVisible = visibleNodeIds.has(depId);
+                if (!nodeVisible && !depVisible) return null;
                 const depNode = nodeIndex.get(depId);
                 const isCrossProject = depNode
                   ? depNode.projectId !== repoId
@@ -772,18 +1048,43 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
                 const isHighlightedDependent = focusId === depId && highlightedDependents.has(node.id);
                 const isHighlighted = isHighlightedDep || isHighlightedDependent;
                 const isDimmed = focusId && !isHighlighted && focusId !== node.id && focusId !== depId;
+                const isHiddenEdge = nodeVisible !== depVisible;
+                let path = "";
 
-                const x1 = from.x + NODE_WIDTH;
-                const y1 = from.y + NODE_HEIGHT / 2;
-                const x2 = to.x;
-                const y2 = to.y + NODE_HEIGHT / 2;
-
-                const midX = (x1 + x2) / 2;
-                const path = `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
+                if (isHiddenEdge) {
+                  const visibleId = nodeVisible ? node.id : depId;
+                  const hiddenId = nodeVisible ? depId : node.id;
+                  const visiblePos = nodePositions.get(visibleId);
+                  if (!visiblePos) return null;
+                  const hiddenX = nodeXPositions.get(hiddenId) ?? visiblePos.x;
+                  const anchorX = hiddenX < visiblePos.x ? visiblePos.x : visiblePos.x + NODE_WIDTH;
+                  const stubStartX =
+                    hiddenX < visiblePos.x ? anchorX - HIDDEN_EDGE_STUB : anchorX + HIDDEN_EDGE_STUB;
+                  const y = visiblePos.y + NODE_HEIGHT / 2;
+                  path = `M ${stubStartX} ${y} L ${anchorX} ${y}`;
+                } else {
+                  const to = nodePositions.get(node.id);
+                  const from = nodePositions.get(depId);
+                  if (!to || !from) return null;
+                  const x1 = from.x + NODE_WIDTH;
+                  const y1 = from.y + NODE_HEIGHT / 2;
+                  const x2 = to.x;
+                  const y2 = to.y + NODE_HEIGHT / 2;
+                  const midX = (x1 + x2) / 2;
+                  path = `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
+                }
 
                 let stroke = isCrossProject ? "#3b82f6" : "#555";
                 if (isHighlightedDep) stroke = "#22c55e";
                 if (isHighlightedDependent) stroke = "#3b82f6";
+                const hiddenOpacity = isHighlighted ? 0.6 : 0.35;
+                const opacity = isHiddenEdge
+                  ? isDimmed
+                    ? 0.15
+                    : hiddenOpacity
+                  : isDimmed
+                    ? 0.2
+                    : 1;
 
                 return (
                   <path
@@ -792,8 +1093,8 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
                     fill="none"
                     stroke={stroke}
                     strokeWidth={isHighlighted ? 3 : 1.5}
-                    strokeDasharray={isCrossProject ? "6 4" : undefined}
-                    opacity={isDimmed ? 0.2 : 1}
+                    strokeDasharray={isHiddenEdge || isCrossProject ? "6 4" : undefined}
+                    opacity={opacity}
                     markerEnd={isHighlighted ? "url(#arrowhead)" : undefined}
                   />
                 );
@@ -809,6 +1110,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
 
             {/* Nodes */}
             {data.nodes.map((node) => {
+              if (!visibleNodeIds.has(node.id)) return null;
               const pos = nodePositions.get(node.id);
               if (!pos) return null;
 
@@ -901,7 +1203,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
             })}
 
             {/* Lane headers */}
-            {lanes.map((lane) => {
+            {lanes.filter((lane) => isTrackVisible(lane.id)).map((lane) => {
               const laneColor = lane.color ?? "#334155";
               const nodeCount = lane.nodes.length;
               const indicator = lane.isCollapsed ? ">" : "v";
@@ -1017,6 +1319,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
               style={{ cursor: "pointer" }}
             >
               {data.nodes.map((node) => {
+                if (!visibleNodeIds.has(node.id)) return null;
                 const pos = nodePositions.get(node.id);
                 if (!pos) return null;
                 return (
