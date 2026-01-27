@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import EmailSignup from "./EmailSignup";
 import styles from "./landing.module.css";
+import FeatureGrid from "./components/FeatureGrid";
 
 export const metadata: Metadata = {
   title: "Project Control Center | Public Landing",
@@ -107,6 +108,20 @@ export default function LandingPage() {
               </div>
             </div>
           </div>
+        </div>
+      </section>
+
+      <section className={styles.section} id="features">
+        <div className={styles.sectionInner}>
+          <div className={`${styles.sectionHeader} ${styles.reveal} ${styles.delay1}`}>
+            <div className={styles.sectionKicker}>Feature set</div>
+            <h2 className={styles.sectionTitle}>Six pillars of the PCC workflow.</h2>
+            <p className={styles.sectionCopy}>
+              Every capability is designed to keep builders aligned, runs visible,
+              and shipping decisions intentional.
+            </p>
+          </div>
+          <FeatureGrid />
         </div>
       </section>
 

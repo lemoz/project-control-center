@@ -414,10 +414,11 @@ async function runClaudePrompt(params: { prompt: string; model: string; cliPath?
   const command = claudeCommand(params.cliPath);
   const result = await execFileAsync(
     command,
-    ["-p", params.prompt, "--model", params.model, "--output-format", "json"],
+    ["-p", "-", "--model", params.model, "--output-format", "json"],
     {
       timeout: CLAUDE_TIMEOUT_MS,
       maxBuffer: 5 * 1024 * 1024,
+      input: params.prompt,
     }
   );
   const stdout = typeof result.stdout === "string" ? result.stdout.trim() : "";
