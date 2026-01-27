@@ -33,7 +33,7 @@ import {
   type WorkOrder,
 } from "./work_orders.js";
 import { generateAndStoreHandoff, type RunOutcome } from "./handoff_generator.js";
-import { resolveRunnerSettingsForRepo } from "./settings.js";
+import { getMonitoringSettings, resolveRunnerSettingsForRepo } from "./settings.js";
 import {
   parseCodexTokenUsageFromLog,
   recordCostEntry,
@@ -3021,9 +3021,20 @@ export async function runRun(runId: string) {
     const workOrderFilePath = path.join(runDir, "work_order.md");
     fs.writeFileSync(workOrderFilePath, workOrderMarkdown, "utf8");
 
-    const streamMonitor = new StreamMonitor({
-      log: (line) => log(line),
-    });
+    const builderMonitoring = getMonitoringSettings("builder");
+    const reviewerMonitoring = getMonitoringSettings("reviewer");
+    const builderStreamMonitor = builderMonitoring.monitorEnabled
+      ? new StreamMonitor({
+          log: (line) => log(line),
+          autoKillOnThreat: builderMonitoring.autoKillOnThreat,
+        })
+      : null;
+    const reviewerStreamMonitor = reviewerMonitoring.monitorEnabled
+      ? new StreamMonitor({
+          log: (line) => log(line),
+          autoKillOnThreat: reviewerMonitoring.autoKillOnThreat,
+        })
+      : null;
     const streamContext: StreamMonitorContext = {
       workOrderId: workOrder.id,
       goal: workOrder.goal ?? "",
@@ -3479,8 +3490,8 @@ export async function runRun(runId: string) {
               sandbox: "workspace-write",
               model: builderModel,
               cliPath: runnerSettings.builder.cliPath,
-              streamMonitor,
-              streamContext,
+              streamMonitor: builderStreamMonitor ?? undefined,
+              streamContext: builderStreamMonitor ? streamContext : undefined,
               onEscalation: async (request) => {
                 const escalationRecord: EscalationRecord = {
                   ...request,
@@ -3906,8 +3917,8 @@ export async function runRun(runId: string) {
               skipGitRepoCheck: true,
               model: reviewerModel,
               cliPath: runnerSettings.reviewer.cliPath,
-              streamMonitor,
-              streamContext,
+              streamMonitor: reviewerStreamMonitor ?? undefined,
+              streamContext: reviewerStreamMonitor ? streamContext : undefined,
             });
           } finally {
             recordCostFromCodexLog({
@@ -4290,8 +4301,8 @@ export async function runRun(runId: string) {
               sandbox: "workspace-write",
               model: builderModel,
               cliPath: runnerSettings.builder.cliPath,
-              streamMonitor,
-              streamContext,
+              streamMonitor: builderStreamMonitor ?? undefined,
+              streamContext: builderStreamMonitor ? streamContext : undefined,
             });
           } finally {
             recordCostFromCodexLog({
@@ -4495,8 +4506,8 @@ export async function runRun(runId: string) {
               skipGitRepoCheck: true,
               model: reviewerModel,
               cliPath: runnerSettings.reviewer.cliPath,
-              streamMonitor,
-              streamContext,
+              streamMonitor: reviewerStreamMonitor ?? undefined,
+              streamContext: reviewerStreamMonitor ? streamContext : undefined,
             });
           } finally {
             recordCostFromCodexLog({

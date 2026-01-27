@@ -105,14 +105,19 @@ import { generateWorkOrderDraft } from "./wo_generation.js";
 import { generateNarration } from "./narration.js";
 import { generateNarrationAudio } from "./narration_tts.js";
 import {
+  deleteNetworkWhitelistEntry,
+  getAgentMonitoringSettings,
   getChatSettingsResponse,
   getRunnerSettingsResponse,
   getShiftSchedulerSettings,
   getUtilitySettingsResponse,
+  listNetworkWhitelistEntries,
+  patchAgentMonitoringSettings,
   patchChatSettings,
   patchRunnerSettings,
   patchShiftSchedulerSettings,
   patchUtilitySettings,
+  upsertNetworkWhitelistEntry,
 } from "./settings.js";
 import {
   getEscalationDeferral,
@@ -843,6 +848,21 @@ app.patch("/settings", (req, res) => {
   }
 });
 
+app.get("/settings/agent-monitoring", (_req, res) => {
+  return res.json({ settings: getAgentMonitoringSettings() });
+});
+
+app.patch("/settings/agent-monitoring", (req, res) => {
+  try {
+    const settings = patchAgentMonitoringSettings(req.body ?? {});
+    return res.json({ settings });
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "invalid agent monitoring settings",
+    });
+  }
+});
+
 app.get("/settings/shift-scheduler", (_req, res) => {
   return res.json({
     settings: getShiftSchedulerSettings(),
@@ -873,6 +893,41 @@ app.patch("/settings/utility", (req, res) => {
   } catch (err) {
     return res.status(400).json({
       error: err instanceof Error ? err.message : "invalid utility settings",
+    });
+  }
+});
+
+app.get("/settings/network-whitelist", (_req, res) => {
+  return res.json({ entries: listNetworkWhitelistEntries() });
+});
+
+app.post("/settings/network-whitelist", (req, res) => {
+  try {
+    const entry = upsertNetworkWhitelistEntry(req.body ?? {});
+    return res.json({ entry });
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "invalid whitelist entry",
+    });
+  }
+});
+
+app.delete("/settings/network-whitelist", (req, res) => {
+  try {
+    const domain =
+      (typeof req.body?.domain === "string" ? req.body.domain : null) ??
+      (typeof req.query.domain === "string" ? req.query.domain : "");
+    if (!domain.trim()) {
+      return res.status(400).json({ error: "domain is required" });
+    }
+    const deleted = deleteNetworkWhitelistEntry(domain);
+    if (!deleted) {
+      return res.status(404).json({ error: "domain not found" });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "invalid whitelist entry",
     });
   }
 });

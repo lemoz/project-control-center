@@ -353,9 +353,11 @@ export class StreamMonitor {
   private queue: PendingIncident[] = [];
   private processing = false;
   private log?: (line: string) => void;
+  private autoKillOnThreat: boolean;
 
-  constructor(options?: { log?: (line: string) => void }) {
+  constructor(options?: { log?: (line: string) => void; autoKillOnThreat?: boolean }) {
     this.log = options?.log;
+    this.autoKillOnThreat = options?.autoKillOnThreat ?? true;
   }
 
   attach(child: ChildProcess, context: StreamMonitorContext): void {
@@ -451,7 +453,7 @@ export class StreamMonitor {
         flaggedContent: incident.flaggedContent,
       });
       verdict = await requestGeminiVerdict(prompt);
-      if (verdict.verdict === "KILL") {
+      if (verdict.verdict === "KILL" && this.autoKillOnThreat) {
         if (incident.child.pid && incident.child.exitCode === null) {
           try {
             process.kill(incident.child.pid, "SIGKILL");
