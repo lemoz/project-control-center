@@ -2114,6 +2114,35 @@ function buildBuilderPrompt(params: {
     `\`\`\`\n\n` +
     `Replace the spaces in the markers: \`< < <NEED_HELP> > >\` becomes \`<<<NEED_HELP>>>\` (no spaces).\n\n` +
     `When escalating, still output valid JSON and keep summary/risks/tests populated (use empty arrays if needed).\n\n`;
+  const crossProjectCommunicationBlock =
+    `## Cross-Project Communication\n\n` +
+    `If your work requires coordination with another PCC project (for example, moving files to pcc-cloud),\n` +
+    `send a message to that project instead of escalating to the user.\n\n` +
+    `**When to use communication vs escalation:**\n` +
+    `- Communication: Need another project to add/modify files, share context, request action\n` +
+    `- Escalation: Need a human decision, credentials, or anything outside PCC control\n\n` +
+    `**Communication API endpoints:**\n` +
+    `- POST /projects/:id/communications\n` +
+    `- GET  /projects/:id/communications/inbox\n` +
+    `- POST /communications/:id/read\n` +
+    `- POST /communications/:id/acknowledge\n\n` +
+    `**Send a message to a sibling project:**\n` +
+    `\`\`\`bash\n` +
+    `curl -s -X POST "http://localhost:4010/projects/{from_project_id}/communications" \\\n` +
+    `  -H "Content-Type: application/json" \\\n` +
+    `  -d '{\n` +
+    `    "intent": "request",\n` +
+    `    "to_scope": "project",\n` +
+    `    "to_project_id": "pcc-cloud",\n` +
+    `    "summary": "Files to add for migration",\n` +
+    `    "body": "Please add these files: ..."\n` +
+    `  }'\n` +
+    `\`\`\`\n\n` +
+    `**Available intents:** request, message, suggestion, status\n\n` +
+    `**Discover sibling projects:**\n` +
+    `\`\`\`bash\n` +
+    `curl -s "http://localhost:4010/repos" | jq '.[].id'\n` +
+    `\`\`\`\n\n`;
   return `You are the Builder agent.\n\n` +
     constitutionBlock +
     `Task: Implement the Work Order in this repository.\n\n` +
@@ -2143,6 +2172,7 @@ function buildBuilderPrompt(params: {
     resourcefulPostureBlock +
     escalationRuntimeBlock +
     escalationFormatBlock +
+    crossProjectCommunicationBlock +
     iterationLine +
     historyBlock +
     failureBlock +
@@ -2196,6 +2226,31 @@ function buildReviewerPrompt(params: {
       `\n` +
       `Note: Builder's local test attempt may show failures due to Codex sandbox restrictions (e.g., EPERM on port binding). The VM results above are authoritative.\n\n`
     : "";
+  const crossProjectAwarenessBlock =
+    `## Cross-Project Awareness\n\n` +
+    `If the Work Order involves coordination with another project (for example, pcc-cloud),\n` +
+    `confirm whether a communication was sent or flag the missing message in your review.\n\n` +
+    `**Communication API endpoints (reference):**\n` +
+    `- POST /projects/:id/communications\n` +
+    `- GET  /projects/:id/communications/inbox\n` +
+    `- POST /communications/:id/read\n` +
+    `- POST /communications/:id/acknowledge\n\n` +
+    `**Example message (for reference):**\n` +
+    `\`\`\`bash\n` +
+    `curl -s -X POST "http://localhost:4010/projects/{from_project_id}/communications" \\\n` +
+    `  -H "Content-Type: application/json" \\\n` +
+    `  -d '{\n` +
+    `    "intent": "request",\n` +
+    `    "to_scope": "project",\n` +
+    `    "to_project_id": "pcc-cloud",\n` +
+    `    "summary": "Coordination needed",\n` +
+    `    "body": "Please handle ..."\n` +
+    `  }'\n` +
+    `\`\`\`\n\n` +
+    `**Discover sibling projects:**\n` +
+    `\`\`\`bash\n` +
+    `curl -s "http://localhost:4010/repos" | jq '.[].id'\n` +
+    `\`\`\`\n\n`;
   return (
     `You are a fresh Reviewer agent.\n\n` +
     constitutionBlock +
@@ -2238,6 +2293,7 @@ function buildReviewerPrompt(params: {
     `Each entry must include: title, file, lines, rationale.\n` +
     `Use "unknown" for lines if you cannot determine them.\n` +
     `If no scope creep, omit scope_creep_wos or return an empty array.\n\n` +
+    crossProjectAwarenessBlock +
     `Work Order (${params.workOrderId}):\n\n` +
     `${params.workOrderMarkdown}\n\n` +
     `Diff:\n\n` +
