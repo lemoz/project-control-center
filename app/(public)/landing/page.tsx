@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import EmailSignup from "./EmailSignup";
+import { LiveHeroEmbed } from "./LiveHeroEmbed";
 import styles from "./landing.module.css";
 import FeatureGrid from "./components/FeatureGrid";
 
@@ -77,19 +78,7 @@ export default function LandingPage() {
             </div>
           </div>
           <div className={`${styles.heroPanel} ${styles.reveal} ${styles.delay4}`}>
-            <div className={`card ${styles.heroCard}`}>
-              <div className={styles.heroCardTitle}>Control loop</div>
-              <ul className={styles.heroList}>
-                <li>Define a Work Order before any run starts.</li>
-                <li>Builder and reviewer run in a gated loop.</li>
-                <li>Ship only when the output clears review.</li>
-              </ul>
-              <div className={styles.heroBadges}>
-                <span className="badge">Local-first</span>
-                <span className="badge">Live view</span>
-                <span className="badge">VM-ready</span>
-              </div>
-            </div>
+            <LiveHeroEmbed />
             <div className={`card ${styles.heroCardSecondary}`}>
               <div className={styles.heroCardTitle}>Why teams use PCC</div>
               <div className={styles.heroStatGrid}>

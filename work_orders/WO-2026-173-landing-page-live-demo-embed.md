@@ -1,7 +1,7 @@
 ---
 id: WO-2026-173
 title: Landing page live demo embed
-status: ready
+status: you_review
 priority: 2
 tags:
   - landing-page
