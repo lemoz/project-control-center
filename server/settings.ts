@@ -1,9 +1,14 @@
 import { z } from "zod";
 import {
+  deleteNetworkWhitelistRow,
+  getAgentMonitoringSettingsRow,
   getSetting,
   getShiftSchedulerSettingsRow,
+  listNetworkWhitelistRows,
+  setAgentMonitoringSettingsRow,
   setSetting,
   setShiftSchedulerSettingsRow,
+  upsertNetworkWhitelistRow,
 } from "./db.js";
 import { readControlMetadata } from "./sidecar.js";
 
@@ -57,6 +62,37 @@ export type ShiftSchedulerSettings = {
   max_shifts_per_day: number;
   quiet_hours_start: string;
   quiet_hours_end: string;
+};
+
+export type AgentType = "builder" | "reviewer" | "shift_agent" | "global_agent";
+
+export type AgentMonitoringSettings = {
+  builder: {
+    networkAccess: "sandboxed" | "whitelist";
+    monitorEnabled: boolean;
+    autoKillOnThreat: boolean;
+  };
+  reviewer: {
+    networkAccess: "sandboxed";
+    monitorEnabled: boolean;
+    autoKillOnThreat: boolean;
+  };
+  shift_agent: {
+    networkAccess: "full";
+    monitorEnabled: boolean;
+    autoKillOnThreat: boolean;
+  };
+  global_agent: {
+    networkAccess: "full";
+    monitorEnabled: boolean;
+    autoKillOnThreat: boolean;
+  };
+};
+
+export type NetworkWhitelistEntry = {
+  domain: string;
+  enabled: boolean;
+  created_at: string;
 };
 
 export type RunnerSettingsResponse = {
@@ -126,12 +162,46 @@ const ShiftSchedulerSettingsSchema = z.object({
   quiet_hours_end: TimeOfDaySchema.default("06:00"),
 });
 
+const BuilderMonitoringSchema = z.object({
+  networkAccess: z.enum(["sandboxed", "whitelist"]).default("sandboxed"),
+  monitorEnabled: z.boolean().default(true),
+  autoKillOnThreat: z.boolean().default(true),
+});
+
+const ReviewerMonitoringSchema = z.object({
+  networkAccess: z.literal("sandboxed").default("sandboxed"),
+  monitorEnabled: z.boolean().default(true),
+  autoKillOnThreat: z.boolean().default(true),
+});
+
+const ShiftMonitoringSchema = z.object({
+  networkAccess: z.literal("full").default("full"),
+  monitorEnabled: z.boolean().default(true),
+  autoKillOnThreat: z.boolean().default(true),
+});
+
+const AgentMonitoringSettingsSchema = z.object({
+  builder: BuilderMonitoringSchema,
+  reviewer: ReviewerMonitoringSchema,
+  shift_agent: ShiftMonitoringSchema,
+  global_agent: ShiftMonitoringSchema,
+});
+
 const RunnerSettingsPatchSchema = z
   .object({
     builder: ProviderSettingsSchema.partial().optional(),
     reviewer: ProviderSettingsSchema.partial().optional(),
     useWorktree: z.boolean().optional(),
     maxBuilderIterations: z.number().int().min(1).max(20).optional(),
+  })
+  .strict();
+
+const AgentMonitoringSettingsPatchSchema = z
+  .object({
+    builder: BuilderMonitoringSchema.partial().optional(),
+    reviewer: ReviewerMonitoringSchema.partial().optional(),
+    shift_agent: ShiftMonitoringSchema.partial().optional(),
+    global_agent: ShiftMonitoringSchema.partial().optional(),
   })
   .strict();
 
@@ -205,6 +275,31 @@ function shiftSchedulerDefaults(): ShiftSchedulerSettings {
   };
 }
 
+function monitoringDefaults(): AgentMonitoringSettings {
+  return {
+    builder: {
+      networkAccess: "sandboxed",
+      monitorEnabled: true,
+      autoKillOnThreat: true,
+    },
+    reviewer: {
+      networkAccess: "sandboxed",
+      monitorEnabled: true,
+      autoKillOnThreat: true,
+    },
+    shift_agent: {
+      networkAccess: "full",
+      monitorEnabled: true,
+      autoKillOnThreat: true,
+    },
+    global_agent: {
+      networkAccess: "full",
+      monitorEnabled: true,
+      autoKillOnThreat: true,
+    },
+  };
+}
+
 function parseHostList(value: unknown): string[] {
   if (!value) return [];
   if (Array.isArray(value)) {
@@ -217,6 +312,20 @@ function parseHostList(value: unknown): string[] {
       .filter(Boolean);
   }
   return [];
+}
+
+function normalizeWhitelistDomain(value: string): string {
+  let domain = value.trim().toLowerCase();
+  if (!domain) return "";
+  if (domain.startsWith("http://")) {
+    domain = domain.slice("http://".length);
+  } else if (domain.startsWith("https://")) {
+    domain = domain.slice("https://".length);
+  }
+  domain = domain.split("/")[0] ?? "";
+  domain = domain.split("?")[0] ?? "";
+  domain = domain.split("#")[0] ?? "";
+  return domain.trim();
 }
 
 function normalizeSettings(value: unknown): RunnerSettings {
@@ -265,6 +374,28 @@ function normalizeShiftSchedulerSettings(value: unknown): ShiftSchedulerSettings
   return ShiftSchedulerSettingsSchema.parse(merged);
 }
 
+function mergeMonitoringSettings(
+  base: AgentMonitoringSettings,
+  patch: Partial<AgentMonitoringSettings>
+): AgentMonitoringSettings {
+  return {
+    builder: { ...base.builder, ...(patch.builder || {}) },
+    reviewer: { ...base.reviewer, ...(patch.reviewer || {}) },
+    shift_agent: { ...base.shift_agent, ...(patch.shift_agent || {}) },
+    global_agent: { ...base.global_agent, ...(patch.global_agent || {}) },
+  };
+}
+
+function normalizeAgentMonitoringSettings(value: unknown): AgentMonitoringSettings {
+  const parsed = AgentMonitoringSettingsSchema.safeParse(value ?? {});
+  if (parsed.success) return parsed.data;
+  const merged = mergeMonitoringSettings(
+    monitoringDefaults(),
+    typeof value === "object" && value ? (value as Partial<AgentMonitoringSettings>) : {}
+  );
+  return AgentMonitoringSettingsSchema.parse(merged);
+}
+
 function loadSavedChatSettings(): ChatSettings {
   const row = getSetting(CHAT_SETTINGS_KEY);
   if (!row) return chatDefaults();
@@ -297,6 +428,32 @@ function loadSavedShiftSchedulerSettings(): ShiftSchedulerSettings {
   });
 }
 
+function loadSavedAgentMonitoringSettings(): AgentMonitoringSettings {
+  const row = getAgentMonitoringSettingsRow();
+  return normalizeAgentMonitoringSettings({
+    builder: {
+      networkAccess: row.builder_network_access,
+      monitorEnabled: row.builder_monitor_enabled === 1,
+      autoKillOnThreat: row.builder_auto_kill_on_threat === 1,
+    },
+    reviewer: {
+      networkAccess: row.reviewer_network_access,
+      monitorEnabled: row.reviewer_monitor_enabled === 1,
+      autoKillOnThreat: row.reviewer_auto_kill_on_threat === 1,
+    },
+    shift_agent: {
+      networkAccess: row.shift_agent_network_access,
+      monitorEnabled: row.shift_agent_monitor_enabled === 1,
+      autoKillOnThreat: row.shift_agent_auto_kill_on_threat === 1,
+    },
+    global_agent: {
+      networkAccess: row.global_agent_network_access,
+      monitorEnabled: row.global_agent_monitor_enabled === 1,
+      autoKillOnThreat: row.global_agent_auto_kill_on_threat === 1,
+    },
+  });
+}
+
 function saveChatSettings(settings: ChatSettings): ChatSettings {
   const normalized = normalizeChatSettings(settings);
   setSetting(CHAT_SETTINGS_KEY, JSON.stringify(normalized));
@@ -320,6 +477,28 @@ function saveShiftSchedulerSettings(
     max_shifts_per_day: normalized.max_shifts_per_day,
     quiet_hours_start: normalized.quiet_hours_start,
     quiet_hours_end: normalized.quiet_hours_end,
+  });
+  return normalized;
+}
+
+function saveAgentMonitoringSettings(
+  settings: AgentMonitoringSettings
+): AgentMonitoringSettings {
+  const normalized = normalizeAgentMonitoringSettings(settings);
+  setAgentMonitoringSettingsRow({
+    id: "global",
+    builder_network_access: normalized.builder.networkAccess,
+    builder_monitor_enabled: normalized.builder.monitorEnabled ? 1 : 0,
+    builder_auto_kill_on_threat: normalized.builder.autoKillOnThreat ? 1 : 0,
+    reviewer_network_access: normalized.reviewer.networkAccess,
+    reviewer_monitor_enabled: normalized.reviewer.monitorEnabled ? 1 : 0,
+    reviewer_auto_kill_on_threat: normalized.reviewer.autoKillOnThreat ? 1 : 0,
+    shift_agent_network_access: normalized.shift_agent.networkAccess,
+    shift_agent_monitor_enabled: normalized.shift_agent.monitorEnabled ? 1 : 0,
+    shift_agent_auto_kill_on_threat: normalized.shift_agent.autoKillOnThreat ? 1 : 0,
+    global_agent_network_access: normalized.global_agent.networkAccess,
+    global_agent_monitor_enabled: normalized.global_agent.monitorEnabled ? 1 : 0,
+    global_agent_auto_kill_on_threat: normalized.global_agent.autoKillOnThreat ? 1 : 0,
   });
   return normalized;
 }
@@ -563,6 +742,63 @@ export function patchShiftSchedulerSettings(input: unknown): ShiftSchedulerSetti
   const patch = ShiftSchedulerSettingsPatchSchema.parse(input ?? {});
   const merged = normalizeShiftSchedulerSettings({ ...saved, ...patch });
   return saveShiftSchedulerSettings(merged);
+}
+
+export function getAgentMonitoringSettings(): AgentMonitoringSettings {
+  return loadSavedAgentMonitoringSettings();
+}
+
+export function patchAgentMonitoringSettings(input: unknown): AgentMonitoringSettings {
+  const saved = loadSavedAgentMonitoringSettings();
+  const patch = AgentMonitoringSettingsPatchSchema.parse(input ?? {});
+  const merged = normalizeAgentMonitoringSettings(
+    mergeMonitoringSettings(saved, patch as Partial<AgentMonitoringSettings>)
+  );
+  return saveAgentMonitoringSettings(merged);
+}
+
+export function getMonitoringSettings(
+  agentType: AgentType
+): AgentMonitoringSettings[AgentType] {
+  const settings = loadSavedAgentMonitoringSettings();
+  return settings[agentType];
+}
+
+export function listNetworkWhitelistEntries(): NetworkWhitelistEntry[] {
+  return listNetworkWhitelistRows().map((row) => ({
+    domain: row.domain,
+    enabled: row.enabled === 1,
+    created_at: row.created_at,
+  }));
+}
+
+export function upsertNetworkWhitelistEntry(input: {
+  domain?: string;
+  enabled?: boolean;
+}): NetworkWhitelistEntry {
+  const rawDomain = typeof input.domain === "string" ? input.domain : "";
+  const domain = normalizeWhitelistDomain(rawDomain);
+  if (!domain) {
+    throw new Error("domain is required");
+  }
+  const enabled = typeof input.enabled === "boolean" ? input.enabled : true;
+  const row = upsertNetworkWhitelistRow({
+    domain,
+    enabled: enabled ? 1 : 0,
+  });
+  return {
+    domain: row.domain,
+    enabled: row.enabled === 1,
+    created_at: row.created_at,
+  };
+}
+
+export function deleteNetworkWhitelistEntry(domainInput: string): boolean {
+  const domain = normalizeWhitelistDomain(domainInput);
+  if (!domain) {
+    throw new Error("domain is required");
+  }
+  return deleteNetworkWhitelistRow(domain);
 }
 
 export function getChatSettingsResponse(): ChatSettingsResponse {

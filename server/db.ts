@@ -302,6 +302,22 @@ export type SettingRow = {
   updated_at: string;
 };
 
+export type AgentMonitoringSettingsRow = {
+  id: string;
+  builder_network_access: string;
+  builder_monitor_enabled: number;
+  builder_auto_kill_on_threat: number;
+  reviewer_network_access: string;
+  reviewer_monitor_enabled: number;
+  reviewer_auto_kill_on_threat: number;
+  shift_agent_network_access: string;
+  shift_agent_monitor_enabled: number;
+  shift_agent_auto_kill_on_threat: number;
+  global_agent_network_access: string;
+  global_agent_monitor_enabled: number;
+  global_agent_auto_kill_on_threat: number;
+};
+
 export type ShiftSchedulerSettingsRow = {
   enabled: number;
   interval_minutes: number;
@@ -309,6 +325,12 @@ export type ShiftSchedulerSettingsRow = {
   max_shifts_per_day: number;
   quiet_hours_start: string;
   quiet_hours_end: string;
+};
+
+export type NetworkWhitelistRow = {
+  domain: string;
+  enabled: number;
+  created_at: string;
 };
 
 export type UserInteractionRow = {
@@ -782,6 +804,28 @@ function initSchema(database: Database.Database) {
       quiet_hours_end TEXT NOT NULL DEFAULT '06:00'
     );
 
+    CREATE TABLE IF NOT EXISTS agent_monitoring_settings (
+      id TEXT PRIMARY KEY DEFAULT 'global',
+      builder_network_access TEXT NOT NULL DEFAULT 'sandboxed',
+      builder_monitor_enabled INTEGER NOT NULL DEFAULT 1,
+      builder_auto_kill_on_threat INTEGER NOT NULL DEFAULT 1,
+      reviewer_network_access TEXT NOT NULL DEFAULT 'sandboxed',
+      reviewer_monitor_enabled INTEGER NOT NULL DEFAULT 1,
+      reviewer_auto_kill_on_threat INTEGER NOT NULL DEFAULT 1,
+      shift_agent_network_access TEXT NOT NULL DEFAULT 'full',
+      shift_agent_monitor_enabled INTEGER NOT NULL DEFAULT 1,
+      shift_agent_auto_kill_on_threat INTEGER NOT NULL DEFAULT 1,
+      global_agent_network_access TEXT NOT NULL DEFAULT 'full',
+      global_agent_monitor_enabled INTEGER NOT NULL DEFAULT 1,
+      global_agent_auto_kill_on_threat INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS network_whitelist (
+      domain TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS constitution_versions (
       id TEXT PRIMARY KEY,
       scope TEXT NOT NULL,
@@ -1083,6 +1127,83 @@ function initSchema(database: Database.Database) {
     SELECT 0, 120, 30, 6, '02:00', '06:00'
     WHERE NOT EXISTS (SELECT 1 FROM shift_scheduler_settings);
   `);
+
+  database.exec(`
+    INSERT INTO agent_monitoring_settings
+      (id,
+       builder_network_access,
+       builder_monitor_enabled,
+       builder_auto_kill_on_threat,
+       reviewer_network_access,
+       reviewer_monitor_enabled,
+       reviewer_auto_kill_on_threat,
+       shift_agent_network_access,
+       shift_agent_monitor_enabled,
+       shift_agent_auto_kill_on_threat,
+       global_agent_network_access,
+       global_agent_monitor_enabled,
+       global_agent_auto_kill_on_threat)
+    SELECT
+      'global',
+      'sandboxed',
+      1,
+      1,
+      'sandboxed',
+      1,
+      1,
+      'full',
+      1,
+      1,
+      'full',
+      1,
+      1
+    WHERE NOT EXISTS (SELECT 1 FROM agent_monitoring_settings);
+  `);
+
+  const defaultWhitelist = [
+    "nextjs.org",
+    "react.dev",
+    "nodejs.org",
+    "developer.mozilla.org",
+    "typescriptlang.org",
+    "eslint.org",
+    "jestjs.io",
+    "playwright.dev",
+    "tailwindcss.com",
+    "code.claude.com",
+    "docs.anthropic.com",
+    "platform.openai.com",
+    "ai.google.dev",
+    "elevenlabs.io",
+    "docs.stripe.com",
+    "fly.io",
+    "registry.npmjs.org",
+    "www.npmjs.com",
+    "pypi.org",
+    "github.com",
+    "raw.githubusercontent.com",
+    "stackoverflow.com",
+    "en.wikipedia.org",
+  ];
+
+  const whitelistInsert = database.prepare(
+    `INSERT OR IGNORE INTO network_whitelist
+      (domain, enabled, created_at)
+     VALUES
+      (@domain, @enabled, @created_at)`
+  );
+  const whitelistNow = new Date().toISOString();
+  const insertWhitelist = database.transaction((domains: string[]) => {
+    for (const domain of domains) {
+      whitelistInsert.run({ domain, enabled: 1, created_at: whitelistNow });
+    }
+  });
+  const whitelistCount = database
+    .prepare("SELECT COUNT(*) as count FROM network_whitelist")
+    .get() as { count: number };
+  if (whitelistCount.count === 0) {
+    insertWhitelist(defaultWhitelist);
+  }
 
   // Lightweight migration for existing DBs.
   const projectColumns = database.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>;
@@ -2771,6 +2892,125 @@ export function setSetting(key: string, value: string): SettingRow {
   );
 }
 
+const AGENT_MONITORING_DEFAULTS: AgentMonitoringSettingsRow = {
+  id: "global",
+  builder_network_access: "sandboxed",
+  builder_monitor_enabled: 1,
+  builder_auto_kill_on_threat: 1,
+  reviewer_network_access: "sandboxed",
+  reviewer_monitor_enabled: 1,
+  reviewer_auto_kill_on_threat: 1,
+  shift_agent_network_access: "full",
+  shift_agent_monitor_enabled: 1,
+  shift_agent_auto_kill_on_threat: 1,
+  global_agent_network_access: "full",
+  global_agent_monitor_enabled: 1,
+  global_agent_auto_kill_on_threat: 1,
+};
+
+export function getAgentMonitoringSettingsRow(): AgentMonitoringSettingsRow {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM agent_monitoring_settings LIMIT 1")
+    .get() as AgentMonitoringSettingsRow | undefined;
+  if (row) return row;
+  database
+    .prepare(
+      `INSERT INTO agent_monitoring_settings
+        (id,
+         builder_network_access,
+         builder_monitor_enabled,
+         builder_auto_kill_on_threat,
+         reviewer_network_access,
+         reviewer_monitor_enabled,
+         reviewer_auto_kill_on_threat,
+         shift_agent_network_access,
+         shift_agent_monitor_enabled,
+         shift_agent_auto_kill_on_threat,
+         global_agent_network_access,
+         global_agent_monitor_enabled,
+         global_agent_auto_kill_on_threat)
+       VALUES
+        (@id,
+         @builder_network_access,
+         @builder_monitor_enabled,
+         @builder_auto_kill_on_threat,
+         @reviewer_network_access,
+         @reviewer_monitor_enabled,
+         @reviewer_auto_kill_on_threat,
+         @shift_agent_network_access,
+         @shift_agent_monitor_enabled,
+         @shift_agent_auto_kill_on_threat,
+         @global_agent_network_access,
+         @global_agent_monitor_enabled,
+         @global_agent_auto_kill_on_threat)`
+    )
+    .run(AGENT_MONITORING_DEFAULTS);
+  return { ...AGENT_MONITORING_DEFAULTS };
+}
+
+export function setAgentMonitoringSettingsRow(
+  settings: AgentMonitoringSettingsRow
+): AgentMonitoringSettingsRow {
+  const database = getDb();
+  const existing = database
+    .prepare("SELECT 1 FROM agent_monitoring_settings LIMIT 1")
+    .get();
+  if (!existing) {
+    database
+      .prepare(
+        `INSERT INTO agent_monitoring_settings
+          (id,
+           builder_network_access,
+           builder_monitor_enabled,
+           builder_auto_kill_on_threat,
+           reviewer_network_access,
+           reviewer_monitor_enabled,
+           reviewer_auto_kill_on_threat,
+           shift_agent_network_access,
+           shift_agent_monitor_enabled,
+           shift_agent_auto_kill_on_threat,
+           global_agent_network_access,
+           global_agent_monitor_enabled,
+           global_agent_auto_kill_on_threat)
+         VALUES
+          (@id,
+           @builder_network_access,
+           @builder_monitor_enabled,
+           @builder_auto_kill_on_threat,
+           @reviewer_network_access,
+           @reviewer_monitor_enabled,
+           @reviewer_auto_kill_on_threat,
+           @shift_agent_network_access,
+           @shift_agent_monitor_enabled,
+           @shift_agent_auto_kill_on_threat,
+           @global_agent_network_access,
+           @global_agent_monitor_enabled,
+           @global_agent_auto_kill_on_threat)`
+      )
+      .run(settings);
+    return { ...settings };
+  }
+  database
+    .prepare(
+      `UPDATE agent_monitoring_settings
+       SET builder_network_access = @builder_network_access,
+           builder_monitor_enabled = @builder_monitor_enabled,
+           builder_auto_kill_on_threat = @builder_auto_kill_on_threat,
+           reviewer_network_access = @reviewer_network_access,
+           reviewer_monitor_enabled = @reviewer_monitor_enabled,
+           reviewer_auto_kill_on_threat = @reviewer_auto_kill_on_threat,
+           shift_agent_network_access = @shift_agent_network_access,
+           shift_agent_monitor_enabled = @shift_agent_monitor_enabled,
+           shift_agent_auto_kill_on_threat = @shift_agent_auto_kill_on_threat,
+           global_agent_network_access = @global_agent_network_access,
+           global_agent_monitor_enabled = @global_agent_monitor_enabled,
+           global_agent_auto_kill_on_threat = @global_agent_auto_kill_on_threat`
+    )
+    .run(settings);
+  return getAgentMonitoringSettingsRow();
+}
+
 const SHIFT_SCHEDULER_DEFAULTS: ShiftSchedulerSettingsRow = {
   enabled: 0,
   interval_minutes: 120,
@@ -2827,6 +3067,58 @@ export function setShiftSchedulerSettingsRow(
     )
     .run(settings);
   return getShiftSchedulerSettingsRow();
+}
+
+export function listNetworkWhitelistRows(): NetworkWhitelistRow[] {
+  const database = getDb();
+  return database
+    .prepare(
+      `SELECT domain, enabled, created_at
+       FROM network_whitelist
+       ORDER BY domain ASC`
+    )
+    .all() as NetworkWhitelistRow[];
+}
+
+export function upsertNetworkWhitelistRow(input: {
+  domain: string;
+  enabled: number;
+  created_at?: string;
+}): NetworkWhitelistRow {
+  const database = getDb();
+  const created_at = input.created_at ?? new Date().toISOString();
+  database
+    .prepare(
+      `INSERT INTO network_whitelist
+        (domain, enabled, created_at)
+       VALUES
+        (@domain, @enabled, @created_at)
+       ON CONFLICT(domain) DO UPDATE SET
+        enabled = excluded.enabled`
+    )
+    .run({ domain: input.domain, enabled: input.enabled, created_at });
+  const row = database
+    .prepare(
+      `SELECT domain, enabled, created_at
+       FROM network_whitelist
+       WHERE domain = ?`
+    )
+    .get(input.domain) as NetworkWhitelistRow | undefined;
+  return (
+    row ?? {
+      domain: input.domain,
+      enabled: input.enabled,
+      created_at,
+    }
+  );
+}
+
+export function deleteNetworkWhitelistRow(domain: string): boolean {
+  const database = getDb();
+  const result = database
+    .prepare("DELETE FROM network_whitelist WHERE domain = ?")
+    .run(domain);
+  return result.changes > 0;
 }
 
 export function createUserInteraction(input: {
