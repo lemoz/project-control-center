@@ -1,7 +1,7 @@
 ---
 id: WO-2026-221
 title: Migrate landing page to pcc-cloud
-status: ready
+status: you_review
 priority: 1
 tags:
   - migration
@@ -35,7 +35,6 @@ stop_conditions:
   - If you can't send a communication to pcc-cloud, escalate
   - If landing page has dependencies on core components, document them
 ---
-
 ## Notes
 
 This WO tests cross-project communication. The builder should:

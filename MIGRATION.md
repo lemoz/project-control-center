@@ -84,3 +84,4 @@ The open-source core should be genuinely useful standalone, with strategic CTAs 
 ## Notes
 - The SQLite database remains the source of truth for runtime state in `project-control-center`.
 - This plan avoids moving files until a follow-up WO is approved.
+- Landing page migration completed in WO-2026-221 (moved to `pcc-cloud`).
