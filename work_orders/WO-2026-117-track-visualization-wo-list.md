@@ -28,7 +28,7 @@ tags:
   - visualization
   - filtering
 estimate_hours: 3
-status: you_review
+status: done
 created_at: 2026-01-15
 updated_at: 2026-01-27
 depends_on:

@@ -20,6 +20,7 @@ import {
   type RunPhaseMetricOutcome,
   type RunPhaseMetricPhase,
   type RunRow,
+  type RunTrigger,
   updateProjectVm,
   updateRun,
 } from "./db.js";
@@ -4955,7 +4956,8 @@ export async function runRun(runId: string) {
 export function enqueueCodexRun(
   projectId: string,
   workOrderId: string,
-  sourceBranch?: string | null
+  sourceBranch?: string | null,
+  triggeredBy: RunTrigger = "manual"
 ): RunRow {
   const project = findProjectById(projectId);
   if (!project) {
@@ -4998,12 +5000,16 @@ export function enqueueCodexRun(
   const sourceBranchNormalized = normalizeBranchName(sourceBranch);
 
   ensureDir(runDir);
+  if (triggeredBy === "autopilot") {
+    appendLog(logPath, "Run triggered by autopilot policy.");
+  }
 
   const run: RunRow = {
     id,
     project_id: projectId,
     work_order_id: workOrderId,
     provider: "codex",
+    triggered_by: triggeredBy,
     status: "queued",
     iteration: 1,
     builder_iteration: 1,

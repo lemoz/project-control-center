@@ -26,7 +26,7 @@ tags:
   - visualization
   - filtering
 estimate_hours: 2
-status: you_review
+status: done
 depends_on:
   - WO-2026-126
 era: v2

@@ -2,7 +2,7 @@ import "./env.js";
 import fs from "fs";
 import crypto from "crypto";
 import YAML from "yaml";
-import express, { type Response, type NextFunction } from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
 import {
   createUserInteraction,
@@ -174,6 +174,13 @@ import {
   notifyShiftSchedulerSettingsUpdated,
   startShiftScheduler,
 } from "./shift_scheduler.js";
+import {
+  getAutopilotCandidates,
+  getAutopilotSnapshot,
+  parseAutopilotPolicyPatch,
+  startAutopilotScheduler,
+  updateAutopilotPolicyFromPatch,
+} from "./autopilot.js";
 import { buildShiftContext } from "./shift_context.js";
 import { buildGlobalContextResponse } from "./global_context.js";
 import { createProjectFromSpec, type CreateProjectInput } from "./global_agent.js";
@@ -233,6 +240,8 @@ const app = express();
 const port = Number(process.env.CONTROL_CENTER_PORT || 4010);
 const host = process.env.CONTROL_CENTER_HOST || "127.0.0.1";
 const allowLan = process.env.CONTROL_CENTER_ALLOW_LAN === "1";
+const allowRemoteHealth = process.env.CONTROL_CENTER_ALLOW_REMOTE_HEALTH === "1";
+const healthToken = (process.env.CONTROL_CENTER_HEALTH_TOKEN || "").trim();
 const DEFAULT_ESCALATION_TIMEOUT_HOURS = 24;
 const ESCALATION_TIMEOUT_SWEEP_MS = 10 * 60 * 1000;
 
@@ -425,6 +434,20 @@ function isLoopbackAddress(value: string | undefined): boolean {
   return normalized.startsWith("127.");
 }
 
+const HEALTH_PATHS = new Set(["/health", "/observability/vm-health"]);
+
+function normalizeHealthPath(value: string): string {
+  if (value.length > 1 && value.endsWith("/")) return value.slice(0, -1);
+  return value;
+}
+
+function hasValidHealthToken(req: Request): boolean {
+  if (!healthToken) return true;
+  const queryToken = typeof req.query?.token === "string" ? req.query.token.trim() : "";
+  const headerToken = req.get("x-health-token")?.trim() ?? "";
+  return queryToken === healthToken || headerToken === healthToken;
+}
+
 async function requestElevenLabsSignedUrl(): Promise<string> {
   const agentId =
     process.env.CONTROL_CENTER_ELEVENLABS_AGENT_ID ||
@@ -545,6 +568,18 @@ app.use((req, res, next) => {
   if (allowLan) return next();
   const remote = req.socket.remoteAddress;
   if (isLoopbackAddress(remote)) return next();
+  if (allowRemoteHealth) {
+    const normalizedPath = normalizeHealthPath(req.path);
+    if (HEALTH_PATHS.has(normalizedPath)) {
+      if (!hasValidHealthToken(req)) {
+        return res.status(401).json({
+          error: "unauthorized",
+          message: "Missing or invalid health token.",
+        });
+      }
+      return next();
+    }
+  }
   return res.status(403).json({
     error: "forbidden",
     message:
@@ -2452,6 +2487,29 @@ app.get("/projects/:id/shift-context", (req, res) => {
   return res.json(context);
 });
 
+app.get("/projects/:id/autopilot", (req, res) => {
+  const snapshot = getAutopilotSnapshot(req.params.id);
+  if (!snapshot) return res.status(404).json({ error: "project not found" });
+  return res.json(snapshot);
+});
+
+app.put("/projects/:id/autopilot", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const parsed = parseAutopilotPolicyPatch(req.body ?? null);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const updated = updateAutopilotPolicyFromPatch(project.id, parsed.patch);
+  const snapshot = getAutopilotSnapshot(project.id);
+  return res.json(snapshot ?? { policy: updated });
+});
+
+app.get("/projects/:id/autopilot/candidates", (req, res) => {
+  const candidates = getAutopilotCandidates(req.params.id);
+  if (!candidates) return res.status(404).json({ error: "project not found" });
+  return res.json(candidates);
+});
+
 app.post("/projects/:id/work-orders/generate", async (req, res) => {
   const { id } = req.params;
   const project = findProjectById(id);
@@ -3903,7 +3961,7 @@ app.post("/repos/:id/work-orders/:workOrderId/runs", (req, res) => {
   try {
     const sourceBranch =
       typeof req.body?.source_branch === "string" ? req.body.source_branch.trim() : "";
-    const run = enqueueCodexRun(project.id, workOrderId, sourceBranch || null);
+    const run = enqueueCodexRun(project.id, workOrderId, sourceBranch || null, "manual");
     return res.status(201).json(run);
   } catch (err) {
     if (err instanceof BudgetEnforcementError) {
@@ -4562,4 +4620,5 @@ app.listen(port, host, () => {
   }
   startEscalationTimeoutSweep();
   startShiftScheduler();
+  startAutopilotScheduler();
 });

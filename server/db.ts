@@ -73,11 +73,14 @@ export type RunFailureCategory =
   | "canceled"
   | "unknown";
 
+export type RunTrigger = "manual" | "autopilot";
+
 export type RunRow = {
   id: string;
   project_id: string;
   work_order_id: string;
   provider: string;
+  triggered_by: RunTrigger;
   status:
     | "queued"
     | "baseline_failed"
@@ -118,6 +121,42 @@ export type RunRow = {
   failure_detail: string | null;
   escalation: string | null;
 };
+
+export type AutopilotPolicyRow = {
+  project_id: string;
+  enabled: 0 | 1;
+  max_concurrent_runs: number;
+  allowed_tags: string | null;
+  min_priority: number | null;
+  stop_on_failure_count: number;
+  schedule_cron: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AutopilotPolicy = {
+  project_id: string;
+  enabled: boolean;
+  max_concurrent_runs: number;
+  allowed_tags: string[] | null;
+  min_priority: number | null;
+  stop_on_failure_count: number;
+  schedule_cron: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AutopilotPolicyPatch = Partial<
+  Pick<
+    AutopilotPolicy,
+    | "enabled"
+    | "max_concurrent_runs"
+    | "allowed_tags"
+    | "min_priority"
+    | "stop_on_failure_count"
+    | "schedule_cron"
+  >
+>;
 
 export type MergeLockRow = {
   project_id: string;
@@ -621,6 +660,22 @@ function initSchema(database: Database.Database) {
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS autopilot_policies (
+      project_id TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      max_concurrent_runs INTEGER NOT NULL DEFAULT 1,
+      allowed_tags TEXT DEFAULT NULL,
+      min_priority INTEGER DEFAULT NULL,
+      stop_on_failure_count INTEGER NOT NULL DEFAULT 3,
+      schedule_cron TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_autopilot_policies_enabled
+      ON autopilot_policies(enabled);
+
     CREATE TABLE IF NOT EXISTS tracks (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
@@ -659,6 +714,7 @@ function initSchema(database: Database.Database) {
       project_id TEXT NOT NULL,
       work_order_id TEXT NOT NULL,
       provider TEXT NOT NULL,
+      triggered_by TEXT NOT NULL DEFAULT 'manual',
       status TEXT NOT NULL,
       iteration INTEGER NOT NULL DEFAULT 1,
       builder_iteration INTEGER NOT NULL DEFAULT 1,
@@ -1364,6 +1420,7 @@ function initSchema(database: Database.Database) {
   const runColumns = database.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
   const hasBranchName = runColumns.some((c) => c.name === "branch_name");
   const hasSourceBranch = runColumns.some((c) => c.name === "source_branch");
+  const hasTriggeredBy = runColumns.some((c) => c.name === "triggered_by");
   const hasMergeStatus = runColumns.some((c) => c.name === "merge_status");
   const hasConflictWithRunId = runColumns.some((c) => c.name === "conflict_with_run_id");
   const hasBuilderIteration = runColumns.some((c) => c.name === "builder_iteration");
@@ -1383,6 +1440,9 @@ function initSchema(database: Database.Database) {
   }
   if (!hasSourceBranch) {
     database.exec("ALTER TABLE runs ADD COLUMN source_branch TEXT;");
+  }
+  if (!hasTriggeredBy) {
+    database.exec("ALTER TABLE runs ADD COLUMN triggered_by TEXT NOT NULL DEFAULT 'manual';");
   }
   if (!hasMergeStatus) {
     database.exec("ALTER TABLE runs ADD COLUMN merge_status TEXT;");
@@ -1852,6 +1912,133 @@ export function updateProjectAutoShift(
   return findProjectById(id);
 }
 
+const AUTOPILOT_POLICY_DEFAULTS: Omit<
+  AutopilotPolicyRow,
+  "project_id" | "created_at" | "updated_at"
+> = {
+  enabled: 0,
+  max_concurrent_runs: 1,
+  allowed_tags: null,
+  min_priority: null,
+  stop_on_failure_count: 3,
+  schedule_cron: null,
+};
+
+function parseAutopilotTags(value: string | null): string[] | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return null;
+    const cleaned = parsed
+      .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+      .filter(Boolean);
+    return cleaned.length ? cleaned : null;
+  } catch {
+    return null;
+  }
+}
+
+function serializeAutopilotTags(value: string[] | null | undefined): string | null {
+  if (!value) return null;
+  const cleaned = value.map((entry) => entry.trim()).filter(Boolean);
+  return cleaned.length ? JSON.stringify(cleaned) : null;
+}
+
+function normalizeAutopilotPolicy(row: AutopilotPolicyRow): AutopilotPolicy {
+  return {
+    project_id: row.project_id,
+    enabled: row.enabled === 1,
+    max_concurrent_runs: row.max_concurrent_runs,
+    allowed_tags: parseAutopilotTags(row.allowed_tags),
+    min_priority: row.min_priority,
+    stop_on_failure_count: row.stop_on_failure_count,
+    schedule_cron: row.schedule_cron,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function ensureAutopilotPolicyRow(projectId: string): AutopilotPolicyRow {
+  const database = getDb();
+  const existing = database
+    .prepare("SELECT * FROM autopilot_policies WHERE project_id = ? LIMIT 1")
+    .get(projectId) as AutopilotPolicyRow | undefined;
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  const row: AutopilotPolicyRow = {
+    project_id: projectId,
+    ...AUTOPILOT_POLICY_DEFAULTS,
+    created_at: now,
+    updated_at: now,
+  };
+  database
+    .prepare(
+      `INSERT INTO autopilot_policies
+        (project_id, enabled, max_concurrent_runs, allowed_tags, min_priority, stop_on_failure_count, schedule_cron, created_at, updated_at)
+       VALUES
+        (@project_id, @enabled, @max_concurrent_runs, @allowed_tags, @min_priority, @stop_on_failure_count, @schedule_cron, @created_at, @updated_at)`
+    )
+    .run(row);
+  return row;
+}
+
+export function getAutopilotPolicy(projectId: string): AutopilotPolicy {
+  return normalizeAutopilotPolicy(ensureAutopilotPolicyRow(projectId));
+}
+
+export function updateAutopilotPolicy(
+  projectId: string,
+  patch: AutopilotPolicyPatch
+): AutopilotPolicy {
+  const database = getDb();
+  const existing = ensureAutopilotPolicyRow(projectId);
+  const hasAllowedTags = Object.prototype.hasOwnProperty.call(patch, "allowed_tags");
+  const hasMinPriority = Object.prototype.hasOwnProperty.call(patch, "min_priority");
+  const hasScheduleCron = Object.prototype.hasOwnProperty.call(patch, "schedule_cron");
+  const now = new Date().toISOString();
+  const updated: AutopilotPolicyRow = {
+    ...existing,
+    enabled:
+      patch.enabled !== undefined ? (patch.enabled ? 1 : 0) : existing.enabled,
+    max_concurrent_runs:
+      patch.max_concurrent_runs !== undefined
+        ? patch.max_concurrent_runs
+        : existing.max_concurrent_runs,
+    allowed_tags: hasAllowedTags
+      ? serializeAutopilotTags(patch.allowed_tags)
+      : existing.allowed_tags,
+    min_priority: hasMinPriority ? patch.min_priority ?? null : existing.min_priority,
+    stop_on_failure_count:
+      patch.stop_on_failure_count !== undefined
+        ? patch.stop_on_failure_count
+        : existing.stop_on_failure_count,
+    schedule_cron: hasScheduleCron ? patch.schedule_cron ?? null : existing.schedule_cron,
+    updated_at: now,
+  };
+  database
+    .prepare(
+      `UPDATE autopilot_policies
+       SET enabled = @enabled,
+           max_concurrent_runs = @max_concurrent_runs,
+           allowed_tags = @allowed_tags,
+           min_priority = @min_priority,
+           stop_on_failure_count = @stop_on_failure_count,
+           schedule_cron = @schedule_cron,
+           updated_at = @updated_at
+       WHERE project_id = @project_id`
+    )
+    .run(updated);
+  return getAutopilotPolicy(projectId);
+}
+
+export function listEnabledAutopilotPolicies(): AutopilotPolicy[] {
+  const database = getDb();
+  const rows = database
+    .prepare("SELECT * FROM autopilot_policies WHERE enabled = 1")
+    .all() as AutopilotPolicyRow[];
+  return rows.map((row) => normalizeAutopilotPolicy(row));
+}
+
 export function updateProjectStatus(id: string, status: ProjectRow["status"]): ProjectRow | null {
   const database = getDb();
   const now = new Date().toISOString();
@@ -1996,9 +2183,9 @@ export function createRun(run: RunRow): void {
   database
     .prepare(
       `INSERT INTO runs
-        (id, project_id, work_order_id, provider, status, iteration, builder_iteration, reviewer_verdict, reviewer_notes, summary, estimated_iterations, estimated_minutes, estimate_confidence, estimate_reasoning, current_eta_minutes, estimated_completion_at, eta_history, branch_name, source_branch, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error, failure_category, failure_reason, failure_detail, escalation)
+        (id, project_id, work_order_id, provider, triggered_by, status, iteration, builder_iteration, reviewer_verdict, reviewer_notes, summary, estimated_iterations, estimated_minutes, estimate_confidence, estimate_reasoning, current_eta_minutes, estimated_completion_at, eta_history, branch_name, source_branch, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error, failure_category, failure_reason, failure_detail, escalation)
        VALUES
-        (@id, @project_id, @work_order_id, @provider, @status, @iteration, @builder_iteration, @reviewer_verdict, @reviewer_notes, @summary, @estimated_iterations, @estimated_minutes, @estimate_confidence, @estimate_reasoning, @current_eta_minutes, @estimated_completion_at, @eta_history, @branch_name, @source_branch, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error, @failure_category, @failure_reason, @failure_detail, @escalation)`
+        (@id, @project_id, @work_order_id, @provider, @triggered_by, @status, @iteration, @builder_iteration, @reviewer_verdict, @reviewer_notes, @summary, @estimated_iterations, @estimated_minutes, @estimate_confidence, @estimate_reasoning, @current_eta_minutes, @estimated_completion_at, @eta_history, @branch_name, @source_branch, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error, @failure_category, @failure_reason, @failure_detail, @escalation)`
     )
     .run(run);
 }

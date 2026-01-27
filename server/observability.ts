@@ -1,4 +1,7 @@
+import { execFile } from "child_process";
 import fs from "fs";
+import os from "os";
+import { promisify } from "util";
 import { getGlobalBudget } from "./budgeting.js";
 import {
   findProjectById,
@@ -111,7 +114,11 @@ const FAILED_STATUSES = new Set([
 ]);
 const PASSED_STATUSES = new Set(["merged", "you_review"]);
 
+const execFileAsync = promisify(execFile);
+
 const VM_HEALTH_CACHE_TTL_MS = 25_000;
+const VM_HEALTH_LOCAL = process.env.CONTROL_CENTER_VM_HEALTH_LOCAL === "1";
+const LOCAL_VM_COMMAND_TIMEOUT_MS = 5_000;
 let vmHealthCache: {
   projectId: string | null;
   fetchedAt: number;
@@ -133,8 +140,35 @@ function formatGb(valueKb: number): number {
   return Math.round(gb * 10) / 10;
 }
 
+function formatGbFromBytes(valueBytes: number): number {
+  if (!Number.isFinite(valueBytes) || valueBytes <= 0) return 0;
+  const gb = valueBytes / 1024 / 1024 / 1024;
+  return Math.round(gb * 10) / 10;
+}
+
 function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+async function runLocalCommand(
+  command: string,
+  args: string[],
+  options?: { timeoutMs?: number; allowFailure?: boolean }
+): Promise<{ stdout: string; stderr: string }> {
+  const timeoutMs = options?.timeoutMs ?? LOCAL_VM_COMMAND_TIMEOUT_MS;
+  try {
+    const { stdout, stderr } = await execFileAsync(command, args, {
+      timeout: timeoutMs,
+      encoding: "utf8",
+    });
+    return { stdout: stdout ?? "", stderr: stderr ?? "" };
+  } catch (err) {
+    if (options?.allowFailure) {
+      const error = err as { stdout?: string; stderr?: string };
+      return { stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
+    }
+    throw err;
+  }
 }
 
 function parseDiskLine(line: string): VmMetric {
@@ -169,6 +203,18 @@ function parseMemLine(line: string): VmMetric {
   };
 }
 
+function memoryMetricFromBytes(totalBytes: number, freeBytes: number): VmMetric {
+  if (!Number.isFinite(totalBytes) || totalBytes <= 0) return defaultVmMetric();
+  const safeFree = Number.isFinite(freeBytes) ? Math.max(0, freeBytes) : 0;
+  const usedBytes = Math.max(0, totalBytes - safeFree);
+  const ratio = clampRatio(usedBytes / totalBytes);
+  return {
+    used_gb: formatGbFromBytes(usedBytes),
+    total_gb: formatGbFromBytes(totalBytes),
+    percent: ratio,
+  };
+}
+
 function parseLoadLine(line: string, cpuCount: number): {
   load_1m: number;
   load_5m: number;
@@ -188,6 +234,14 @@ function parseLoadLine(line: string, cpuCount: number): {
 
 function defaultVmMetric(): VmMetric {
   return { used_gb: 0, total_gb: 0, percent: 0 };
+}
+
+function cpuMetricFromOs(): { load_1m: number; load_5m: number; percent: number } {
+  const loads = os.loadavg();
+  const load1 = Number.isFinite(loads[0]) ? loads[0] : 0;
+  const load5 = Number.isFinite(loads[1]) ? loads[1] : 0;
+  const cpuCount = os.cpus().length;
+  return parseLoadLine(`${load1} ${load5}`, cpuCount);
 }
 
 function buildVmHealthFallback(params: {
@@ -224,7 +278,72 @@ function resolveVmProject(projectId?: string | null): ProjectRow | null {
   return running ?? projects[0] ?? null;
 }
 
+async function listLocalContainers(): Promise<
+  Array<{ name: string; status: string; uptime: string }>
+> {
+  const result = await runLocalCommand(
+    "docker",
+    ["ps", "--format", "{{.Names}}||{{.Status}}||{{.RunningFor}}"],
+    { allowFailure: true }
+  );
+  return result.stdout
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split("||");
+      return {
+        name: parts[0] ?? "unknown",
+        status: parts[1] ?? "unknown",
+        uptime: parts[2] ?? "unknown",
+      };
+    });
+}
+
+async function fetchVmHealthLocal(project: ProjectRow | null): Promise<VmHealthResponse> {
+  if (!project) {
+    return buildVmHealthFallback({
+      projectId: null,
+      projectName: null,
+      vmStatus: null,
+      error: "No projects found",
+    });
+  }
+
+  const vm = getProjectVm(project.id);
+  try {
+    const diskResult = await runLocalCommand("df", ["-kP", "/"]);
+    const diskLine = diskResult.stdout.trim().split(/\r?\n/).slice(-1)[0] ?? "";
+    const memory = memoryMetricFromBytes(os.totalmem(), os.freemem());
+    const cpu = cpuMetricFromOs();
+    const containers = await listLocalContainers();
+    return {
+      project_id: project.id,
+      project_name: project.name,
+      vm_status: vm?.status ?? "running",
+      disk: parseDiskLine(diskLine),
+      memory,
+      cpu,
+      containers,
+      reachable: true,
+      last_check: nowIso(),
+      error: null,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return buildVmHealthFallback({
+      projectId: project.id,
+      projectName: project.name,
+      vmStatus: vm?.status ?? "running",
+      error: message,
+    });
+  }
+}
+
 async function fetchVmHealth(project: ProjectRow | null): Promise<VmHealthResponse> {
+  if (VM_HEALTH_LOCAL) {
+    return fetchVmHealthLocal(project);
+  }
   if (!project) {
     return buildVmHealthFallback({
       projectId: null,
@@ -634,22 +753,66 @@ export async function listObservabilityAlerts(
   const now = nowIso();
 
   const vmHealth = await getVmHealthResponse(projectId ?? null);
-  if (vmHealth.reachable && vmHealth.disk.total_gb > 0) {
-    if (vmHealth.disk.percent >= 0.95) {
+  if (vmHealth.reachable) {
+    if (vmHealth.disk.total_gb > 0) {
+      if (vmHealth.disk.percent >= 0.95) {
+        alerts.push({
+          id: formatAlertId("vm_disk", vmHealth.project_id),
+          type: "vm_disk",
+          severity: "critical",
+          message: "VM disk > 95%",
+          created_at: now,
+          acknowledged: false,
+        });
+      } else if (vmHealth.disk.percent >= 0.8) {
+        alerts.push({
+          id: formatAlertId("vm_disk", vmHealth.project_id),
+          type: "vm_disk",
+          severity: "warning",
+          message: "VM disk > 80%",
+          created_at: now,
+          acknowledged: false,
+        });
+      }
+    }
+
+    if (vmHealth.memory.total_gb > 0) {
+      if (vmHealth.memory.percent >= 0.95) {
+        alerts.push({
+          id: formatAlertId("vm_memory", vmHealth.project_id),
+          type: "vm_memory",
+          severity: "critical",
+          message: "VM memory > 95%",
+          created_at: now,
+          acknowledged: false,
+        });
+      } else if (vmHealth.memory.percent >= 0.85) {
+        alerts.push({
+          id: formatAlertId("vm_memory", vmHealth.project_id),
+          type: "vm_memory",
+          severity: "warning",
+          message: "VM memory > 85%",
+          created_at: now,
+          acknowledged: false,
+        });
+      }
+    }
+
+    if (vmHealth.cpu.percent >= 0.95) {
       alerts.push({
-        id: formatAlertId("vm_disk", vmHealth.project_id),
-        type: "vm_disk",
+        id: formatAlertId("vm_cpu", vmHealth.project_id),
+        type: "vm_cpu",
         severity: "critical",
-        message: "VM disk > 95%",
+        message: "VM CPU load > 95%",
         created_at: now,
         acknowledged: false,
       });
-    } else if (vmHealth.disk.percent >= 0.8) {
+    } else if (vmHealth.cpu.percent >= 0.85) {
       alerts.push({
-        id: formatAlertId("vm_disk", vmHealth.project_id),
-        type: "vm_disk",
+        id: formatAlertId("vm_cpu", vmHealth.project_id),
+        type: "vm_cpu",
         severity: "warning",
-        message: "VM disk > 80%",
+        message: "VM CPU load > 85%",
         created_at: now,
         acknowledged: false,
       });
