@@ -5,6 +5,15 @@ import fg from "fast-glob";
 import path from "path";
 import YAML from "yaml";
 import {
+  getCodexCliPath,
+  getOpenAiApiKey,
+  getProcessEnv,
+  getRemoteTestTimeoutSeconds,
+  getUseTsWorker,
+  getVmCodexAuthPath,
+  getVmRepoRoot,
+} from "./config.js";
+import {
   acquireMergeLock,
   createRun,
   createRunPhaseMetric,
@@ -86,13 +95,7 @@ const DEFAULT_CONTAINER_MEMORY = "4g";
 const DEFAULT_CONTAINER_CPUS = 2;
 const DEFAULT_CONTAINER_TIMEOUT_SEC = 3600;
 const DEFAULT_CONTAINER_IMAGE = "pcc-runner:latest";
-const DEFAULT_REMOTE_TEST_TIMEOUT_SEC = 900;
-const REMOTE_TEST_TIMEOUT_MS = Math.round(
-  parseNumberEnv(
-    process.env.CONTROL_CENTER_REMOTE_TEST_TIMEOUT_SEC,
-    DEFAULT_REMOTE_TEST_TIMEOUT_SEC
-  ) * 1000
-);
+const REMOTE_TEST_TIMEOUT_MS = Math.round(getRemoteTestTimeoutSeconds() * 1000);
 const E2E_WEB_PORT_BASE = 3012;
 const E2E_OFFLINE_WEB_PORT_BASE = 3013;
 const E2E_API_PORT_BASE = 4011;
@@ -272,12 +275,6 @@ function recordPhaseMetric(params: {
   }
 }
 
-function parseNumberEnv(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
 function getPortOffset(runId: string): number {
   // Use 8 chars of UUID for better distribution (4 billion values vs 65K)
   const prefix = runId.slice(0, 8);
@@ -442,7 +439,7 @@ function copyGitTrackedSnapshot(repoPath: string, dstRoot: string): number {
 }
 
 function shouldPreferTsWorker(): boolean {
-  if (process.env.CONTROL_CENTER_USE_TS_WORKER === "1") return true;
+  if (getUseTsWorker()) return true;
   const entry = process.argv[1] || "";
   if (entry.endsWith(".ts")) return true;
   return process.execArgv.some((arg) => arg.includes("tsx"));
@@ -493,7 +490,7 @@ function spawnRunWorker(runId: string): ChildProcess {
 
   const child = spawn(command, args, {
     cwd: repoRoot,
-    env: process.env,
+    env: getProcessEnv(),
     stdio: "ignore",
     detached: true,
   });
@@ -564,7 +561,7 @@ function buildContainerConfig(): ContainerConfig {
 }
 
 function resolveVmRepoRootLocal(): string {
-  const root = (process.env.CONTROL_CENTER_VM_REPO_ROOT || "/home/project/repo").trim();
+  const root = getVmRepoRoot().trim();
   if (!root.startsWith("/")) {
     throw new Error(`VM repo root must be an absolute POSIX path. Got "${root}".`);
   }
@@ -851,7 +848,7 @@ function spawnSyncResult(
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
-    env: { ...process.env, ...(opts.env || {}) },
+    env: { ...getProcessEnv(), ...(opts.env || {}) },
   });
 
   return {
@@ -1532,10 +1529,7 @@ async function runCodexExec(params: {
     model: params.model,
   });
 
-  const cmd =
-    params.cliPath?.trim() ||
-    process.env.CONTROL_CENTER_CODEX_PATH ||
-    "codex";
+  const cmd = params.cliPath?.trim() || getCodexCliPath();
 
   ensureDir(path.dirname(params.logPath));
   const logStream = fs.createWriteStream(params.logPath, { flags: "a" });
@@ -1544,7 +1538,7 @@ async function runCodexExec(params: {
   const child = spawn(cmd, args, {
     cwd: params.cwd,
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env },
+    env: { ...getProcessEnv() },
   });
 
   if (params.streamMonitor && params.streamContext) {
@@ -1759,9 +1753,7 @@ async function runCodexExecInContainer(params: {
   const artifactsHostPath = resolveVmAbsolutePath(params.artifactsDir);
   const workingDir = params.workingDir?.trim() || "/workspace";
 
-  // Get SSH user for home directory path on VM
-  const sshUser = process.env.CONTROL_CENTER_GCP_SSH_USER?.trim() || "cdossman";
-  const codexAuthPath = `/home/${sshUser}/.codex`;
+  const codexAuthPath = getVmCodexAuthPath();
 
   // When running as non-root user, use /workspace as HOME (always exists and writable)
   const containerHome = "/workspace";
@@ -1835,7 +1827,7 @@ async function runCodexExecRemote(params: RemoteCodexExecParams): Promise<CodexE
   await remoteUpload(params.projectId, params.localSchemaPath, remoteSchemaPath);
 
   const env = {
-    OPENAI_API_KEY: process.env.OPENAI_API_KEY || "",
+    OPENAI_API_KEY: getOpenAiApiKey() || "",
   };
 
   // Debug: log API key status
@@ -2634,7 +2626,7 @@ async function runRepoTests(
   const child = spawn(npmCommand(), ["test"], {
     cwd: repoPath,
     env: {
-      ...process.env,
+      ...getProcessEnv(),
       CI: "1",
       NEXT_DIST_DIR: ".system/next-run-tests",
       E2E_WEB_PORT: String(E2E_WEB_PORT_BASE + portOffset),

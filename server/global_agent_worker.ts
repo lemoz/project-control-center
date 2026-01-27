@@ -1,21 +1,21 @@
+import {
+  getClaudeCliPathOverride,
+  getGlobalAgentId,
+  getGlobalAgentMaxIterations,
+  getGlobalAgentType,
+} from "./config.js";
 import { runGlobalAgentShift } from "./global_agent.js";
 
-const maxIterationsRaw = process.env.CONTROL_CENTER_GLOBAL_MAX_ITERATIONS;
-const maxIterationsValue = maxIterationsRaw ? Number(maxIterationsRaw) : NaN;
-const maxIterations =
-  Number.isFinite(maxIterationsValue) && maxIterationsValue > 0
-    ? Math.trunc(maxIterationsValue)
-    : undefined;
-
-const agentType = process.env.CONTROL_CENTER_GLOBAL_AGENT_TYPE ?? "claude_cli";
-const agentId = process.env.CONTROL_CENTER_GLOBAL_AGENT_ID ?? "global-agent";
-const claudePath = process.env.CONTROL_CENTER_CLAUDE_PATH;
+const maxIterations = getGlobalAgentMaxIterations();
+const agentType = getGlobalAgentType();
+const agentId = getGlobalAgentId();
+const claudePath = getClaudeCliPathOverride();
 
 const result = await runGlobalAgentShift({
   agentType,
   agentId,
   maxIterations,
-  claudePath: claudePath && claudePath.trim() ? claudePath.trim() : undefined,
+  claudePath: claudePath ?? undefined,
   onLog: (line) => {
     // eslint-disable-next-line no-console
     console.log(line);

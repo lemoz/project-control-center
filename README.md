@@ -88,6 +88,13 @@ cp .env.example .env
 
 See `.env.example` for all available configuration options.
 
+### Core configuration (local + cloud)
+- `PCC_MODE` = `local` or `cloud` (default: `local`)
+- `PCC_DATABASE_PATH` = path to SQLite DB (default: `./control-center.db`)
+- `PCC_REPOS_PATH` = root directory for repo scanning (overrides `CONTROL_CENTER_SCAN_ROOTS`)
+
+When `PCC_MODE=cloud` and `PCC_REPOS_PATH` is not set, repo discovery defaults to the current working directory.
+
 ### Install
 ```bash
 npm install
@@ -134,6 +141,8 @@ CONTROL_CENTER_GCP_IMAGE_PROJECT=your-gcp-project
 CONTROL_CENTER_GCP_IMAGE_FAMILY=pcc-runner
 CONTROL_CENTER_GCP_SSH_USER=runner
 CONTROL_CENTER_VM_REPO_ROOT=/home/runner/repos
+CONTROL_CENTER_VM_CODEX_AUTH_PATH=/home/runner/.codex
+CONTROL_CENTER_VM_CLEANUP_CRON_PATH=/etc/cron.hourly/pcc-cleanup-workspaces
 ```
 
 ### Provisioning

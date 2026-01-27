@@ -3,6 +3,22 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import {
+  getGcloudCommandPath,
+  getGcpImage,
+  getGcpImageFamily,
+  getGcpImageProjectOverride,
+  getGcpProject,
+  getGcpZone,
+  getProcessEnv,
+  getSshCommandPath,
+  getVmCleanupCronPath,
+  getVmRepoRoot,
+  getVmSshKeyPath,
+  getVmSshRetryMs,
+  getVmSshTimeoutSeconds,
+  getVmSshUser,
+} from "./config.js";
+import {
   findProjectById,
   getProjectVm,
   updateProjectVm,
@@ -86,10 +102,9 @@ const MACHINE_TYPES: Record<ProjectVmSize, string> = {
 // Playwright browsers, multiple concurrent test runs, etc.
 const BOOT_DISK_SIZE_GB = 50;
 
-const GCLOUD_COMMAND = process.env.CONTROL_CENTER_GCLOUD_PATH || "gcloud";
-const SSH_COMMAND = process.env.CONTROL_CENTER_SSH_PATH || "ssh";
-const DEFAULT_VM_REPO_ROOT = "/home/project/repo";
-const WORKSPACE_CLEANUP_CRON_PATH = "/etc/cron.hourly/pcc-cleanup-workspaces";
+const GCLOUD_COMMAND = getGcloudCommandPath();
+const SSH_COMMAND = getSshCommandPath();
+const WORKSPACE_CLEANUP_CRON_PATH = getVmCleanupCronPath();
 const WORKSPACE_CLEANUP_MAX_AGE_MINUTES = 360;
 const VM_PROVIDER: ProjectVmProvider = "gcp";
 const PROVISIONING_ALLOWED_VM_STATUSES: ProjectVmStatus[] = [
@@ -103,10 +118,8 @@ const SSH_USER_ENV = "CONTROL_CENTER_GCP_SSH_USER";
 const SSH_KEY_ENV = "CONTROL_CENTER_GCP_SSH_KEY_PATH";
 const GCP_PROJECT_ENV = "CONTROL_CENTER_GCP_PROJECT";
 const GCP_ZONE_ENV = "CONTROL_CENTER_GCP_ZONE";
-const GCP_IMAGE_ENV = "CONTROL_CENTER_GCP_IMAGE";
-const DEFAULT_IMAGE_FAMILY =
-  process.env.CONTROL_CENTER_GCP_IMAGE_FAMILY || "ubuntu-2204-lts";
-const IMAGE_PROJECT_OVERRIDE = process.env.CONTROL_CENTER_GCP_IMAGE_PROJECT?.trim() || "";
+const DEFAULT_IMAGE_FAMILY = getGcpImageFamily();
+const IMAGE_PROJECT_OVERRIDE = getGcpImageProjectOverride();
 const DEFAULT_IMAGE_PROJECT = IMAGE_PROJECT_OVERRIDE || "ubuntu-os-cloud";
 
 function nowIso(): string {
@@ -114,7 +127,7 @@ function nowIso(): string {
 }
 
 function resolveVmRepoRoot(): string {
-  const root = (process.env.CONTROL_CENTER_VM_REPO_ROOT || DEFAULT_VM_REPO_ROOT).trim();
+  const root = getVmRepoRoot().trim();
   if (!root.startsWith("/")) {
     throw new VmManagerError(
       "preflight",
@@ -248,19 +261,13 @@ function mapInstanceStatus(status: string): ProjectVmStatus {
   return "error";
 }
 
-function parseNumberEnv(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
 function sshTimeoutMs(): number {
-  const seconds = parseNumberEnv(process.env.CONTROL_CENTER_VM_SSH_TIMEOUT_SEC, 180);
+  const seconds = getVmSshTimeoutSeconds();
   return Math.round(seconds * 1000);
 }
 
 function sshRetryMs(): number {
-  return parseNumberEnv(process.env.CONTROL_CENTER_VM_SSH_RETRY_MS, 2500);
+  return getVmSshRetryMs();
 }
 
 function extractRemoteDetail(details: Record<string, unknown> | undefined, key: string): string | null {
@@ -291,13 +298,16 @@ function wrapRemoteError(context: string, err: unknown): VmManagerError {
   return new VmManagerError("command_failed", `${context}: ${message}`);
 }
 
-function buildPrereqInstallScript(): string {
+function buildPrereqInstallScript(repoRoot: string): string {
   return [
     "set -e",
-    // Create project directory with proper permissions
-    "if [ ! -d /home/project ]; then",
-    "  sudo -n mkdir -p /home/project",
-    "  sudo -n chown $(whoami):$(whoami) /home/project",
+    `REPO_ROOT=${shellEscape(repoRoot)}`,
+    // Create repo root directory with proper permissions
+    "if [ \"$REPO_ROOT\" != \"/\" ]; then",
+    "  if [ ! -d \"$REPO_ROOT\" ]; then",
+    "    sudo -n mkdir -p \"$REPO_ROOT\"",
+    "    sudo -n chown $(whoami):$(whoami) \"$REPO_ROOT\"",
+    "  fi",
     "fi",
     // Check for missing tools
     "missing=''",
@@ -392,7 +402,8 @@ async function ensureWorkspaceCleanupCron(projectId: string): Promise<void> {
 }
 
 async function ensureVmPrereqs(projectId: string): Promise<void> {
-  const script = buildPrereqInstallScript();
+  const repoRoot = resolveVmRepoRoot();
+  const script = buildPrereqInstallScript(repoRoot);
   try {
     await remoteExec(projectId, `bash -lc ${shellEscape(script)}`, {
       allowVmStatuses: PROVISIONING_ALLOWED_VM_STATUSES,
@@ -479,7 +490,7 @@ async function syncCodexAuth(projectId: string): Promise<void> {
 }
 
 function resolveSshConfig(): SshConfig {
-  const user = process.env[SSH_USER_ENV]?.trim();
+  const user = getVmSshUser();
   if (!user) {
     throw new VmManagerError(
       "preflight",
@@ -493,7 +504,7 @@ function resolveSshConfig(): SshConfig {
     );
   }
 
-  const keyPathRaw = process.env[SSH_KEY_ENV]?.trim();
+  const keyPathRaw = getVmSshKeyPath();
   if (!keyPathRaw) {
     throw new VmManagerError(
       "preflight",
@@ -532,7 +543,7 @@ async function runCommand(
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      env: process.env,
+      env: getProcessEnv(),
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -616,7 +627,7 @@ async function gcloudConfigValue(key: string): Promise<string | null> {
 }
 
 async function resolveGcpProject(override?: string): Promise<string> {
-  const fromEnv = override?.trim() || process.env[GCP_PROJECT_ENV]?.trim();
+  const fromEnv = override?.trim() || getGcpProject();
   if (fromEnv) return fromEnv;
   const fromConfig = await gcloudConfigValue("project");
   if (fromConfig) return fromConfig;
@@ -627,7 +638,7 @@ async function resolveGcpProject(override?: string): Promise<string> {
 }
 
 async function resolveGcpZone(override?: string): Promise<string> {
-  const fromEnv = override?.trim() || process.env[GCP_ZONE_ENV]?.trim();
+  const fromEnv = override?.trim() || getGcpZone();
   if (fromEnv) return fromEnv;
   const fromConfig = await gcloudConfigValue("compute/zone");
   if (fromConfig) return fromConfig;
@@ -638,7 +649,7 @@ async function resolveGcpZone(override?: string): Promise<string> {
 }
 
 function resolveImageConfig(override?: string): GcpConfig["image"] {
-  const imageName = override?.trim() || process.env[GCP_IMAGE_ENV]?.trim() || null;
+  const imageName = override?.trim() || getGcpImage() || null;
   return {
     name: imageName,
     family: DEFAULT_IMAGE_FAMILY,

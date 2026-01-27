@@ -7,7 +7,9 @@ import { test } from "node:test";
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pcc-chat-threads-"));
 const dbPath = path.join(tmpDir, "threads.db");
 const originalDbPath = process.env.CONTROL_CENTER_DB_PATH;
+const originalPccDbPath = process.env.PCC_DATABASE_PATH;
 process.env.CONTROL_CENTER_DB_PATH = dbPath;
+process.env.PCC_DATABASE_PATH = dbPath;
 
 const originalCwd = process.cwd();
 
@@ -25,6 +27,8 @@ test("chat threads support defaults, overrides, and archiving", (t) => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     if (originalDbPath === undefined) delete process.env.CONTROL_CENTER_DB_PATH;
     else process.env.CONTROL_CENTER_DB_PATH = originalDbPath;
+    if (originalPccDbPath === undefined) delete process.env.PCC_DATABASE_PATH;
+    else process.env.PCC_DATABASE_PATH = originalPccDbPath;
   });
 
   process.chdir(tmpDir);
@@ -82,4 +86,3 @@ test("chat threads support defaults, overrides, and archiving", (t) => {
   const all = listChatThreads({ includeArchived: true });
   assert.equal(all.some((candidate) => candidate.id === thread.id), true);
 });
-

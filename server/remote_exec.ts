@@ -1,6 +1,17 @@
 import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
+import {
+  getProcessEnv,
+  getRsyncCommandPath,
+  getSshCommandPath,
+  getVmRepoRoot,
+  getVmRsyncTimeoutSeconds,
+  getVmSshKeyPath,
+  getVmSshSkipHostKeyChecking,
+  getVmSshTimeoutSeconds,
+  getVmSshUser,
+} from "./config.js";
 import { getProjectVm, type ProjectVmStatus } from "./db.js";
 
 export type ExecResult = {
@@ -70,12 +81,10 @@ type RemotePathOptions = {
   allowAbsolute?: boolean;
 };
 
-const SSH_COMMAND = process.env.CONTROL_CENTER_SSH_PATH || "ssh";
-const RSYNC_COMMAND = process.env.CONTROL_CENTER_RSYNC_PATH || "rsync";
+const SSH_COMMAND = getSshCommandPath();
+const RSYNC_COMMAND = getRsyncCommandPath();
 const SSH_USER_ENV = "CONTROL_CENTER_GCP_SSH_USER";
 const SSH_KEY_ENV = "CONTROL_CENTER_GCP_SSH_KEY_PATH";
-const SSH_SKIP_HOST_KEY_ENV = "CONTROL_CENTER_SSH_SKIP_HOST_KEY_CHECKING";
-const DEFAULT_VM_REPO_ROOT = "/home/project/repo";
 const DEFAULT_EXCLUDES = [
   ".env*",
   ".control-secrets*",
@@ -86,33 +95,20 @@ const DEFAULT_EXCLUDES = [
 const DEFAULT_ALLOWED_VM_STATUSES: ProjectVmStatus[] = ["running"];
 
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
-
-function parseNumberEnv(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
 function execTimeoutMs(override?: number): number {
   if (override && override > 0) return Math.round(override);
-  const seconds = parseNumberEnv(process.env.CONTROL_CENTER_VM_SSH_TIMEOUT_SEC, 180);
+  const seconds = getVmSshTimeoutSeconds();
   return Math.round(seconds * 1000);
 }
 
 function rsyncTimeoutMs(): number {
-  const seconds = parseNumberEnv(process.env.CONTROL_CENTER_VM_RSYNC_TIMEOUT_SEC, 300);
+  const seconds = getVmRsyncTimeoutSeconds();
   return Math.round(seconds * 1000);
 }
 
 function truncate(value: string, maxLength = 2000): string {
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength - 3)}...`;
-}
-
-function isTruthyEnv(value: string | undefined): boolean {
-  if (!value) return false;
-  return TRUE_ENV_VALUES.has(value.trim().toLowerCase());
 }
 
 function commandSummary(result: CommandResult): string {
@@ -173,7 +169,7 @@ function runCommand(
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      env: process.env,
+      env: getProcessEnv(),
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -209,7 +205,7 @@ function runCommand(
 }
 
 function resolveSshConfig(): SshConfig {
-  const user = process.env[SSH_USER_ENV]?.trim();
+  const user = getVmSshUser();
   if (!user) {
     throw new RemoteExecError(
       "preflight",
@@ -223,7 +219,7 @@ function resolveSshConfig(): SshConfig {
     );
   }
 
-  const keyPathRaw = process.env[SSH_KEY_ENV]?.trim();
+  const keyPathRaw = getVmSshKeyPath();
   if (!keyPathRaw) {
     throw new RemoteExecError(
       "preflight",
@@ -243,7 +239,7 @@ function resolveSshConfig(): SshConfig {
 }
 
 function resolveVmRepoRoot(): string {
-  const root = (process.env.CONTROL_CENTER_VM_REPO_ROOT || DEFAULT_VM_REPO_ROOT).trim();
+  const root = getVmRepoRoot().trim();
   if (!root.startsWith("/")) {
     throw new RemoteExecError(
       "preflight",
@@ -409,7 +405,7 @@ function ensureLocalDir(dirPath: string) {
 }
 
 function buildSshArgs(config: VmTarget): string[] {
-  const skipHostKeyCheck = isTruthyEnv(process.env[SSH_SKIP_HOST_KEY_ENV]);
+  const skipHostKeyCheck = getVmSshSkipHostKeyChecking();
   const args = [
     "-i",
     config.ssh.keyPath,

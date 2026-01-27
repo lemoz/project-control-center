@@ -1,5 +1,11 @@
 import crypto from "crypto";
 import { createChatMessage, ensureChatThread } from "./chat_db.js";
+import {
+  getGlobalAgentSessionCheckInDecisions,
+  getGlobalAgentSessionCheckInMinutes,
+  getGlobalAgentSessionMaxDurationMinutes,
+  getGlobalAgentSessionMaxIterations,
+} from "./config.js";
 import { getDb } from "./db.js";
 import { runGlobalAgentShift } from "./global_agent.js";
 import type { GlobalDecisionSessionContext } from "./prompts/global_decision.js";
@@ -423,11 +429,8 @@ function resolveMaxIterations(constraints: SessionConstraints): number {
   if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
     return Math.trunc(raw);
   }
-  const envRaw = process.env.CONTROL_CENTER_GLOBAL_SESSION_MAX_ITERATIONS;
-  const envValue = envRaw ? Number(envRaw) : NaN;
-  if (Number.isFinite(envValue) && envValue > 0) {
-    return Math.trunc(envValue);
-  }
+  const envValue = getGlobalAgentSessionMaxIterations();
+  if (envValue) return envValue;
   return DEFAULT_MAX_ITERATIONS;
 }
 
@@ -436,29 +439,20 @@ function resolveMaxDurationMinutes(constraints: SessionConstraints): number {
   if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
     return Math.trunc(raw);
   }
-  const envRaw = process.env.CONTROL_CENTER_GLOBAL_SESSION_MAX_DURATION_MINUTES;
-  const envValue = envRaw ? Number(envRaw) : NaN;
-  if (Number.isFinite(envValue) && envValue > 0) {
-    return Math.trunc(envValue);
-  }
+  const envValue = getGlobalAgentSessionMaxDurationMinutes();
+  if (envValue) return envValue;
   return DEFAULT_MAX_DURATION_MINUTES;
 }
 
 function resolveCheckInMinutes(): number {
-  const envRaw = process.env.CONTROL_CENTER_GLOBAL_SESSION_CHECKIN_MINUTES;
-  const envValue = envRaw ? Number(envRaw) : NaN;
-  if (Number.isFinite(envValue) && envValue > 0) {
-    return Math.trunc(envValue);
-  }
+  const envValue = getGlobalAgentSessionCheckInMinutes();
+  if (envValue) return envValue;
   return DEFAULT_CHECKIN_MINUTES;
 }
 
 function resolveCheckInDecisions(): number {
-  const envRaw = process.env.CONTROL_CENTER_GLOBAL_SESSION_CHECKIN_DECISIONS;
-  const envValue = envRaw ? Number(envRaw) : NaN;
-  if (Number.isFinite(envValue) && envValue > 0) {
-    return Math.trunc(envValue);
-  }
+  const envValue = getGlobalAgentSessionCheckInDecisions();
+  if (envValue) return envValue;
   return DEFAULT_CHECKIN_DECISIONS;
 }
 

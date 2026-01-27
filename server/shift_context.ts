@@ -23,6 +23,11 @@ import { readControlMetadata, type ControlSuccessMetric } from "./sidecar.js";
 import type { TrackContext } from "./types.js";
 import { listWorkOrders, type WorkOrder, type WorkOrderStatus } from "./work_orders.js";
 import {
+  getEnvironmentVariableNames,
+  getPathEnv,
+  getPathExtEnv,
+} from "./config.js";
+import {
   buildDependencyLookups,
   resolveWorkOrderDependencies,
   summarizeResolvedDependencies,
@@ -899,7 +904,7 @@ function buildVmState(vm: ProjectVmRow | null): ShiftContext["environment"]["vm"
 }
 
 function listEnvVarNames(): string[] {
-  return Object.keys(process.env).sort();
+  return getEnvironmentVariableNames();
 }
 
 function isRunnerReady(repoPath: string): boolean {
@@ -925,13 +930,13 @@ function isExecutableAvailable(command: string): boolean {
   if (command.includes(path.sep)) {
     return fs.existsSync(path.resolve(command));
   }
-  const pathEntries = (process.env.PATH ?? "")
+  const pathEntries = getPathEnv()
     .split(path.delimiter)
     .map((entry) => entry.trim())
     .filter(Boolean);
   const extensions =
     process.platform === "win32"
-      ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";")
+      ? getPathExtEnv().split(";")
       : [""];
   for (const entry of pathEntries) {
     for (const ext of extensions) {

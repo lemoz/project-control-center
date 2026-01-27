@@ -3,6 +3,7 @@ import { execFile, spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { promisify } from "util";
+import { getClaudeCliPath, getCodexCliPath, getProcessEnv } from "./config.js";
 import {
   createShiftHandoff,
   findProjectById,
@@ -81,11 +82,11 @@ function ensureDir(dir: string): void {
 }
 
 function codexCommand(cliPath?: string): string {
-  return cliPath?.trim() || process.env.CONTROL_CENTER_CODEX_PATH || "codex";
+  return cliPath?.trim() || getCodexCliPath();
 }
 
 function claudeCommand(cliPath?: string): string {
-  return cliPath?.trim() || process.env.CONTROL_CENTER_CLAUDE_PATH || "claude";
+  return cliPath?.trim() || getClaudeCliPath();
 }
 
 function handoffJsonSchema(): object {
@@ -594,7 +595,7 @@ async function runCodexPrompt(params: {
   const child = spawn(codexCommand(params.cliPath), args, {
     cwd: params.projectPath,
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env },
+    env: { ...getProcessEnv() },
   });
 
   let stdout = "";

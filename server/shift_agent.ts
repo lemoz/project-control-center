@@ -1,6 +1,15 @@
 import fs from "fs";
 import path from "path";
 import { spawn } from "child_process";
+import {
+  getControlCenterApiUrl,
+  getProcessEnv,
+  getServerPort,
+  getShiftAllowedToolsOverride,
+  getShiftClaudePath,
+  getShiftModelOverride,
+  getShiftPromptPathOverride,
+} from "./config.js";
 import { getShiftByProjectId, updateShift, type ShiftRow } from "./db.js";
 
 type ShiftLogTail = { lines: string[]; has_more: boolean; log_path: string };
@@ -10,29 +19,26 @@ const DEFAULT_ALLOWED_TOOLS =
 const DEFAULT_SHIFT_TIMEOUT_MINUTES = 120;
 
 function resolveApiBaseUrl(): string {
-  const baseUrl = (process.env.CONTROL_CENTER_API_URL || "").trim();
+  const baseUrl = getControlCenterApiUrl();
   if (baseUrl) return baseUrl;
-  const port = Number(process.env.CONTROL_CENTER_PORT || 4010);
+  const port = getServerPort();
   return `http://localhost:${port}`;
 }
 
 function resolveClaudePath(): string {
-  const cliPath = (process.env.CONTROL_CENTER_SHIFT_CLAUDE_PATH || "").trim();
-  return cliPath || "claude";
+  return getShiftClaudePath();
 }
 
 function resolveAllowedTools(): string {
-  const allowed = (process.env.CONTROL_CENTER_SHIFT_ALLOWED_TOOLS || "").trim();
-  return allowed || DEFAULT_ALLOWED_TOOLS;
+  return getShiftAllowedToolsOverride() || DEFAULT_ALLOWED_TOOLS;
 }
 
 function resolveModel(): string | null {
-  const model = (process.env.CONTROL_CENTER_SHIFT_MODEL || "").trim();
-  return model || null;
+  return getShiftModelOverride();
 }
 
 function resolvePromptPath(projectPath: string): string {
-  const override = (process.env.CONTROL_CENTER_SHIFT_PROMPT_FILE || "").trim();
+  const override = getShiftPromptPathOverride();
   if (override) return override;
   const projectPrompt = path.join(projectPath, "prompts", "shift_agent.md");
   if (fs.existsSync(projectPrompt)) return projectPrompt;
@@ -181,7 +187,7 @@ export function spawnShiftAgent(params: {
     {
       cwd: params.projectPath,
       env: {
-        ...process.env,
+        ...getProcessEnv(),
         CONTROL_CENTER_API_URL: baseUrl,
         PCC_SHIFT_ID: params.shift.id,
       },

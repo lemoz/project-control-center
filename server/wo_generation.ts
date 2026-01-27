@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import { promisify } from "util";
 import { z } from "zod";
+import { getClaudeCliPath, getCodexCliPath, getProcessEnv } from "./config.js";
 import {
   getRunPhaseMetricsSummary,
   getWorkOrderRunDurations,
@@ -83,11 +84,11 @@ function ensureDir(dir: string): void {
 }
 
 function codexCommand(cliPath?: string): string {
-  return cliPath?.trim() || process.env.CONTROL_CENTER_CODEX_PATH || "codex";
+  return cliPath?.trim() || getCodexCliPath();
 }
 
 function claudeCommand(cliPath?: string): string {
-  return cliPath?.trim() || process.env.CONTROL_CENTER_CLAUDE_PATH || "claude";
+  return cliPath?.trim() || getClaudeCliPath();
 }
 
 function workOrderDraftSchema(): object {
@@ -260,7 +261,7 @@ async function runCodexPrompt(params: {
   const child = spawn(codexCommand(params.cliPath), args, {
     cwd: params.projectPath,
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env },
+    env: { ...getProcessEnv() },
   });
 
   let stdout = "";

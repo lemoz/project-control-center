@@ -1,6 +1,7 @@
 import { spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
+import { getGlobalAttentionMaxProjects } from "./config.js";
 import {
   createGlobalShiftHandoff,
   expireStaleGlobalShifts,
@@ -98,10 +99,7 @@ function logLine(cb: GlobalAgentLoopOptions["onLog"], line: string) {
 function resolveAttentionAllocation(
   overrides?: GlobalAttentionAllocation
 ): GlobalAttentionAllocation {
-  const rawEnv = process.env.CONTROL_CENTER_GLOBAL_ATTENTION_MAX_PROJECTS;
-  const envValue = rawEnv ? Number(rawEnv) : NaN;
-  const envMax =
-    Number.isFinite(envValue) && envValue > 0 ? Math.trunc(envValue) : undefined;
+  const envMax = getGlobalAttentionMaxProjects() ?? undefined;
   return {
     maxProjects:
       overrides?.maxProjects ?? envMax ?? DEFAULT_ATTENTION_MAX_PROJECTS,

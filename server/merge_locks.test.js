@@ -7,7 +7,9 @@ import { after, test } from "node:test";
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pcc-merge-locks-"));
 const dbPath = path.join(tmpDir, "merge-locks.db");
 const originalDbPath = process.env.CONTROL_CENTER_DB_PATH;
+const originalPccDbPath = process.env.PCC_DATABASE_PATH;
 process.env.CONTROL_CENTER_DB_PATH = dbPath;
+process.env.PCC_DATABASE_PATH = dbPath;
 
 const {
   acquireMergeLock,
@@ -66,6 +68,11 @@ after(() => {
     delete process.env.CONTROL_CENTER_DB_PATH;
   } else {
     process.env.CONTROL_CENTER_DB_PATH = originalDbPath;
+  }
+  if (originalPccDbPath === undefined) {
+    delete process.env.PCC_DATABASE_PATH;
+  } else {
+    process.env.PCC_DATABASE_PATH = originalPccDbPath;
   }
 });
 
