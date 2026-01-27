@@ -93,6 +93,7 @@ test("provideRunInput records escalation resolution", () => {
     project_id: "project-1",
     work_order_id: "WO-1234",
     provider: "codex",
+    triggered_by: "manual",
     status: "waiting_for_input",
     iteration: 1,
     builder_iteration: 1,

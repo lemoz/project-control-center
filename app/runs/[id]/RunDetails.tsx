@@ -56,6 +56,7 @@ type RunDetails = {
   project_id: string;
   work_order_id: string;
   provider: string;
+  triggered_by: "manual" | "autopilot";
   status: RunStatus;
   iteration: number;
   builder_iteration: number;
@@ -256,6 +257,9 @@ export function RunDetails({ runId }: { runId: string }) {
               </button>
             )}
             {run?.status && <span className="badge">{run.status}</span>}
+            {run?.triggered_by === "autopilot" && (
+              <span className="badge">autopilot</span>
+            )}
           </div>
         </div>
 

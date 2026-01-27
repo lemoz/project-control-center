@@ -319,7 +319,8 @@ export function applyChatAction(input: unknown) {
         const run = enqueueCodexRun(
           payload.projectId,
           payload.workOrderId,
-          payload.source_branch ?? null
+          payload.source_branch ?? null,
+          "manual"
         );
         return { undoPayload: null, result: { run }, workOrderRunId: run.id };
       }
