@@ -33,7 +33,7 @@ tags:
   - policy
   - scheduling
 estimate_hours: 6
-status: you_review
+status: done
 created_at: 2026-01-07
 updated_at: 2026-01-27
 depends_on:
