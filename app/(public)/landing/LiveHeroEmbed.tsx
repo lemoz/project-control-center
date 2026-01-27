@@ -49,7 +49,10 @@ export function LiveHeroEmbed() {
           Full-screen /live
         </Link>
       </div>
-      <div className={styles.liveDemoStage}>
+      <div
+        className={styles.liveDemoStage}
+        style={{ "--live-canvas-height": "70vh", "--live-canvas-min-height": "520px" } as React.CSSProperties}
+      >
         <LiveOrbitalCanvas
           data={data}
           loading={loading}

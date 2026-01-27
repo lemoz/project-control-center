@@ -240,6 +240,20 @@
   min-height: 450px;
 }
 
+.canvasCaption {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 24px 16px;
+  text-align: center;
+}
+
+.canvasCaptionText {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #8a94a8;
+}
+
 .eyebrow {
   font-size: 12px;
   letter-spacing: 0.2em;
