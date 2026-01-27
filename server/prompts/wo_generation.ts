@@ -15,6 +15,7 @@ export type WorkOrderGenerationPromptInput = {
   priority?: number | null;
   knownTags: string[];
   references: WorkOrderPromptReference[];
+  constitution?: string;
 };
 
 function truncate(text: string, max = 140): string {
@@ -44,6 +45,14 @@ export function buildWorkOrderGenerationPrompt(
   if (input.type) lines.push(`Type: ${input.type}`);
   if (typeof input.priority === "number" && Number.isFinite(input.priority)) {
     lines.push(`Priority hint: ${input.priority}`);
+  }
+  if (input.constitution && input.constitution.trim()) {
+    lines.push("");
+    lines.push("<constitution>");
+    lines.push(input.constitution.trim());
+    lines.push("</constitution>");
+    lines.push("");
+    lines.push("Follow the constitution above when drafting the work order.");
   }
   lines.push("");
   lines.push("Return ONLY a JSON object with these keys:");
