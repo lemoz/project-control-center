@@ -33,9 +33,9 @@ tags:
   - policy
   - scheduling
 estimate_hours: 6
-status: ready
+status: done
 created_at: 2026-01-07
-updated_at: 2026-01-26
+updated_at: 2026-01-27
 depends_on:
   - WO-2025-004
   - WO-2026-020

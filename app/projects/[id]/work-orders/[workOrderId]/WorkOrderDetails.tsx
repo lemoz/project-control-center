@@ -55,6 +55,7 @@ type Run = {
   project_id: string;
   work_order_id: string;
   provider: string;
+  triggered_by: "manual" | "autopilot";
   status: RunStatus;
   iteration: number;
   reviewer_verdict: "approved" | "changes_requested" | null;
@@ -383,6 +384,9 @@ export function WorkOrderDetails({
           <div style={{ fontWeight: 800 }}>Latest Run</div>
           <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <span className="badge">{latestRun.status}</span>
+            {latestRun.triggered_by === "autopilot" && (
+              <span className="badge">autopilot</span>
+            )}
             <Link href={`/runs/${encodeURIComponent(latestRun.id)}`} className="badge">
               open
             </Link>

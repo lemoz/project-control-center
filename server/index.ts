@@ -169,6 +169,13 @@ import {
   notifyShiftSchedulerSettingsUpdated,
   startShiftScheduler,
 } from "./shift_scheduler.js";
+import {
+  getAutopilotCandidates,
+  getAutopilotSnapshot,
+  parseAutopilotPolicyPatch,
+  startAutopilotScheduler,
+  updateAutopilotPolicyFromPatch,
+} from "./autopilot.js";
 import { buildShiftContext } from "./shift_context.js";
 import { buildGlobalContextResponse } from "./global_context.js";
 import { createProjectFromSpec, type CreateProjectInput } from "./global_agent.js";
@@ -2425,6 +2432,29 @@ app.get("/projects/:id/shift-context", (req, res) => {
   return res.json(context);
 });
 
+app.get("/projects/:id/autopilot", (req, res) => {
+  const snapshot = getAutopilotSnapshot(req.params.id);
+  if (!snapshot) return res.status(404).json({ error: "project not found" });
+  return res.json(snapshot);
+});
+
+app.put("/projects/:id/autopilot", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const parsed = parseAutopilotPolicyPatch(req.body ?? null);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const updated = updateAutopilotPolicyFromPatch(project.id, parsed.patch);
+  const snapshot = getAutopilotSnapshot(project.id);
+  return res.json(snapshot ?? { policy: updated });
+});
+
+app.get("/projects/:id/autopilot/candidates", (req, res) => {
+  const candidates = getAutopilotCandidates(req.params.id);
+  if (!candidates) return res.status(404).json({ error: "project not found" });
+  return res.json(candidates);
+});
+
 app.post("/projects/:id/work-orders/generate", async (req, res) => {
   const { id } = req.params;
   const project = findProjectById(id);
@@ -3876,7 +3906,7 @@ app.post("/repos/:id/work-orders/:workOrderId/runs", (req, res) => {
   try {
     const sourceBranch =
       typeof req.body?.source_branch === "string" ? req.body.source_branch.trim() : "";
-    const run = enqueueCodexRun(project.id, workOrderId, sourceBranch || null);
+    const run = enqueueCodexRun(project.id, workOrderId, sourceBranch || null, "manual");
     return res.status(201).json(run);
   } catch (err) {
     if (err instanceof BudgetEnforcementError) {
@@ -4535,4 +4565,5 @@ app.listen(port, host, () => {
   }
   startEscalationTimeoutSweep();
   startShiftScheduler();
+  startAutopilotScheduler();
 });

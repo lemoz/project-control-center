@@ -79,6 +79,7 @@ type Run = {
   project_id: string;
   work_order_id: string;
   provider: string;
+  triggered_by: "manual" | "autopilot";
   status: RunStatus;
   iteration: number;
   reviewer_verdict: "approved" | "changes_requested" | null;
@@ -833,6 +834,9 @@ function WorkOrderCard({
           {latestRun && (
             <>
               <span className="badge">run: {latestRun.status}</span>
+              {latestRun.triggered_by === "autopilot" && (
+                <span className="badge">autopilot</span>
+              )}
               <Link href={`/runs/${encodeURIComponent(latestRun.id)}`} className="badge">
                 open
               </Link>
