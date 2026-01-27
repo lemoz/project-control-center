@@ -46,6 +46,11 @@ This repo will become one of the projects it manages ("dogfooding"): we'll build
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## Two-repo architecture (planned)
+- `project-control-center` (this repo): open-source core UI + local runner.
+- `pcc-cloud`: proprietary cloud services + marketing site.
+- See `MIGRATION.md` for the split plan and sequencing.
+
 - **UI:** Next.js (TypeScript) app, configured as a PWA and tuned for mobile.
 - **Local API/Runner:** Node/TS server for filesystem scanning, git metadata, Work Order CRUD, and executing agent runs.
 - **State:** SQLite for global indexed state/history; per-repo sidecar `.control.yml` for human-maintained metadata.
