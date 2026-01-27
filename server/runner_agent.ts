@@ -66,6 +66,10 @@ import {
 } from "./remote_exec.js";
 import { enforceRunBudget } from "./budget_enforcement.js";
 import { buildFailureContext, classifyRunFailure } from "./failure_analysis.js";
+import {
+  StreamMonitor,
+  type StreamMonitorContext,
+} from "./stream_monitor.js";
 
 const DEFAULT_MAX_BUILDER_ITERATIONS = 10;
 const BASELINE_MAX_ATTEMPTS = 2;
@@ -1512,6 +1516,8 @@ async function runCodexExec(params: {
   model?: string;
   cliPath?: string;
   onEscalation?: (request: EscalationRequest) => Promise<EscalationRecord | null>;
+  streamMonitor?: StreamMonitor;
+  streamContext?: StreamMonitorContext;
   log?: (line: string) => void;
 }): Promise<CodexExecResult> {
   const args = buildCodexExecArgs({
@@ -1536,6 +1542,10 @@ async function runCodexExec(params: {
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env },
   });
+
+  if (params.streamMonitor && params.streamContext) {
+    params.streamMonitor.attach(child, params.streamContext);
+  }
 
   let escalationBuffer = "";
   let escalationRequested = false;
@@ -1635,6 +1645,9 @@ async function runCodexExec(params: {
 
   if (outputPoller) {
     clearInterval(outputPoller);
+  }
+  if (params.streamMonitor) {
+    params.streamMonitor.detach();
   }
 
   if (escalationPromise) {
@@ -3007,6 +3020,16 @@ export async function runRun(runId: string) {
     const workOrderFilePath = path.join(runDir, "work_order.md");
     fs.writeFileSync(workOrderFilePath, workOrderMarkdown, "utf8");
 
+    const streamMonitor = new StreamMonitor({
+      log: (line) => log(line),
+    });
+    const streamContext: StreamMonitorContext = {
+      workOrderId: workOrder.id,
+      goal: workOrder.goal ?? "",
+      acceptanceCriteria: workOrder.acceptance_criteria,
+      nonGoals: workOrder.non_goals,
+    };
+
     let estimationContext: ReturnType<typeof buildEstimationContext> | null = null;
     let estimate: RunEstimate | null = null;
     try {
@@ -3455,6 +3478,8 @@ export async function runRun(runId: string) {
               sandbox: "workspace-write",
               model: builderModel,
               cliPath: runnerSettings.builder.cliPath,
+              streamMonitor,
+              streamContext,
               onEscalation: async (request) => {
                 const escalationRecord: EscalationRecord = {
                   ...request,
@@ -3880,6 +3905,8 @@ export async function runRun(runId: string) {
               skipGitRepoCheck: true,
               model: reviewerModel,
               cliPath: runnerSettings.reviewer.cliPath,
+              streamMonitor,
+              streamContext,
             });
           } finally {
             recordCostFromCodexLog({
@@ -4262,6 +4289,8 @@ export async function runRun(runId: string) {
               sandbox: "workspace-write",
               model: builderModel,
               cliPath: runnerSettings.builder.cliPath,
+              streamMonitor,
+              streamContext,
             });
           } finally {
             recordCostFromCodexLog({
@@ -4465,6 +4494,8 @@ export async function runRun(runId: string) {
               skipGitRepoCheck: true,
               model: reviewerModel,
               cliPath: runnerSettings.reviewer.cliPath,
+              streamMonitor,
+              streamContext,
             });
           } finally {
             recordCostFromCodexLog({
