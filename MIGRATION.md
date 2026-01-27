@@ -37,11 +37,49 @@ Split PCC into two repos: open-source core (`project-control-center`) and propri
 3. Set up secrets/config for cloud services (database, Stripe, auth providers, VM credentials).
 4. Configure deployment/CI for `pcc-cloud` (separate WO).
 
-## Open questions / ambiguities (need confirmation)
-- Should `app/landing/*` (non-public landing widgets) move alongside `app/(public)/landing/` or remain in core if reused elsewhere?
-- Should `app/observability/*` UI stay in core and call `pcc-cloud`, or live in `pcc-cloud` with the monitoring backend?
-- Do `app/api/repos/[id]/vm/*` Next.js proxy routes stay as a thin client in core, or move into `pcc-cloud` entirely?
-- Should `app/live/*` (live demo UI) be part of the marketing site in `pcc-cloud`?
+## Open questions / ambiguities (RESOLVED)
+
+| Question | Decision | Rationale |
+|----------|----------|-----------|
+| `app/landing/*` widgets | MOVE with landing page | Marketing-focused, only used on public landing |
+| `app/observability/*` UI | STAY in core, call pcc-cloud APIs | Users want to see VM health from within the app; UI is client to cloud backend |
+| `app/api/repos/[id]/vm/*` proxy routes | STAY as thin proxies | Core UI doesn't need to know pcc-cloud URLs; cleaner auth/session handling |
+| `app/live/*` (orbital viz) | STAY in core | Useful for showing actual projects; add CTA for cloud features |
+
+## Freemium Model & Cloud CTAs
+
+The open-source core should be genuinely useful standalone, with strategic CTAs pointing users to cloud features where they add value.
+
+### Philosophy
+- CTAs should feel helpful, not naggy ("You could do X" not "You're missing out")
+- Core features work fully offline/locally
+- Cloud features are things that genuinely need infrastructure (hosting, team sync, alerts)
+
+### Natural CTA Touchpoints
+
+| Feature in Core | Cloud CTA | Why it makes sense |
+|----------------|-----------|-------------------|
+| Orbital visualization | "See team activity across all projects →" | Multi-user views need cloud |
+| Local VM runs | "Don't want to manage VMs? Run on PCC Cloud →" | Hosting is a real pain point |
+| Single-user mode | "Collaborate with your team →" | Team features need auth/sharing |
+| Manual monitoring | "Get alerts when builds fail →" | Alerting needs always-on infra |
+| Local-only data | "Backup & sync across machines →" | Sync needs cloud storage |
+
+### Implementation Pattern
+
+```tsx
+// Subtle upsell component in core app
+<CloudFeatureCTA
+  feature="team-dashboard"
+  text="See your team's activity"
+  show={!isCloudConnected}
+/>
+```
+
+### Files affected
+- `LiveOrbitalCanvas` stays in core with full local functionality + small CTA badge
+- New `CloudFeatureCTA` component in core for consistent upsell UI
+- Core app checks `isCloudConnected` to show/hide CTAs
 
 ## Notes
 - The SQLite database remains the source of truth for runtime state in `project-control-center`.
