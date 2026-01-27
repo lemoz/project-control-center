@@ -1,7 +1,7 @@
 ---
 id: WO-2026-174
 title: Landing page feature showcase
-status: you_review
+status: done
 priority: 3
 tags:
   - landing-page

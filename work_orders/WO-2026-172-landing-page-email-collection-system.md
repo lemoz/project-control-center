@@ -1,7 +1,7 @@
 ---
 id: WO-2026-172
 title: Landing page email collection system
-status: you_review
+status: done
 priority: 2
 tags:
   - landing-page
