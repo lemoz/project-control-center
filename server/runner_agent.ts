@@ -5,13 +5,16 @@ import fg from "fast-glob";
 import path from "path";
 import YAML from "yaml";
 import {
+  getBuilderSandboxMode,
   getCodexCliPath,
   getOpenAiApiKey,
   getProcessEnv,
   getRemoteTestTimeoutSeconds,
+  getReviewerSandboxMode,
   getUseTsWorker,
   getVmCodexAuthPath,
   getVmRepoRoot,
+  type SandboxMode,
 } from "./config.js";
 import {
   acquireMergeLock,
@@ -1471,7 +1474,7 @@ type CodexExecResult = {
 };
 
 function buildCodexExecArgs(params: {
-  sandbox: "read-only" | "workspace-write";
+  sandbox: SandboxMode;
   schemaPath: string;
   outputPath: string;
   skipGitRepoCheck?: boolean;
@@ -1512,7 +1515,7 @@ async function runCodexExec(params: {
   schemaPath: string;
   outputPath: string;
   logPath: string;
-  sandbox: "read-only" | "workspace-write";
+  sandbox: SandboxMode;
   skipGitRepoCheck?: boolean;
   model?: string;
   cliPath?: string;
@@ -1675,7 +1678,7 @@ type RemoteCodexExecParams = {
   localSchemaPath: string;
   localOutputPath: string;
   localLogPath: string;
-  sandbox: "read-only" | "workspace-write";
+  sandbox: SandboxMode;
   skipGitRepoCheck?: boolean;
   model?: string;
   containerConfig: ContainerConfig;
@@ -3540,7 +3543,7 @@ export async function runRun(runId: string) {
               schemaPath: builderSchemaPath,
               outputPath: builderOutputPath,
               logPath: builderLogPath,
-              sandbox: "workspace-write",
+              sandbox: getBuilderSandboxMode(),
               model: builderModel,
               cliPath: runnerSettings.builder.cliPath,
               streamMonitor: builderStreamMonitor ?? undefined,
@@ -3624,7 +3627,7 @@ export async function runRun(runId: string) {
                   localSchemaPath: builderSchemaPath,
                   localOutputPath: builderOutputPath,
                   localLogPath: builderLogPath,
-                  sandbox: "workspace-write",
+                  sandbox: getBuilderSandboxMode(),
                   skipGitRepoCheck: true,
                   model: builderModel,
                   containerConfig,
@@ -3966,7 +3969,7 @@ export async function runRun(runId: string) {
               schemaPath: reviewerSchemaPath,
               outputPath: reviewerOutputPath,
               logPath: reviewerLogPath,
-              sandbox: "read-only",
+              sandbox: getReviewerSandboxMode(),
               skipGitRepoCheck: true,
               model: reviewerModel,
               cliPath: runnerSettings.reviewer.cliPath,
@@ -4024,7 +4027,7 @@ export async function runRun(runId: string) {
                 localSchemaPath: reviewerSchemaPath,
                 localOutputPath: reviewerOutputPath,
                 localLogPath: reviewerLogPath,
-                sandbox: "read-only",
+                sandbox: getReviewerSandboxMode(),
                 skipGitRepoCheck: true,
                 model: reviewerModel,
                 containerConfig,
@@ -4351,7 +4354,7 @@ export async function runRun(runId: string) {
               schemaPath: builderSchemaPath,
               outputPath: mergeBuilderOutputPath,
               logPath: mergeBuilderLogPath,
-              sandbox: "workspace-write",
+              sandbox: getBuilderSandboxMode(),
               model: builderModel,
               cliPath: runnerSettings.builder.cliPath,
               streamMonitor: builderStreamMonitor ?? undefined,
@@ -4397,7 +4400,7 @@ export async function runRun(runId: string) {
                 localSchemaPath: builderSchemaPath,
                 localOutputPath: mergeBuilderOutputPath,
                 localLogPath: mergeBuilderLogPath,
-                sandbox: "workspace-write",
+                sandbox: getBuilderSandboxMode(),
                 skipGitRepoCheck: true,
                 model: builderModel,
                 containerConfig,
@@ -4555,7 +4558,7 @@ export async function runRun(runId: string) {
               schemaPath: reviewerSchemaPath,
               outputPath: mergeReviewerOutputPath,
               logPath: mergeReviewerLogPath,
-              sandbox: "read-only",
+              sandbox: getReviewerSandboxMode(),
               skipGitRepoCheck: true,
               model: reviewerModel,
               cliPath: runnerSettings.reviewer.cliPath,
@@ -4611,7 +4614,7 @@ export async function runRun(runId: string) {
                 localSchemaPath: reviewerSchemaPath,
                 localOutputPath: mergeReviewerOutputPath,
                 localLogPath: mergeReviewerLogPath,
-                sandbox: "read-only",
+                sandbox: getReviewerSandboxMode(),
                 skipGitRepoCheck: true,
                 model: reviewerModel,
                 containerConfig,

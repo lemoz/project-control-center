@@ -157,6 +157,45 @@ export function getEscalationTimeoutHours(): number {
   return 24;
 }
 
+export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+
+/**
+ * Get the sandbox mode for builder agents.
+ * Controlled by PCC_BUILDER_SANDBOX env var.
+ * Options: "read-only", "workspace-write", "danger-full-access"
+ * Default: "workspace-write"
+ *
+ * Use "danger-full-access" when stream monitoring is enabled to allow
+ * builders to access localhost APIs and write outside the worktree.
+ */
+export function getBuilderSandboxMode(): SandboxMode {
+  const raw = (process.env.PCC_BUILDER_SANDBOX || "").trim().toLowerCase();
+  if (raw === "danger-full-access" || raw === "full-access" || raw === "none") {
+    return "danger-full-access";
+  }
+  if (raw === "read-only") {
+    return "read-only";
+  }
+  return "workspace-write";
+}
+
+/**
+ * Get the sandbox mode for reviewer agents.
+ * Controlled by PCC_REVIEWER_SANDBOX env var.
+ * Options: "read-only", "workspace-write", "danger-full-access"
+ * Default: "read-only"
+ */
+export function getReviewerSandboxMode(): SandboxMode {
+  const raw = (process.env.PCC_REVIEWER_SANDBOX || "").trim().toLowerCase();
+  if (raw === "danger-full-access" || raw === "full-access" || raw === "none") {
+    return "danger-full-access";
+  }
+  if (raw === "workspace-write") {
+    return "workspace-write";
+  }
+  return "read-only";
+}
+
 export function getCorsAllowAllRequested(): boolean {
   return process.env.CONTROL_CENTER_CORS_ALLOW_ALL === "1";
 }
