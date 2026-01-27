@@ -1,7 +1,7 @@
 ---
 id: WO-2026-177
 title: Prepare pcc-cloud repo structure
-status: backlog
+status: you_review
 priority: 1
 tags:
   - cloud
@@ -10,7 +10,7 @@ tags:
 estimate_hours: 3
 depends_on: []
 era: v2
-updated_at: 2026-01-26
+updated_at: 2026-01-27
 goal: Prepare the complete structure and migration plan for splitting PCC into two repos (open-source core + proprietary cloud).
 context:
   - PCC is currently a single repo with local-first architecture
