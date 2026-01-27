@@ -1,7 +1,7 @@
 ---
 id: WO-2026-176
 title: Automated shift scheduler
-status: backlog
+status: you_review
 priority: 1
 tags:
   - shift-agent
@@ -13,7 +13,7 @@ depends_on:
   - WO-2026-063
   - WO-2026-074
 era: v2
-updated_at: 2026-01-26
+updated_at: 2026-01-27
 goal: Automatically start shifts at regular intervals so projects make progress without manual triggering.
 context:
   - Shift lifecycle APIs exist (WO-2026-063) - POST /projects/:id/shifts
