@@ -1,7 +1,7 @@
 ---
 id: WO-2026-171
 title: Public landing page foundation
-status: backlog
+status: you_review
 priority: 2
 tags:
   - landing-page
@@ -10,7 +10,7 @@ tags:
 estimate_hours: 3
 depends_on: []
 era: v2
-updated_at: 2026-01-26
+updated_at: 2026-01-27
 goal: Create a public-facing landing page for PCC with hero section, value proposition, and CTA - separate from the internal portfolio dashboard.
 context:
   - Current "/" is internal portfolio dashboard (app/page.tsx)
@@ -21,7 +21,7 @@ acceptance_criteria:
   - New route at app/(public)/landing/page.tsx (route group with separate layout)
   - Landing-specific layout without app header/sidebar (app/(public)/layout.tsx)
   - Hero section with tagline and primary CTA (See it Live button links to /live)
-  - Secondary CTA for email signup (anchor to #signup section)
+  - Secondary CTA for email signup (anchor to
   - How It Works section with 3 value cards (Define WOs, AI Builds, Ship)
   - Responsive mobile-first design
   - Dark theme consistent with existing design system
