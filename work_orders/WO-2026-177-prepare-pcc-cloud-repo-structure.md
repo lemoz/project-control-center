@@ -1,7 +1,7 @@
 ---
 id: WO-2026-177
 title: Prepare pcc-cloud repo structure
-status: you_review
+status: done
 priority: 1
 tags:
   - cloud

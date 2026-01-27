@@ -1,7 +1,7 @@
 ---
 id: WO-2026-178
 title: Refactor core PCC for cloud deployability
-status: backlog
+status: ready
 priority: 1
 tags:
   - cloud
@@ -11,7 +11,7 @@ estimate_hours: 4
 depends_on:
   - WO-2026-177
 era: v2
-updated_at: 2026-01-26
+updated_at: 2026-01-27
 goal: Make core PCC deployable in a cloud VM context while maintaining local-first functionality.
 context:
   - PCC currently assumes local filesystem, single user, fixed paths
