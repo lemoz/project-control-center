@@ -95,6 +95,10 @@ export type RunRow = {
   reviewer_verdict: "approved" | "changes_requested" | null;
   reviewer_notes: string | null; // JSON array
   summary: string | null;
+  estimated_iterations: number | null;
+  estimated_minutes: number | null;
+  estimate_confidence: "high" | "medium" | "low" | null;
+  estimate_reasoning: string | null;
   branch_name: string | null;
   source_branch: string | null;
   merge_status: "pending" | "merged" | "conflict" | null;
@@ -611,6 +615,10 @@ function initSchema(database: Database.Database) {
       reviewer_verdict TEXT,
       reviewer_notes TEXT,
       summary TEXT,
+      estimated_iterations INTEGER,
+      estimated_minutes INTEGER,
+      estimate_confidence TEXT,
+      estimate_reasoning TEXT,
       branch_name TEXT,
       source_branch TEXT,
       merge_status TEXT,
@@ -1175,6 +1183,10 @@ function initSchema(database: Database.Database) {
   const hasMergeStatus = runColumns.some((c) => c.name === "merge_status");
   const hasConflictWithRunId = runColumns.some((c) => c.name === "conflict_with_run_id");
   const hasBuilderIteration = runColumns.some((c) => c.name === "builder_iteration");
+  const hasEstimatedIterations = runColumns.some((c) => c.name === "estimated_iterations");
+  const hasEstimatedMinutes = runColumns.some((c) => c.name === "estimated_minutes");
+  const hasEstimateConfidence = runColumns.some((c) => c.name === "estimate_confidence");
+  const hasEstimateReasoning = runColumns.some((c) => c.name === "estimate_reasoning");
   const hasEscalation = runColumns.some((c) => c.name === "escalation");
   const hasFailureCategory = runColumns.some((c) => c.name === "failure_category");
   const hasFailureReason = runColumns.some((c) => c.name === "failure_reason");
@@ -1193,6 +1205,18 @@ function initSchema(database: Database.Database) {
   }
   if (!hasBuilderIteration) {
     database.exec("ALTER TABLE runs ADD COLUMN builder_iteration INTEGER NOT NULL DEFAULT 1;");
+  }
+  if (!hasEstimatedIterations) {
+    database.exec("ALTER TABLE runs ADD COLUMN estimated_iterations INTEGER;");
+  }
+  if (!hasEstimatedMinutes) {
+    database.exec("ALTER TABLE runs ADD COLUMN estimated_minutes INTEGER;");
+  }
+  if (!hasEstimateConfidence) {
+    database.exec("ALTER TABLE runs ADD COLUMN estimate_confidence TEXT;");
+  }
+  if (!hasEstimateReasoning) {
+    database.exec("ALTER TABLE runs ADD COLUMN estimate_reasoning TEXT;");
   }
   if (!hasFailureCategory) {
     database.exec("ALTER TABLE runs ADD COLUMN failure_category TEXT;");
@@ -1754,9 +1778,9 @@ export function createRun(run: RunRow): void {
   database
     .prepare(
       `INSERT INTO runs
-        (id, project_id, work_order_id, provider, status, iteration, builder_iteration, reviewer_verdict, reviewer_notes, summary, branch_name, source_branch, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error, failure_category, failure_reason, failure_detail, escalation)
+        (id, project_id, work_order_id, provider, status, iteration, builder_iteration, reviewer_verdict, reviewer_notes, summary, estimated_iterations, estimated_minutes, estimate_confidence, estimate_reasoning, branch_name, source_branch, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error, failure_category, failure_reason, failure_detail, escalation)
        VALUES
-        (@id, @project_id, @work_order_id, @provider, @status, @iteration, @builder_iteration, @reviewer_verdict, @reviewer_notes, @summary, @branch_name, @source_branch, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error, @failure_category, @failure_reason, @failure_detail, @escalation)`
+        (@id, @project_id, @work_order_id, @provider, @status, @iteration, @builder_iteration, @reviewer_verdict, @reviewer_notes, @summary, @estimated_iterations, @estimated_minutes, @estimate_confidence, @estimate_reasoning, @branch_name, @source_branch, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error, @failure_category, @failure_reason, @failure_detail, @escalation)`
     )
     .run(run);
 }
@@ -1784,6 +1808,10 @@ export function updateRun(
       | "reviewer_verdict"
       | "reviewer_notes"
       | "summary"
+      | "estimated_iterations"
+      | "estimated_minutes"
+      | "estimate_confidence"
+      | "estimate_reasoning"
       | "branch_name"
       | "merge_status"
       | "conflict_with_run_id"
@@ -1805,6 +1833,10 @@ export function updateRun(
     { key: "reviewer_verdict", column: "reviewer_verdict" },
     { key: "reviewer_notes", column: "reviewer_notes" },
     { key: "summary", column: "summary" },
+    { key: "estimated_iterations", column: "estimated_iterations" },
+    { key: "estimated_minutes", column: "estimated_minutes" },
+    { key: "estimate_confidence", column: "estimate_confidence" },
+    { key: "estimate_reasoning", column: "estimate_reasoning" },
     { key: "branch_name", column: "branch_name" },
     { key: "merge_status", column: "merge_status" },
     { key: "conflict_with_run_id", column: "conflict_with_run_id" },
