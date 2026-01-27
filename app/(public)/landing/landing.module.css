@@ -112,6 +112,64 @@
   gap: 12px;
 }
 
+.liveDemoCard {
+  padding: 16px;
+  background: linear-gradient(140deg, rgba(19, 23, 36, 0.95), rgba(10, 14, 24, 0.95));
+  border: 1px solid var(--landing-border);
+  display: grid;
+  gap: 12px;
+}
+
+.liveDemoHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.liveBadgeRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.liveBadge {
+  background: rgba(89, 198, 255, 0.2);
+  border-color: rgba(89, 198, 255, 0.4);
+  color: #d9f0ff;
+}
+
+.liveBadgeText {
+  font-size: 12px;
+  color: #a9b0c2;
+}
+
+.liveCta {
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.liveDemoStage {
+  position: relative;
+  --live-canvas-height: clamp(360px, 48vw, 480px);
+  --live-canvas-min-height: 360px;
+}
+
+.liveDemoFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #a9b0c2;
+}
+
+.liveFooterStatus {
+  color: #cbd5f5;
+}
+
 .heroCard {
   padding: 20px;
   background: linear-gradient(140deg, rgba(19, 23, 36, 0.95), rgba(12, 16, 28, 0.95));

@@ -44,8 +44,8 @@
 .canvasContainer {
   position: relative;
   width: 100%;
-  height: min(70vh, 720px);
-  min-height: 360px;
+  height: var(--live-canvas-height, min(70vh, 720px));
+  min-height: var(--live-canvas-min-height, 360px);
   border-radius: 12px;
   overflow: hidden;
 }
@@ -619,8 +619,8 @@
   }
 
   .canvasContainer {
-    height: 60vh;
-    min-height: 320px;
+    height: var(--live-canvas-height, 60vh);
+    min-height: var(--live-canvas-min-height, 320px);
   }
 
   .activityOverlay {
