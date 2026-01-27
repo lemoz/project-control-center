@@ -350,9 +350,53 @@ GET  /runs/:runId
 PATCH /runs/:runId                          # Update status/merge_status/error
 POST /runs/:runId/cancel
 POST /runs/:runId/provide-input
+
+# Communications (cross-project messaging)
+POST /projects/:id/communications         # Send message to project or global
+GET  /projects/:id/communications/inbox   # Check incoming messages
+POST /communications/:id/read             # Mark as read
+POST /communications/:id/acknowledge      # Acknowledge receipt
 ```
 
 ---
+
+## Cross-Project Communication
+
+Projects can send messages to each other. Use this for:
+- Coordinating work across repos (for example, core PCC and pcc-cloud)
+- Requesting another project take action
+- Sharing context or status updates
+
+**Check your inbox:**
+```bash
+curl -s "{base_url}/projects/{project_id}/communications/inbox"
+```
+
+**Send a message to a sibling project:**
+```bash
+curl -s -X POST "{base_url}/projects/{project_id}/communications" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "intent": "request",
+    "to_scope": "project",
+    "to_project_id": "pcc-cloud",
+    "summary": "Migration files ready",
+    "body": "The following files should be added to pcc-cloud: ..."
+  }'
+```
+
+**Intents:**
+| Intent | Use case |
+|--------|----------|
+| request | Ask another project to do something |
+| message | Share information |
+| suggestion | Propose an idea |
+| status | Report progress |
+
+**Discover sibling projects:**
+```bash
+curl -s "{base_url}/repos" | jq '.[].id'
+```
 
 ## Completing a Shift
 
