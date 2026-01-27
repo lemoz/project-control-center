@@ -7,6 +7,7 @@ import { KanbanBoard } from "./KanbanBoard";
 import { TechTreeView } from "./TechTreeView";
 import { ConstitutionPanel } from "./ConstitutionPanel";
 import { VMPanel } from "./VMPanel";
+import { AutoShiftPanel } from "./AutoShiftPanel";
 import { SuccessPanel } from "./SuccessPanel";
 import { CostPanel } from "./CostPanel";
 import { BudgetPanel } from "./BudgetPanel";
@@ -69,6 +70,7 @@ export default function ProjectPage({ params }: { params: { id: string } }) {
         <BudgetPanel repoId={id} />
         <ConstitutionPanel repoId={id} />
         <VMPanel repoId={id} />
+        <AutoShiftPanel repoId={id} />
         <KanbanBoard repoId={id} />
       </main>
 

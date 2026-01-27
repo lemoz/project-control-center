@@ -20,6 +20,7 @@ export type ProjectRow = {
   priority: number;
   starred: 0 | 1;
   hidden: 0 | 1;
+  auto_shift_enabled: 0 | 1;
   tags: string; // JSON array
   isolation_mode: ProjectIsolationMode;
   vm_size: ProjectVmSize;
@@ -301,6 +302,15 @@ export type SettingRow = {
   updated_at: string;
 };
 
+export type ShiftSchedulerSettingsRow = {
+  enabled: number;
+  interval_minutes: number;
+  cooldown_minutes: number;
+  max_shifts_per_day: number;
+  quiet_hours_start: string;
+  quiet_hours_end: string;
+};
+
 export type UserInteractionRow = {
   id: string;
   action_type: string;
@@ -546,6 +556,7 @@ function initSchema(database: Database.Database) {
       priority INTEGER NOT NULL,
       starred INTEGER NOT NULL DEFAULT 0,
       hidden INTEGER NOT NULL DEFAULT 0,
+      auto_shift_enabled INTEGER NOT NULL DEFAULT 0,
       tags TEXT NOT NULL DEFAULT '[]',
       isolation_mode TEXT NOT NULL DEFAULT 'local',
       vm_size TEXT NOT NULL DEFAULT 'medium',
@@ -746,6 +757,15 @@ function initSchema(database: Database.Database) {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS shift_scheduler_settings (
+      enabled INTEGER NOT NULL DEFAULT 0,
+      interval_minutes INTEGER NOT NULL DEFAULT 120,
+      cooldown_minutes INTEGER NOT NULL DEFAULT 30,
+      max_shifts_per_day INTEGER NOT NULL DEFAULT 6,
+      quiet_hours_start TEXT NOT NULL DEFAULT '02:00',
+      quiet_hours_end TEXT NOT NULL DEFAULT '06:00'
     );
 
     CREATE TABLE IF NOT EXISTS constitution_versions (
@@ -1031,6 +1051,13 @@ function initSchema(database: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_chat_action_ledger_run_id ON chat_action_ledger(run_id);
   `);
 
+  database.exec(`
+    INSERT INTO shift_scheduler_settings
+      (enabled, interval_minutes, cooldown_minutes, max_shifts_per_day, quiet_hours_start, quiet_hours_end)
+    SELECT 0, 120, 30, 6, '02:00', '06:00'
+    WHERE NOT EXISTS (SELECT 1 FROM shift_scheduler_settings);
+  `);
+
   // Lightweight migration for existing DBs.
   const projectColumns = database.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>;
   const hasStarred = projectColumns.some((c) => c.name === "starred");
@@ -1038,6 +1065,7 @@ function initSchema(database: Database.Database) {
   const hasSuccessCriteria = projectColumns.some((c) => c.name === "success_criteria");
   const hasSuccessMetrics = projectColumns.some((c) => c.name === "success_metrics");
   const hasHidden = projectColumns.some((c) => c.name === "hidden");
+  const hasAutoShiftEnabled = projectColumns.some((c) => c.name === "auto_shift_enabled");
   const hasIsolationMode = projectColumns.some((c) => c.name === "isolation_mode");
   const hasVmSize = projectColumns.some((c) => c.name === "vm_size");
   if (!hasStarred) {
@@ -1054,6 +1082,9 @@ function initSchema(database: Database.Database) {
   }
   if (!hasHidden) {
     database.exec("ALTER TABLE projects ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;");
+  }
+  if (!hasAutoShiftEnabled) {
+    database.exec("ALTER TABLE projects ADD COLUMN auto_shift_enabled INTEGER NOT NULL DEFAULT 0;");
   }
   if (!hasIsolationMode) {
     database.exec("ALTER TABLE projects ADD COLUMN isolation_mode TEXT NOT NULL DEFAULT 'local';");
@@ -1438,6 +1469,15 @@ export function listProjects(): ProjectRow[] {
     .all() as ProjectRow[];
 }
 
+export function listAutoShiftProjects(): ProjectRow[] {
+  const database = getDb();
+  return database
+    .prepare(
+      "SELECT * FROM projects WHERE auto_shift_enabled = 1 ORDER BY priority ASC, name ASC"
+    )
+    .all() as ProjectRow[];
+}
+
 export function findProjectByPath(repoPath: string): ProjectRow | null {
   const database = getDb();
   const row = database
@@ -1607,8 +1647,8 @@ export function upsertProject(p: Omit<ProjectRow, "created_at" | "updated_at"> &
   const updatedAt = p.updated_at || now;
   database
     .prepare(
-      `INSERT INTO projects (id, path, name, description, success_criteria, success_metrics, type, stage, status, priority, starred, hidden, tags, isolation_mode, vm_size, last_run_at, created_at, updated_at)
-       VALUES (@id, @path, @name, @description, @success_criteria, @success_metrics, @type, @stage, @status, @priority, @starred, @hidden, @tags, @isolation_mode, @vm_size, @last_run_at, @created_at, @updated_at)
+      `INSERT INTO projects (id, path, name, description, success_criteria, success_metrics, type, stage, status, priority, starred, hidden, auto_shift_enabled, tags, isolation_mode, vm_size, last_run_at, created_at, updated_at)
+       VALUES (@id, @path, @name, @description, @success_criteria, @success_metrics, @type, @stage, @status, @priority, @starred, @hidden, @auto_shift_enabled, @tags, @isolation_mode, @vm_size, @last_run_at, @created_at, @updated_at)
        ON CONFLICT(id) DO UPDATE SET
          path=excluded.path,
          name=excluded.name,
@@ -1620,7 +1660,8 @@ export function upsertProject(p: Omit<ProjectRow, "created_at" | "updated_at"> &
          status=excluded.status,
          priority=excluded.priority,
          starred=projects.starred,
-         hidden=projects.hidden,
+        hidden=projects.hidden,
+        auto_shift_enabled=projects.auto_shift_enabled,
          tags=excluded.tags,
          isolation_mode=excluded.isolation_mode,
          vm_size=excluded.vm_size,
@@ -1650,6 +1691,18 @@ export function setProjectHidden(id: string, hidden: boolean): boolean {
     .prepare("UPDATE projects SET hidden = ?, updated_at = ? WHERE id = ?")
     .run(hidden ? 1 : 0, now, id);
   return result.changes > 0;
+}
+
+export function updateProjectAutoShift(
+  id: string,
+  enabled: boolean
+): ProjectRow | null {
+  const database = getDb();
+  const now = new Date().toISOString();
+  database
+    .prepare("UPDATE projects SET auto_shift_enabled = ?, updated_at = ? WHERE id = ?")
+    .run(enabled ? 1 : 0, now, id);
+  return findProjectById(id);
 }
 
 export function updateProjectStatus(id: string, status: ProjectRow["status"]): ProjectRow | null {
@@ -2692,6 +2745,64 @@ export function setSetting(key: string, value: string): SettingRow {
   );
 }
 
+const SHIFT_SCHEDULER_DEFAULTS: ShiftSchedulerSettingsRow = {
+  enabled: 0,
+  interval_minutes: 120,
+  cooldown_minutes: 30,
+  max_shifts_per_day: 6,
+  quiet_hours_start: "02:00",
+  quiet_hours_end: "06:00",
+};
+
+export function getShiftSchedulerSettingsRow(): ShiftSchedulerSettingsRow {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM shift_scheduler_settings LIMIT 1")
+    .get() as ShiftSchedulerSettingsRow | undefined;
+  if (row) return row;
+  database
+    .prepare(
+      `INSERT INTO shift_scheduler_settings
+        (enabled, interval_minutes, cooldown_minutes, max_shifts_per_day, quiet_hours_start, quiet_hours_end)
+       VALUES
+        (@enabled, @interval_minutes, @cooldown_minutes, @max_shifts_per_day, @quiet_hours_start, @quiet_hours_end)`
+    )
+    .run(SHIFT_SCHEDULER_DEFAULTS);
+  return { ...SHIFT_SCHEDULER_DEFAULTS };
+}
+
+export function setShiftSchedulerSettingsRow(
+  settings: ShiftSchedulerSettingsRow
+): ShiftSchedulerSettingsRow {
+  const database = getDb();
+  const existing = database
+    .prepare("SELECT 1 FROM shift_scheduler_settings LIMIT 1")
+    .get();
+  if (!existing) {
+    database
+      .prepare(
+        `INSERT INTO shift_scheduler_settings
+          (enabled, interval_minutes, cooldown_minutes, max_shifts_per_day, quiet_hours_start, quiet_hours_end)
+         VALUES
+          (@enabled, @interval_minutes, @cooldown_minutes, @max_shifts_per_day, @quiet_hours_start, @quiet_hours_end)`
+      )
+      .run(settings);
+    return { ...settings };
+  }
+  database
+    .prepare(
+      `UPDATE shift_scheduler_settings
+       SET enabled = @enabled,
+           interval_minutes = @interval_minutes,
+           cooldown_minutes = @cooldown_minutes,
+           max_shifts_per_day = @max_shifts_per_day,
+           quiet_hours_start = @quiet_hours_start,
+           quiet_hours_end = @quiet_hours_end`
+    )
+    .run(settings);
+  return getShiftSchedulerSettingsRow();
+}
+
 export function createUserInteraction(input: {
   action_type: string;
   context?: Record<string, unknown> | null;
@@ -2935,6 +3046,30 @@ export function listAllWorkOrderDeps(projectId: string): WorkOrderDepRow[] {
   return database
     .prepare("SELECT * FROM work_order_deps WHERE project_id = ?")
     .all(projectId) as WorkOrderDepRow[];
+}
+
+export function countReadyWorkOrders(projectId: string): number {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT COUNT(*) as count FROM work_orders WHERE project_id = ? AND status = 'ready'")
+    .get(projectId) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
+export function countShiftsSince(projectId: string, sinceIso: string): number {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT COUNT(*) as count FROM shifts WHERE project_id = ? AND started_at >= ?")
+    .get(projectId, sinceIso) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
+export function getLatestShift(projectId: string): ShiftRow | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM shifts WHERE project_id = ? ORDER BY started_at DESC LIMIT 1")
+    .get(projectId) as ShiftRow | undefined;
+  return row || null;
 }
 
 const DEFAULT_SHIFT_TIMEOUT_MINUTES = 120;

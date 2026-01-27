@@ -222,6 +222,10 @@ export function syncAndListRepoSummaries(params?: { forceRescan?: boolean }): Re
 
     const persistedHidden = Boolean(existingById?.hidden) || anyHidden;
     const hidden = persistedHidden ? 1 : 0;
+    const persistedAutoShift =
+      Boolean(existingById?.auto_shift_enabled) ||
+      existingByPath.some((p) => p.auto_shift_enabled === 1);
+    const auto_shift_enabled = persistedAutoShift ? 1 : 0;
 
     const lastRunAtCandidates = [
       existingById?.last_run_at,
@@ -240,6 +244,7 @@ export function syncAndListRepoSummaries(params?: { forceRescan?: boolean }): Re
       priority,
       starred,
       hidden,
+      auto_shift_enabled,
       tags,
       success_criteria,
       success_metrics,

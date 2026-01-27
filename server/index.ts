@@ -40,6 +40,7 @@ import {
   markInProgressRunsFailed,
   markWorkOrderRunsMerged,
   setProjectStar,
+  updateProjectAutoShift,
   startShift,
   startGlobalShift,
   updateProjectIsolationSettings,
@@ -104,9 +105,11 @@ import { generateNarrationAudio } from "./narration_tts.js";
 import {
   getChatSettingsResponse,
   getRunnerSettingsResponse,
+  getShiftSchedulerSettings,
   getUtilitySettingsResponse,
   patchChatSettings,
   patchRunnerSettings,
+  patchShiftSchedulerSettings,
   patchUtilitySettings,
 } from "./settings.js";
 import {
@@ -159,6 +162,11 @@ import {
 import { RemoteExecError } from "./remote_exec.js";
 import { readControlMetadata } from "./sidecar.js";
 import { spawnShiftAgent, tailShiftLog } from "./shift_agent.js";
+import {
+  getShiftSchedulerStatus,
+  notifyShiftSchedulerSettingsUpdated,
+  startShiftScheduler,
+} from "./shift_scheduler.js";
 import { buildShiftContext } from "./shift_context.js";
 import { buildGlobalContextResponse } from "./global_context.js";
 import { createProjectFromSpec, type CreateProjectInput } from "./global_agent.js";
@@ -770,6 +778,25 @@ app.patch("/settings", (req, res) => {
   }
 });
 
+app.get("/settings/shift-scheduler", (_req, res) => {
+  return res.json({
+    settings: getShiftSchedulerSettings(),
+    status: getShiftSchedulerStatus(),
+  });
+});
+
+app.patch("/settings/shift-scheduler", (req, res) => {
+  try {
+    const settings = patchShiftSchedulerSettings(req.body ?? {});
+    notifyShiftSchedulerSettingsUpdated(settings);
+    return res.json({ settings, status: getShiftSchedulerStatus() });
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "invalid shift scheduler settings",
+    });
+  }
+});
+
 app.get("/settings/utility", (_req, res) => {
   return res.json(getUtilitySettingsResponse());
 });
@@ -996,6 +1023,7 @@ app.get("/repos/:id", (req, res) => {
       name: project.name,
       success_criteria: successCriteria,
       success_metrics: successMetrics,
+      auto_shift_enabled: project.auto_shift_enabled === 1,
     },
   });
 });
@@ -2723,6 +2751,21 @@ app.patch("/repos/:id/star", (req, res) => {
   return res.json({ ok: true, id, starred });
 });
 
+app.patch("/repos/:id/auto-shift", (req, res) => {
+  const { id } = req.params;
+  const enabled = req.body?.auto_shift_enabled;
+  if (typeof enabled !== "boolean") {
+    return res.status(400).json({ error: "`auto_shift_enabled` must be boolean" });
+  }
+  const project = updateProjectAutoShift(id, enabled);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  return res.json({
+    ok: true,
+    id,
+    auto_shift_enabled: project.auto_shift_enabled === 1,
+  });
+});
+
 app.put("/repos/:id/constitution", (req, res) => {
   const { id } = req.params;
   const project = findProjectById(id);
@@ -4433,4 +4476,5 @@ app.listen(port, host, () => {
     console.log(`Marked ${recovered} in-progress runs as failed (restart recovery).`);
   }
   startEscalationTimeoutSweep();
+  startShiftScheduler();
 });

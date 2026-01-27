@@ -36,6 +36,7 @@ upsertProject({
   priority: 1,
   starred: 0,
   hidden: 0,
+  auto_shift_enabled: 0,
   tags: "[]",
   isolation_mode: "local",
   vm_size: "medium",

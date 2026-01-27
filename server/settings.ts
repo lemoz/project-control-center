@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { getSetting, setSetting } from "./db.js";
+import {
+  getSetting,
+  getShiftSchedulerSettingsRow,
+  setSetting,
+  setShiftSchedulerSettingsRow,
+} from "./db.js";
 import { readControlMetadata } from "./sidecar.js";
 
 export const PROVIDERS = ["codex", "claude_code", "gemini_cli"] as const;
@@ -45,6 +50,15 @@ export type RunnerSettings = {
   maxBuilderIterations: number;
 };
 
+export type ShiftSchedulerSettings = {
+  enabled: boolean;
+  interval_minutes: number;
+  cooldown_minutes: number;
+  max_shifts_per_day: number;
+  quiet_hours_start: string;
+  quiet_hours_end: string;
+};
+
 export type RunnerSettingsResponse = {
   saved: RunnerSettings;
   effective: RunnerSettings;
@@ -76,6 +90,9 @@ export type ChatSettingsResponse = {
 
 const ProviderNameSchema = z.enum(PROVIDERS);
 const UtilityProviderNameSchema = z.enum(UTILITY_PROVIDERS);
+const TimeOfDaySchema = z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/, {
+  message: "time must be HH:MM",
+});
 
 const ProviderSettingsSchema = z.object({
   provider: ProviderNameSchema.default("codex"),
@@ -100,12 +117,32 @@ const RunnerSettingsSchema = z.object({
   maxBuilderIterations: z.number().int().min(1).max(20).default(10),
 });
 
+const ShiftSchedulerSettingsSchema = z.object({
+  enabled: z.boolean().default(false),
+  interval_minutes: z.number().int().min(1).max(1440).default(120),
+  cooldown_minutes: z.number().int().min(0).max(1440).default(30),
+  max_shifts_per_day: z.number().int().min(1).max(48).default(6),
+  quiet_hours_start: TimeOfDaySchema.default("02:00"),
+  quiet_hours_end: TimeOfDaySchema.default("06:00"),
+});
+
 const RunnerSettingsPatchSchema = z
   .object({
     builder: ProviderSettingsSchema.partial().optional(),
     reviewer: ProviderSettingsSchema.partial().optional(),
     useWorktree: z.boolean().optional(),
     maxBuilderIterations: z.number().int().min(1).max(20).optional(),
+  })
+  .strict();
+
+const ShiftSchedulerSettingsPatchSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    interval_minutes: z.number().int().min(1).max(1440).optional(),
+    cooldown_minutes: z.number().int().min(0).max(1440).optional(),
+    max_shifts_per_day: z.number().int().min(1).max(48).optional(),
+    quiet_hours_start: TimeOfDaySchema.optional(),
+    quiet_hours_end: TimeOfDaySchema.optional(),
   })
   .strict();
 
@@ -154,6 +191,17 @@ function utilityDefaults(): UtilitySettings {
     provider: "codex",
     model: "",
     cliPath: "",
+  };
+}
+
+function shiftSchedulerDefaults(): ShiftSchedulerSettings {
+  return {
+    enabled: false,
+    interval_minutes: 120,
+    cooldown_minutes: 30,
+    max_shifts_per_day: 6,
+    quiet_hours_start: "02:00",
+    quiet_hours_end: "06:00",
   };
 }
 
@@ -207,6 +255,16 @@ function normalizeUtilitySettings(value: unknown): UtilitySettings {
   return UtilitySettingsSchema.parse(merged);
 }
 
+function normalizeShiftSchedulerSettings(value: unknown): ShiftSchedulerSettings {
+  const parsed = ShiftSchedulerSettingsSchema.safeParse(value ?? {});
+  if (parsed.success) return parsed.data;
+  const merged = {
+    ...shiftSchedulerDefaults(),
+    ...(typeof value === "object" && value ? value : {}),
+  };
+  return ShiftSchedulerSettingsSchema.parse(merged);
+}
+
 function loadSavedChatSettings(): ChatSettings {
   const row = getSetting(CHAT_SETTINGS_KEY);
   if (!row) return chatDefaults();
@@ -227,6 +285,18 @@ function loadSavedUtilitySettings(): UtilitySettings {
   }
 }
 
+function loadSavedShiftSchedulerSettings(): ShiftSchedulerSettings {
+  const row = getShiftSchedulerSettingsRow();
+  return normalizeShiftSchedulerSettings({
+    enabled: row.enabled === 1,
+    interval_minutes: row.interval_minutes,
+    cooldown_minutes: row.cooldown_minutes,
+    max_shifts_per_day: row.max_shifts_per_day,
+    quiet_hours_start: row.quiet_hours_start,
+    quiet_hours_end: row.quiet_hours_end,
+  });
+}
+
 function saveChatSettings(settings: ChatSettings): ChatSettings {
   const normalized = normalizeChatSettings(settings);
   setSetting(CHAT_SETTINGS_KEY, JSON.stringify(normalized));
@@ -236,6 +306,21 @@ function saveChatSettings(settings: ChatSettings): ChatSettings {
 function saveUtilitySettings(settings: UtilitySettings): UtilitySettings {
   const normalized = normalizeUtilitySettings(settings);
   setSetting(UTILITY_SETTINGS_KEY, JSON.stringify(normalized));
+  return normalized;
+}
+
+function saveShiftSchedulerSettings(
+  settings: ShiftSchedulerSettings
+): ShiftSchedulerSettings {
+  const normalized = normalizeShiftSchedulerSettings(settings);
+  setShiftSchedulerSettingsRow({
+    enabled: normalized.enabled ? 1 : 0,
+    interval_minutes: normalized.interval_minutes,
+    cooldown_minutes: normalized.cooldown_minutes,
+    max_shifts_per_day: normalized.max_shifts_per_day,
+    quiet_hours_start: normalized.quiet_hours_start,
+    quiet_hours_end: normalized.quiet_hours_end,
+  });
   return normalized;
 }
 
@@ -467,6 +552,17 @@ export function patchUtilitySettings(input: unknown): UtilitySettingsResponse {
 
 export function resolveUtilitySettings(): UtilitySettingsResponse {
   return getUtilitySettingsResponse();
+}
+
+export function getShiftSchedulerSettings(): ShiftSchedulerSettings {
+  return loadSavedShiftSchedulerSettings();
+}
+
+export function patchShiftSchedulerSettings(input: unknown): ShiftSchedulerSettings {
+  const saved = loadSavedShiftSchedulerSettings();
+  const patch = ShiftSchedulerSettingsPatchSchema.parse(input ?? {});
+  const merged = normalizeShiftSchedulerSettings({ ...saved, ...patch });
+  return saveShiftSchedulerSettings(merged);
 }
 
 export function getChatSettingsResponse(): ChatSettingsResponse {
