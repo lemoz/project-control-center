@@ -1,7 +1,7 @@
 ---
 id: WO-2026-175
 title: Landing page navigation and polish
-status: you_review
+status: done
 priority: 3
 tags:
   - landing-page
