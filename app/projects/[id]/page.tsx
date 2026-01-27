@@ -39,6 +39,9 @@ export default function ProjectPage({ params }: { params: { id: string } }) {
           <Link href={`/projects/${encodeURIComponent(id)}/chat`} className="badge">
             Chat
           </Link>
+          <Link href={`/projects/${encodeURIComponent(id)}/tracks`} className="badge">
+            Tracks
+          </Link>
           <div className="muted" style={{ fontSize: 13 }}>
             {id}
           </div>
