@@ -45,7 +45,17 @@ import {
   selectRelevantConstitutionSections,
   type ConstitutionSelection,
 } from "./constitution.js";
-import { buildEstimationContext, estimateRunTime, type RunEstimate } from "./estimation.js";
+import {
+  buildEstimationContext,
+  buildEtaPhasePlan,
+  buildInitialEtaEstimate,
+  estimateRunTime,
+  refineProgressiveEta,
+  type EtaPhasePlan,
+  type EtaUpdateEvent,
+  type ProgressiveEstimate,
+  type RunEstimate,
+} from "./estimation.js";
 import {
   remoteDownload,
   remoteExec,
@@ -1282,6 +1292,63 @@ function parseEscalationRecord(raw: string | null): EscalationRecord | null {
     created_at: createdAt,
     resolved_at: resolvedAt,
     resolution: resolution && Object.keys(resolution).length ? resolution : undefined,
+  };
+}
+
+function normalizeProgressiveEstimate(value: unknown): ProgressiveEstimate | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const phase = typeof record.phase === "string" ? record.phase.trim() : "";
+  const iteration =
+    typeof record.iteration === "number" && Number.isFinite(record.iteration)
+      ? Math.max(1, Math.trunc(record.iteration))
+      : null;
+  const remainingMinutes =
+    typeof record.estimated_remaining_minutes === "number" &&
+    Number.isFinite(record.estimated_remaining_minutes)
+      ? Math.max(0, Math.trunc(record.estimated_remaining_minutes))
+      : null;
+  const completionAt =
+    typeof record.estimated_completion_at === "string"
+      ? record.estimated_completion_at
+      : "";
+  const reasoning = typeof record.reasoning === "string" ? record.reasoning.trim() : "";
+  const updatedAt =
+    typeof record.updated_at === "string" ? record.updated_at : "";
+  if (!phase || iteration === null || remainingMinutes === null) return null;
+  if (!completionAt || !reasoning || !updatedAt) return null;
+  return {
+    phase,
+    iteration,
+    estimated_remaining_minutes: remainingMinutes,
+    estimated_completion_at: completionAt,
+    reasoning,
+    updated_at: updatedAt,
+  };
+}
+
+function parseEtaHistory(raw: string | null): ProgressiveEstimate[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map((entry) => normalizeProgressiveEstimate(entry))
+    .filter((entry): entry is ProgressiveEstimate => Boolean(entry));
+}
+
+function buildInitialEstimate(run: RunRow): RunEstimate | null {
+  if (run.estimated_iterations === null || run.estimated_minutes === null) return null;
+  if (!run.estimate_confidence || !run.estimate_reasoning) return null;
+  return {
+    estimated_iterations: run.estimated_iterations,
+    estimated_minutes: run.estimated_minutes,
+    confidence: run.estimate_confidence,
+    reasoning: run.estimate_reasoning,
   };
 }
 
@@ -2860,6 +2927,42 @@ export async function runRun(runId: string) {
     if (!runLog) return;
     runLog.write(`[${nowIso()}] ${line}\n`);
   };
+  const etaActualTotals = {
+    setup_seconds: 0,
+    builder_seconds: 0,
+    test_seconds: 0,
+    reviewer_seconds: 0,
+  };
+  const etaCompleted = {
+    setup_done: false,
+    builder: 0,
+    test: 0,
+    reviewer: 0,
+  };
+  let etaHistory: ProgressiveEstimate[] = [];
+  let etaPlan: EtaPhasePlan | null = null;
+  let etaEstimatedIterations = 1;
+  const durationSeconds = (startedAt: Date, endedAt: Date) =>
+    Math.max(0, Math.round((endedAt.getTime() - startedAt.getTime()) / 1000));
+  const recordEtaUpdate = (event: EtaUpdateEvent) => {
+    if (!etaPlan) return;
+    const result = refineProgressiveEta({
+      plan: etaPlan,
+      estimatedIterations: etaEstimatedIterations,
+      completed: etaCompleted,
+      actual: etaActualTotals,
+      event,
+    });
+    etaHistory = [...etaHistory, result.entry];
+    updateRun(runId, {
+      current_eta_minutes: result.current_eta_minutes,
+      estimated_completion_at: result.estimated_completion_at,
+      eta_history: JSON.stringify(etaHistory),
+    });
+    log(
+      `[eta] ${result.entry.reasoning} (~${result.current_eta_minutes} min remaining)`
+    );
+  };
 
   try {
     const project = findProjectById(run.project_id);
@@ -2904,9 +3007,10 @@ export async function runRun(runId: string) {
     const workOrderFilePath = path.join(runDir, "work_order.md");
     fs.writeFileSync(workOrderFilePath, workOrderMarkdown, "utf8");
 
+    let estimationContext: ReturnType<typeof buildEstimationContext> | null = null;
     let estimate: RunEstimate | null = null;
     try {
-      const estimationContext = buildEstimationContext({
+      estimationContext = buildEstimationContext({
         projectId: project.id,
         workOrderTags: workOrder.tags,
       });
@@ -2920,6 +3024,23 @@ export async function runRun(runId: string) {
       log(
         `[estimate] iterations=${estimate.estimated_iterations} minutes=${estimate.estimated_minutes} confidence=${estimate.confidence}`
       );
+      const initialEta = buildInitialEtaEstimate({ estimate });
+      etaHistory = [initialEta.entry];
+      updateRun(runId, {
+        current_eta_minutes: initialEta.current_eta_minutes,
+        estimated_completion_at: initialEta.estimated_completion_at,
+        eta_history: JSON.stringify(etaHistory),
+      });
+      log(
+        `[eta] ${initialEta.entry.reasoning} (~${initialEta.current_eta_minutes} min remaining)`
+      );
+      const phasePlan = buildEtaPhasePlan({
+        averages: estimationContext.averages,
+        estimatedMinutes: estimate.estimated_minutes,
+        estimatedIterations: estimate.estimated_iterations,
+      });
+      etaPlan = phasePlan.plan;
+      etaEstimatedIterations = phasePlan.estimated_iterations;
     } catch (err) {
       log(`[estimate] failed to generate estimate: ${String(err)}`);
     }
@@ -3222,7 +3343,15 @@ export async function runRun(runId: string) {
       return;
     }
 
+    const setupEndedAt = new Date();
     recordSetupOutcome("success", setupMetadataBase);
+    etaActualTotals.setup_seconds = durationSeconds(setupStartedAt, setupEndedAt);
+    etaCompleted.setup_done = true;
+    recordEtaUpdate({
+      phase: "setup",
+      iteration: 1,
+      actual_setup_seconds: etaActualTotals.setup_seconds,
+    });
     log("Baseline healthy, starting builder...");
 
     // Move Work Order into building inside the run branch.
@@ -3280,6 +3409,7 @@ export async function runRun(runId: string) {
       });
       log(`Builder iteration ${iteration} starting`);
       const builderStartedAt = new Date();
+      let builderDurationSeconds = 0;
 
       const builderDir = path.join(runDir, "builder", `iter-${iteration}`);
       const reviewerDir = path.join(runDir, "reviewer", `iter-${iteration}`);
@@ -3549,6 +3679,10 @@ export async function runRun(runId: string) {
         startedAt: builderStartedAt,
         log,
       });
+      const builderEndedAt = new Date();
+      builderDurationSeconds = durationSeconds(builderStartedAt, builderEndedAt);
+      etaActualTotals.builder_seconds += builderDurationSeconds;
+      etaCompleted.builder += 1;
 
       const changedFiles = computeChangedFiles(baselineRoot, worktreePath);
       const diffPatch = buildPatchForChangedFiles(
@@ -3643,9 +3777,21 @@ export async function runRun(runId: string) {
         output: test.output ?? "",
       }));
 
+      const testEndedAt = new Date();
+      const testDurationSeconds = durationSeconds(testStartedAt, testEndedAt);
+      etaActualTotals.test_seconds += testDurationSeconds;
+      etaCompleted.test += 1;
+
       const anyFailed = tests.some((t) => !t.passed);
+      recordTestOutcome(anyFailed ? "failed" : "success");
+      recordEtaUpdate({
+        phase: "builder",
+        iteration,
+        tests_passed: !anyFailed,
+        actual_builder_seconds: builderDurationSeconds,
+        actual_test_seconds: testDurationSeconds,
+      });
       if (anyFailed) {
-        recordTestOutcome("failed");
         testFailureOutput = buildTestFailureOutput(tests);
         iterationHistory.push(historyEntry);
         writeIterationHistory();
@@ -3665,7 +3811,6 @@ export async function runRun(runId: string) {
         continue;
       }
 
-      recordTestOutcome("success");
       testFailureOutput = null;
 
       const reviewerStartedAt = new Date();
@@ -3861,6 +4006,18 @@ export async function runRun(runId: string) {
       updateRun(runId, {
         reviewer_verdict: reviewerVerdict,
         reviewer_notes: JSON.stringify(reviewerNotes),
+      });
+      const normalizedVerdict =
+        reviewerVerdict === "approved" ? "approved" : "changes_requested";
+      const reviewerEndedAt = new Date();
+      const reviewerDurationSeconds = durationSeconds(reviewerStartedAt, reviewerEndedAt);
+      etaActualTotals.reviewer_seconds += reviewerDurationSeconds;
+      etaCompleted.reviewer += 1;
+      recordEtaUpdate({
+        phase: "reviewer",
+        iteration,
+        verdict: normalizedVerdict,
+        actual_reviewer_seconds: reviewerDurationSeconds,
       });
 
       historyEntry.reviewer_verdict = reviewerVerdict;
@@ -4815,6 +4972,9 @@ export function enqueueCodexRun(
     estimated_minutes: null,
     estimate_confidence: null,
     estimate_reasoning: null,
+    current_eta_minutes: null,
+    estimated_completion_at: null,
+    eta_history: null,
     branch_name: branchName,
     source_branch: sourceBranchNormalized,
     merge_status: null,
@@ -4862,8 +5022,10 @@ export function getRunsForProject(projectId: string, limit = 50): RunRow[] {
   return listRunsByProject(projectId, limit);
 }
 
-export type RunDetails = Omit<RunRow, "escalation"> & {
+export type RunDetails = Omit<RunRow, "escalation" | "eta_history"> & {
   escalation: EscalationRecord | null;
+  eta_history: ProgressiveEstimate[];
+  initial_estimate: RunEstimate | null;
   log_tail: string;
   builder_log_tail: string;
   reviewer_log_tail: string;
@@ -4894,10 +5056,14 @@ export function getRun(runId: string): RunDetails | null {
       path.join(run.run_dir, "iteration_history.json")
     ) || [];
   const escalation = parseEscalationRecord(run.escalation);
+  const etaHistory = parseEtaHistory(run.eta_history);
+  const initialEstimate = buildInitialEstimate(run);
 
   return {
     ...run,
     escalation,
+    eta_history: etaHistory,
+    initial_estimate: initialEstimate,
     log_tail: tailFile(run.log_path),
     builder_log_tail: tailFile(builderLogPath),
     reviewer_log_tail: tailFile(reviewerLogPath),

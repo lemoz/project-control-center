@@ -14,6 +14,14 @@ const CLAUDE_TIMEOUT_MS = 45_000;
 const DEFAULT_CONTEXT_LIMIT = 5;
 const CONTEXT_FETCH_MULTIPLIER = 5;
 const MAX_REASONING_CHARS = 240;
+const DEFAULT_ETA_TOTAL_SECONDS = 60 * 60;
+const DEFAULT_ETA_PHASE_SECONDS = {
+  setup: 5 * 60,
+  builder: 20 * 60,
+  test: 8 * 60,
+  reviewer: 8 * 60,
+  merge: 60,
+};
 
 export type RunEstimateConfidence = "high" | "medium" | "low";
 
@@ -22,6 +30,64 @@ export type RunEstimate = {
   estimated_minutes: number;
   confidence: RunEstimateConfidence;
   reasoning: string;
+};
+
+export type ProgressiveEstimate = {
+  phase: string;
+  iteration: number;
+  estimated_remaining_minutes: number;
+  estimated_completion_at: string;
+  reasoning: string;
+  updated_at: string;
+};
+
+export type EtaPhasePlan = {
+  setup_seconds: number;
+  builder_seconds: number;
+  test_seconds: number;
+  reviewer_seconds: number;
+  merge_seconds: number;
+  iteration_seconds: number;
+};
+
+export type EtaCompletedCounts = {
+  setup_done: boolean;
+  builder: number;
+  test: number;
+  reviewer: number;
+};
+
+export type EtaActualTotals = {
+  setup_seconds: number;
+  builder_seconds: number;
+  test_seconds: number;
+  reviewer_seconds: number;
+};
+
+export type EtaUpdateEvent =
+  | {
+      phase: "setup";
+      iteration: number;
+      actual_setup_seconds: number;
+    }
+  | {
+      phase: "builder";
+      iteration: number;
+      tests_passed: boolean;
+      actual_builder_seconds: number;
+      actual_test_seconds: number;
+    }
+  | {
+      phase: "reviewer";
+      iteration: number;
+      verdict: "approved" | "changes_requested";
+      actual_reviewer_seconds: number;
+    };
+
+export type ProgressiveEtaResult = {
+  entry: ProgressiveEstimate;
+  current_eta_minutes: number;
+  estimated_completion_at: string;
 };
 
 export type EstimationContext = {
@@ -92,6 +158,22 @@ function normalizeReasoning(value: unknown, fallback: string): string {
   const trimmed = value.trim();
   if (!trimmed) return fallback;
   return trimmed.length > MAX_REASONING_CHARS ? trimmed.slice(0, MAX_REASONING_CHARS) : trimmed;
+}
+
+function clampEtaReasoning(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "Estimate updated.";
+  return trimmed.length > MAX_REASONING_CHARS ? trimmed.slice(0, MAX_REASONING_CHARS) : trimmed;
+}
+
+function formatMinutes(seconds: number): number {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0;
+  return Math.max(1, Math.round(seconds / 60));
+}
+
+function buildAdjustmentNote(actualMinutes: number, expectedMinutes: number): string {
+  if (actualMinutes === expectedMinutes) return "Keeping estimate steady.";
+  return actualMinutes < expectedMinutes ? "Adjusting estimate down." : "Adjusting estimate up.";
 }
 
 function extractJsonCandidate(text: string): string | null {
@@ -375,4 +457,198 @@ export async function estimateRunTime(
     const message = err instanceof Error ? err.message : String(err);
     return buildFallbackEstimate(historicalContext, `Claude estimate failed: ${message}`);
   }
+}
+
+export function buildEtaPhasePlan(params: {
+  averages: EstimationContext["averages"];
+  estimatedMinutes: number | null;
+  estimatedIterations: number | null;
+}): { plan: EtaPhasePlan; estimated_iterations: number } {
+  const fallbackIterationsRaw = normalizeSeconds(params.averages.iterations);
+  const fallbackIterations = fallbackIterationsRaw > 0 ? Math.round(fallbackIterationsRaw) : 1;
+  const estimated_iterations = clampInt(
+    typeof params.estimatedIterations === "number"
+      ? params.estimatedIterations
+      : fallbackIterations,
+    1,
+    10,
+    1
+  );
+
+  const setupBase = normalizeSeconds(
+    params.averages.setup_seconds,
+    DEFAULT_ETA_PHASE_SECONDS.setup
+  );
+  const builderBase = normalizeSeconds(
+    params.averages.builder_seconds,
+    DEFAULT_ETA_PHASE_SECONDS.builder
+  );
+  const testBase = normalizeSeconds(
+    params.averages.test_seconds,
+    DEFAULT_ETA_PHASE_SECONDS.test
+  );
+  const reviewerBase = normalizeSeconds(
+    params.averages.reviewer_seconds,
+    DEFAULT_ETA_PHASE_SECONDS.reviewer
+  );
+  const mergeBase = DEFAULT_ETA_PHASE_SECONDS.merge;
+
+  const baseIterationSeconds = builderBase + testBase + reviewerBase;
+  const baseTotalSeconds = setupBase + baseIterationSeconds * estimated_iterations + mergeBase;
+
+  const avgTotalSeconds =
+    normalizeSeconds(params.averages.total_seconds) ||
+    normalizeSeconds(
+      params.averages.setup_seconds +
+        params.averages.builder_seconds +
+        params.averages.test_seconds +
+        params.averages.reviewer_seconds
+    );
+  const targetTotalSeconds =
+    typeof params.estimatedMinutes === "number" && Number.isFinite(params.estimatedMinutes)
+      ? Math.max(1, Math.round(params.estimatedMinutes * 60))
+      : avgTotalSeconds > 0
+        ? avgTotalSeconds
+        : DEFAULT_ETA_TOTAL_SECONDS;
+
+  const scale =
+    baseTotalSeconds > 0 && Number.isFinite(targetTotalSeconds)
+      ? targetTotalSeconds / baseTotalSeconds
+      : 1;
+
+  const setupSeconds = setupBase * scale;
+  const builderSeconds = builderBase * scale;
+  const testSeconds = testBase * scale;
+  const reviewerSeconds = reviewerBase * scale;
+  const mergeSeconds = mergeBase * scale;
+
+  return {
+    plan: {
+      setup_seconds: setupSeconds,
+      builder_seconds: builderSeconds,
+      test_seconds: testSeconds,
+      reviewer_seconds: reviewerSeconds,
+      merge_seconds: mergeSeconds,
+      iteration_seconds: builderSeconds + testSeconds + reviewerSeconds,
+    },
+    estimated_iterations,
+  };
+}
+
+export function buildInitialEtaEstimate(params: {
+  estimate: RunEstimate;
+  now?: Date;
+}): ProgressiveEtaResult {
+  const now = params.now ?? new Date();
+  const remainingMinutes = Math.max(1, Math.round(params.estimate.estimated_minutes));
+  const estimatedCompletionAt = new Date(
+    now.getTime() + remainingMinutes * 60 * 1000
+  ).toISOString();
+  const reasoning = clampEtaReasoning(`Initial estimate: ${params.estimate.reasoning}`);
+  return {
+    entry: {
+      phase: "initial",
+      iteration: 1,
+      estimated_remaining_minutes: remainingMinutes,
+      estimated_completion_at: estimatedCompletionAt,
+      reasoning,
+      updated_at: now.toISOString(),
+    },
+    current_eta_minutes: remainingMinutes,
+    estimated_completion_at: estimatedCompletionAt,
+  };
+}
+
+export function refineProgressiveEta(params: {
+  plan: EtaPhasePlan;
+  estimatedIterations: number;
+  completed: EtaCompletedCounts;
+  actual: EtaActualTotals;
+  event: EtaUpdateEvent;
+  now?: Date;
+}): ProgressiveEtaResult {
+  const now = params.now ?? new Date();
+  const expectedCompletedSeconds =
+    (params.completed.setup_done ? params.plan.setup_seconds : 0) +
+    params.completed.builder * params.plan.builder_seconds +
+    params.completed.test * params.plan.test_seconds +
+    params.completed.reviewer * params.plan.reviewer_seconds;
+  const actualCompletedSeconds =
+    params.actual.setup_seconds +
+    params.actual.builder_seconds +
+    params.actual.test_seconds +
+    params.actual.reviewer_seconds;
+  const ratio =
+    expectedCompletedSeconds > 0 && actualCompletedSeconds > 0
+      ? actualCompletedSeconds / expectedCompletedSeconds
+      : 1;
+
+  let remainingExpectedSeconds = 0;
+  let reasoning = "";
+  if (params.event.phase === "setup") {
+    const remainingIterations = Math.max(params.estimatedIterations, 1);
+    remainingExpectedSeconds =
+      remainingIterations * params.plan.iteration_seconds + params.plan.merge_seconds;
+    const actualMinutes = formatMinutes(params.event.actual_setup_seconds);
+    const expectedMinutes = formatMinutes(params.plan.setup_seconds);
+    const adjustment = buildAdjustmentNote(actualMinutes, expectedMinutes);
+    reasoning = `Setup took ${actualMinutes} min (expected ${expectedMinutes}). ${adjustment}`;
+  } else if (params.event.phase === "builder") {
+    const remainingIterations = params.event.tests_passed
+      ? Math.max(params.estimatedIterations - params.event.iteration, 0)
+      : Math.max(params.estimatedIterations - params.event.iteration, 1);
+    remainingExpectedSeconds =
+      (params.event.tests_passed ? params.plan.reviewer_seconds : 0) +
+      remainingIterations * params.plan.iteration_seconds +
+      params.plan.merge_seconds;
+    const actualMinutes = formatMinutes(
+      params.event.actual_builder_seconds + params.event.actual_test_seconds
+    );
+    const expectedMinutes = formatMinutes(
+      params.plan.builder_seconds + params.plan.test_seconds
+    );
+    const adjustment = buildAdjustmentNote(actualMinutes, expectedMinutes);
+    const testNote = params.event.tests_passed
+      ? "Tests passing."
+      : "Tests failed; adding another iteration.";
+    reasoning = `Builder + tests took ${actualMinutes} min (expected ${expectedMinutes}). ${testNote} ${adjustment}`;
+  } else {
+    const remainingIterations =
+      params.event.verdict === "approved"
+        ? 0
+        : Math.max(params.estimatedIterations - params.event.iteration, 1);
+    remainingExpectedSeconds =
+      (params.event.verdict === "approved" ? 0 : remainingIterations * params.plan.iteration_seconds) +
+      params.plan.merge_seconds;
+    const actualMinutes = formatMinutes(params.event.actual_reviewer_seconds);
+    const expectedMinutes = formatMinutes(params.plan.reviewer_seconds);
+    const adjustment = buildAdjustmentNote(actualMinutes, expectedMinutes);
+    if (params.event.verdict === "approved") {
+      reasoning = `Reviewer approved in ${actualMinutes} min (expected ${expectedMinutes}). Estimating merge only. ${adjustment}`;
+    } else {
+      reasoning = `Reviewer requested changes in ${actualMinutes} min (expected ${expectedMinutes}). Adding another iteration. ${adjustment}`;
+    }
+  }
+
+  const adjustedRemainingSeconds = remainingExpectedSeconds * (Number.isFinite(ratio) ? ratio : 1);
+  const rawMinutes = Math.round(adjustedRemainingSeconds / 60);
+  const remainingMinutes =
+    remainingExpectedSeconds > 0 ? Math.max(1, rawMinutes) : Math.max(0, rawMinutes);
+  const estimatedCompletionAt = new Date(
+    now.getTime() + remainingMinutes * 60 * 1000
+  ).toISOString();
+  const entry: ProgressiveEstimate = {
+    phase: params.event.phase,
+    iteration: params.event.iteration,
+    estimated_remaining_minutes: remainingMinutes,
+    estimated_completion_at: estimatedCompletionAt,
+    reasoning: clampEtaReasoning(reasoning),
+    updated_at: now.toISOString(),
+  };
+
+  return {
+    entry,
+    current_eta_minutes: remainingMinutes,
+    estimated_completion_at: estimatedCompletionAt,
+  };
 }
