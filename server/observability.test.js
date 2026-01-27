@@ -7,7 +7,9 @@ import { test } from "node:test";
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pcc-observability-"));
 const dbPath = path.join(tmpDir, "observability.db");
 const originalDbPath = process.env.CONTROL_CENTER_DB_PATH;
+const originalPccDbPath = process.env.PCC_DATABASE_PATH;
 process.env.CONTROL_CENTER_DB_PATH = dbPath;
+process.env.PCC_DATABASE_PATH = dbPath;
 
 const { getDb } = await import("./db.ts");
 const { listRunFailureBreakdown } = await import("./observability.ts");
@@ -20,6 +22,8 @@ test("listRunFailureBreakdown uses terminal runs for success/failure rates", (t)
     fs.rmSync(tmpDir, { recursive: true, force: true });
     if (originalDbPath === undefined) delete process.env.CONTROL_CENTER_DB_PATH;
     else process.env.CONTROL_CENTER_DB_PATH = originalDbPath;
+    if (originalPccDbPath === undefined) delete process.env.PCC_DATABASE_PATH;
+    else process.env.PCC_DATABASE_PATH = originalPccDbPath;
   });
 
   const now = new Date().toISOString();

@@ -2,6 +2,12 @@ import { spawn } from "child_process";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import {
+  getChatSuggestionContextMessageLimit,
+  getCodexCliPath,
+  getProcessEnv,
+  getUseTsWorker,
+} from "./config.js";
 import { findProjectById, getDb } from "./db.js";
 import { parseCodexTokenUsageFromLog, recordCostEntry } from "./cost_tracking.js";
 import {
@@ -102,11 +108,7 @@ const DEFAULT_ACCESS: ChatAccess = {
 };
 
 function suggestionContextMessageLimit(): number {
-  const raw = Number(process.env.CONTROL_CENTER_CHAT_SUGGESTION_CONTEXT_MESSAGES);
-  if (!Number.isFinite(raw)) return 10;
-  const n = Math.trunc(raw);
-  if (n <= 0) return 0;
-  return Math.min(50, n);
+  return getChatSuggestionContextMessageLimit();
 }
 
 function normalizeChatContextSelection(input?: ChatContextSelection | null): ChatContextSelection {
@@ -517,11 +519,7 @@ function suggestionJsonSchema(): object {
 }
 
 function codexCommand(cliPath: string | undefined): string {
-  return (
-    cliPath?.trim() ||
-    process.env.CONTROL_CENTER_CODEX_PATH ||
-    "codex"
-  );
+  return cliPath?.trim() || getCodexCliPath();
 }
 
 type CodexExecParams = {
@@ -570,7 +568,7 @@ async function runCodexExecJson(params: CodexExecParams): Promise<void> {
   const child = spawn(codexCommand(params.cliPath), args, {
     cwd: params.cwd,
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env },
+    env: { ...getProcessEnv() },
   });
 
   let abortReason: string | null = null;
@@ -2152,7 +2150,7 @@ export function enqueueChatTurn(
 }
 
 function shouldPreferTsWorker(): boolean {
-  if (process.env.CONTROL_CENTER_USE_TS_WORKER === "1") return true;
+  if (getUseTsWorker()) return true;
   const entry = process.argv[1] || "";
   if (entry.endsWith(".ts")) return true;
   return process.execArgv.some((arg) => arg.includes("tsx"));
@@ -2203,7 +2201,7 @@ function spawnChatWorker(runId: string) {
 
   const child = spawn(command, args, {
     cwd: repoRoot,
-    env: process.env,
+    env: getProcessEnv(),
     stdio: "ignore",
     detached: true,
   });

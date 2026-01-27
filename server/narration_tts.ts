@@ -1,4 +1,9 @@
 import crypto from "crypto";
+import {
+  getElevenLabsApiKey,
+  getElevenLabsNarrationModelId,
+  getElevenLabsNarrationVoiceId,
+} from "./config.js";
 
 const MAX_TTS_CHARS = 600;
 const AUDIO_CACHE_TTL_MS = 60 * 60 * 1000;
@@ -54,19 +59,15 @@ function readText(payload: unknown): string | null {
 }
 
 function getVoiceId(): string | null {
-  return (
-    process.env.CONTROL_CENTER_ELEVENLABS_NARRATION_VOICE_ID ||
-    process.env.ELEVENLABS_NARRATION_VOICE_ID ||
-    null
-  );
+  return getElevenLabsNarrationVoiceId();
 }
 
 function getApiKey(): string | null {
-  return process.env.CONTROL_CENTER_ELEVENLABS_API_KEY || process.env.ELEVENLABS_API_KEY || null;
+  return getElevenLabsApiKey();
 }
 
 function getModelId(): string {
-  return process.env.CONTROL_CENTER_ELEVENLABS_NARRATION_MODEL_ID ?? DEFAULT_MODEL_ID;
+  return getElevenLabsNarrationModelId() ?? DEFAULT_MODEL_ID;
 }
 
 function hashCacheKey(text: string, voiceId: string, modelId: string): string {

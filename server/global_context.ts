@@ -11,6 +11,7 @@ import {
   type ProjectRow,
   type RunRow,
 } from "./db.js";
+import { getBudgetUsedTodayOverride } from "./config.js";
 import { getGlobalBudget } from "./budgeting.js";
 import { syncProjectBudgetAlerts } from "./budget_enforcement.js";
 import { syncAndListRepoSummaries } from "./projects_catalog.js";
@@ -394,10 +395,7 @@ function summarizeRoutingEscalation(escalation: EscalationRow): RoutingEscalatio
 }
 
 function parseBudgetUsedToday(): number {
-  const raw = process.env.CONTROL_CENTER_BUDGET_USED_TODAY;
-  if (!raw) return 0;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return getBudgetUsedTodayOverride();
 }
 
 export function buildGlobalContextResponse(): GlobalContextResponse {

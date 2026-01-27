@@ -1,5 +1,15 @@
 import { z } from "zod";
 import {
+  getChatCodexModelOverride,
+  getChatCodexPathOverride,
+  getChatTrustedHostsOverride,
+  getCodexCliPathOverride,
+  getCodexModelOverride,
+  getMaxBuilderIterationsOverride,
+  getUtilityModelOverride,
+  getUtilityProviderOverride,
+} from "./config.js";
+import {
   deleteNetworkWhitelistRow,
   getAgentMonitoringSettingsRow,
   getSetting,
@@ -512,19 +522,9 @@ function saveSettings(settings: RunnerSettings): RunnerSettings {
 function applyEnvOverrides(settings: RunnerSettings): RunnerSettingsResponse["env_overrides"] & {
   effective: RunnerSettings;
 } {
-  const codex_model = process.env.CONTROL_CENTER_CODEX_MODEL || process.env.CODEX_MODEL || undefined;
-  const codex_path = process.env.CONTROL_CENTER_CODEX_PATH || undefined;
-  const max_builder_iterations_raw =
-    process.env.CONTROL_CENTER_MAX_BUILDER_ITERATIONS ||
-    process.env.CONTROL_CENTER_MAX_RUN_ITERATIONS ||
-    undefined;
-  const max_builder_iterations_value = max_builder_iterations_raw
-    ? Math.trunc(Number(max_builder_iterations_raw))
-    : NaN;
-  const max_builder_iterations =
-    Number.isFinite(max_builder_iterations_value) && max_builder_iterations_value >= 1
-      ? Math.min(max_builder_iterations_value, 20)
-      : undefined;
+  const codex_model = getCodexModelOverride();
+  const codex_path = getCodexCliPathOverride() ?? undefined;
+  const max_builder_iterations = getMaxBuilderIterationsOverride();
 
   const apply = (s: ProviderSettings): ProviderSettings => {
     if (s.provider !== "codex") return s;
@@ -551,16 +551,9 @@ function applyEnvOverrides(settings: RunnerSettings): RunnerSettingsResponse["en
 function applyChatEnvOverrides(settings: ChatSettings): ChatSettingsResponse["env_overrides"] & {
   effective: ChatSettings;
 } {
-  const chat_codex_model =
-    process.env.CONTROL_CENTER_CHAT_CODEX_MODEL ||
-    process.env.CONTROL_CENTER_CODEX_MODEL ||
-    process.env.CODEX_MODEL ||
-    undefined;
-  const chat_codex_path =
-    process.env.CONTROL_CENTER_CHAT_CODEX_PATH ||
-    process.env.CONTROL_CENTER_CODEX_PATH ||
-    undefined;
-  const chat_trusted_hosts_raw = process.env.CONTROL_CENTER_CHAT_TRUSTED_HOSTS || undefined;
+  const chat_codex_model = getChatCodexModelOverride();
+  const chat_codex_path = getChatCodexPathOverride();
+  const chat_trusted_hosts_raw = getChatTrustedHostsOverride();
   const chat_trusted_hosts = chat_trusted_hosts_raw
     ? parseHostList(chat_trusted_hosts_raw)
     : undefined;
@@ -594,12 +587,12 @@ function applyChatEnvOverrides(settings: ChatSettings): ChatSettingsResponse["en
 function applyUtilityEnvOverrides(settings: UtilitySettings): UtilitySettingsResponse["env_overrides"] & {
   effective: UtilitySettings;
 } {
-  const utility_provider_raw = process.env.CONTROL_CENTER_UTILITY_PROVIDER || "";
+  const utility_provider_raw = getUtilityProviderOverride() || "";
   const providerNormalized = utility_provider_raw.trim().toLowerCase();
   const utility_provider = UTILITY_PROVIDER_SET.has(providerNormalized)
     ? (providerNormalized as UtilityProviderName)
     : undefined;
-  const utility_model_raw = process.env.CONTROL_CENTER_UTILITY_MODEL || "";
+  const utility_model_raw = getUtilityModelOverride() || "";
   const utility_model = utility_model_raw.trim() ? utility_model_raw.trim() : undefined;
 
   const provider = utility_provider ?? settings.provider;

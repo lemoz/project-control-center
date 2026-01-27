@@ -7,11 +7,13 @@ import { after, test } from "node:test";
 const originalEnv = {
   HOME: process.env.HOME,
   CONTROL_CENTER_DB_PATH: process.env.CONTROL_CENTER_DB_PATH,
+  PCC_DATABASE_PATH: process.env.PCC_DATABASE_PATH,
 };
 
 const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pcc-constitution-scope-"));
 process.env.HOME = sandboxRoot;
 process.env.CONTROL_CENTER_DB_PATH = path.join(sandboxRoot, "control-center.db");
+process.env.PCC_DATABASE_PATH = path.join(sandboxRoot, "control-center.db");
 
 const { upsertProject } = await import("./db.ts");
 const { listConstitutionGenerationSources } = await import("./constitution_generation.ts");
@@ -97,6 +99,11 @@ after(() => {
     delete process.env.CONTROL_CENTER_DB_PATH;
   } else {
     process.env.CONTROL_CENTER_DB_PATH = originalEnv.CONTROL_CENTER_DB_PATH;
+  }
+  if (originalEnv.PCC_DATABASE_PATH === undefined) {
+    delete process.env.PCC_DATABASE_PATH;
+  } else {
+    process.env.PCC_DATABASE_PATH = originalEnv.PCC_DATABASE_PATH;
   }
 });
 

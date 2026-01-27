@@ -1,5 +1,6 @@
 import { spawn } from "child_process";
 import path from "path";
+import { getControlCenterApiUrl, getProcessEnv } from "./config.js";
 import {
   countReadyWorkOrders,
   countShiftsSince,
@@ -92,13 +93,13 @@ function projectLabel(project: ProjectRow): string {
 
 async function spawnVmShiftAgent(projectId: string): Promise<void> {
   const scriptPath = path.join(process.cwd(), "scripts", "start-shift-vm.sh");
-  if (!process.env.CONTROL_CENTER_API_URL) {
+  if (!getControlCenterApiUrl()) {
     throw new Error("CONTROL_CENTER_API_URL is required to start VM shifts");
   }
   await new Promise<void>((resolve, reject) => {
     const child = spawn("bash", [scriptPath, projectId], {
       stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
+      env: getProcessEnv(),
     });
     let stderr = "";
     child.stdout?.on("data", () => {
@@ -182,7 +183,7 @@ async function maybeStartShift(
     if (sinceCooldown !== null && sinceCooldown < settings.cooldown_minutes) return "skipped";
   }
 
-  if (requiresVm && !process.env.CONTROL_CENTER_API_URL) {
+  if (requiresVm && !getControlCenterApiUrl()) {
     recordActivity(
       `Skipping ${projectLabel(project)}: CONTROL_CENTER_API_URL not set for VM shifts.`,
       project.id

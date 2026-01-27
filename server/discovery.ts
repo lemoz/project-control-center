@@ -1,5 +1,14 @@
 import fs from "fs";
 import path from "path";
+import {
+  getHomeDir,
+  getPccMode,
+  getReposPath,
+  getScanIgnoreDirs,
+  getScanIgnoreDirsRemove,
+  getScanMaxDepth,
+  getScanRoots,
+} from "./config.js";
 
 export type DiscoveryConfig = {
   roots: string[];
@@ -37,29 +46,27 @@ const DEFAULT_IGNORE_DIRS = [
   "Public",
 ];
 
-function parseEnvList(value?: string): string[] {
-  if (!value) return [];
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
 export function loadDiscoveryConfig(): DiscoveryConfig {
-  const rootsEnv = parseEnvList(process.env.CONTROL_CENTER_SCAN_ROOTS);
-  const home = process.env.HOME || process.cwd();
-  const roots = rootsEnv.length ? rootsEnv : [home];
+  const rootsEnv = getScanRoots();
+  const reposPath = getReposPath();
+  const home = getHomeDir();
+  const roots = reposPath
+    ? [reposPath]
+    : rootsEnv.length
+      ? rootsEnv
+      : getPccMode() === "cloud"
+        ? [process.cwd()]
+        : [home];
 
   const ignoreSet = new Set(DEFAULT_IGNORE_DIRS);
-  for (const name of parseEnvList(process.env.CONTROL_CENTER_IGNORE_DIRS)) {
+  for (const name of getScanIgnoreDirs()) {
     ignoreSet.add(name);
   }
-  for (const name of parseEnvList(process.env.CONTROL_CENTER_IGNORE_DIRS_REMOVE)) {
+  for (const name of getScanIgnoreDirsRemove()) {
     ignoreSet.delete(name);
   }
 
-  const maxDepthRaw = Number(process.env.CONTROL_CENTER_SCAN_MAX_DEPTH || 4);
-  const maxDepth = Number.isFinite(maxDepthRaw) && maxDepthRaw >= 0 ? maxDepthRaw : 4;
+  const maxDepth = getScanMaxDepth();
 
   return { roots, ignoreDirNames: ignoreSet, maxDepth };
 }
@@ -110,4 +117,3 @@ function isGitRepo(dir: string): boolean {
     return false;
   }
 }
-

@@ -7,7 +7,9 @@ import { test } from "node:test";
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pcc-attention-"));
 const dbPath = path.join(tmpDir, "attention.db");
 const originalDbPath = process.env.CONTROL_CENTER_DB_PATH;
+const originalPccDbPath = process.env.PCC_DATABASE_PATH;
 process.env.CONTROL_CENTER_DB_PATH = dbPath;
+process.env.PCC_DATABASE_PATH = dbPath;
 
 const { getDb } = await import("./db.ts");
 const { listChatAttention } = await import("./chat_attention.ts");
@@ -21,6 +23,8 @@ test("listChatAttention respects ack + read activity", (t) => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     if (originalDbPath === undefined) delete process.env.CONTROL_CENTER_DB_PATH;
     else process.env.CONTROL_CENTER_DB_PATH = originalDbPath;
+    if (originalPccDbPath === undefined) delete process.env.PCC_DATABASE_PATH;
+    else process.env.PCC_DATABASE_PATH = originalPccDbPath;
   });
 
   const base = Date.now();

@@ -10,11 +10,13 @@ const repoRoot = path.join(tmpDir, "repos");
 fs.mkdirSync(repoRoot, { recursive: true });
 
 const originalDbPath = process.env.CONTROL_CENTER_DB_PATH;
+const originalPccDbPath = process.env.PCC_DATABASE_PATH;
 const originalScanRoots = process.env.CONTROL_CENTER_SCAN_ROOTS;
 const originalScanTtl = process.env.CONTROL_CENTER_SCAN_TTL_MS;
 const originalBudget = process.env.CONTROL_CENTER_BUDGET_USED_TODAY;
 
 process.env.CONTROL_CENTER_DB_PATH = dbPath;
+process.env.PCC_DATABASE_PATH = dbPath;
 process.env.CONTROL_CENTER_SCAN_ROOTS = repoRoot;
 process.env.CONTROL_CENTER_SCAN_TTL_MS = "0";
 process.env.CONTROL_CENTER_BUDGET_USED_TODAY = "12.5";
@@ -148,6 +150,11 @@ after(() => {
     delete process.env.CONTROL_CENTER_DB_PATH;
   } else {
     process.env.CONTROL_CENTER_DB_PATH = originalDbPath;
+  }
+  if (originalPccDbPath === undefined) {
+    delete process.env.PCC_DATABASE_PATH;
+  } else {
+    process.env.PCC_DATABASE_PATH = originalPccDbPath;
   }
 
   if (originalScanRoots === undefined) {

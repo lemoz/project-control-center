@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { getScanTtlMs } from "./config.js";
 import {
   findProjectById,
   listProjects,
@@ -152,7 +153,7 @@ function selectLatestTimestamp(values: Array<string | null | undefined>): string
 }
 
 function getDiscoveredRepos(): string[] {
-  const ttlMs = Number(process.env.CONTROL_CENTER_SCAN_TTL_MS || 60_000);
+  const ttlMs = getScanTtlMs();
   const now = Date.now();
   if (discoveryCache && now - discoveryCache.ts < ttlMs) {
     return discoveryCache.repos;

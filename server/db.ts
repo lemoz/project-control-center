@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import Database from "better-sqlite3";
-import path from "path";
+import { getDatabasePath, getVmRepoRoot } from "./config.js";
 
 export const LAST_ESCALATION_AT_KEY = "last_escalation_at";
 
@@ -669,9 +669,7 @@ let db: Database.Database | null = null;
 
 export function getDb() {
   if (db) return db;
-  const dbPath =
-    process.env.CONTROL_CENTER_DB_PATH ||
-    path.join(process.cwd(), "control-center.db");
+  const dbPath = getDatabasePath();
   db = new Database(dbPath);
   db.pragma("foreign_keys = ON");
   db.pragma("journal_mode = WAL");
@@ -1407,8 +1405,7 @@ function initSchema(database: Database.Database) {
   if (!hasVmRepoPath) {
     database.exec("ALTER TABLE project_vms ADD COLUMN repo_path TEXT;");
   }
-  const envRepoPath = process.env.CONTROL_CENTER_VM_REPO_ROOT;
-  const defaultRepoPath = (envRepoPath && envRepoPath.trim()) || "/home/project/repo";
+  const defaultRepoPath = getVmRepoRoot();
   database.exec("UPDATE project_vms SET provider = COALESCE(provider, 'gcp');");
   database
     .prepare("UPDATE project_vms SET repo_path = COALESCE(repo_path, ?)")

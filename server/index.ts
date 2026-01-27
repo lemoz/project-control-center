@@ -5,6 +5,26 @@ import YAML from "yaml";
 import express, { type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
 import {
+  getAllowLan,
+  getAllowRemoteHealth,
+  getAllowedOrigins,
+  getAppVersion,
+  getCorsAllowAllRequested,
+  getElevenLabsAgentId,
+  getElevenLabsApiKey,
+  getElevenLabsSignedUrlTtlSeconds,
+  getElevenLabsWebhookSecret,
+  getEscalationTimeoutHours,
+  getFailRunsOnRestart,
+  getHealthToken,
+  getNodeEnvLabel,
+  getPccMode,
+  getServerHost,
+  getServerPort,
+  getServerUptimeSeconds,
+  isProductionEnv,
+} from "./config.js";
+import {
   createUserInteraction,
   createSubscriber,
   createEscalation,
@@ -162,6 +182,7 @@ import {
 } from "./runner_agent.js";
 import {
   getBudgetSummary,
+  getHeartbeatResponse,
   getVmHealthResponse,
   listActiveRuns,
   listObservabilityAlerts,
@@ -220,6 +241,7 @@ import {
 import { getProjectCostHistory, getProjectCostSummary } from "./cost_tracking.js";
 import { applyChatAction, undoChatAction } from "./chat_actions.js";
 import { listChatAttention, listChatAttentionSummaries } from "./chat_attention.js";
+import { getHealthResponse } from "./health.js";
 import { buildWorktreeDiff, cleanupChatWorktree, resolveChatWorktreeConfig } from "./chat_worktree.js";
 import {
   createChatThread,
@@ -240,19 +262,15 @@ import {
 } from "./chat_contract.js";
 
 const app = express();
-const port = Number(process.env.CONTROL_CENTER_PORT || 4010);
-const host = process.env.CONTROL_CENTER_HOST || "127.0.0.1";
-const allowLan = process.env.CONTROL_CENTER_ALLOW_LAN === "1";
-const allowRemoteHealth = process.env.CONTROL_CENTER_ALLOW_REMOTE_HEALTH === "1";
-const healthToken = (process.env.CONTROL_CENTER_HEALTH_TOKEN || "").trim();
-const DEFAULT_ESCALATION_TIMEOUT_HOURS = 24;
+const port = getServerPort();
+const host = getServerHost();
+const allowLan = getAllowLan();
+const allowRemoteHealth = getAllowRemoteHealth();
+const healthToken = getHealthToken();
 const ESCALATION_TIMEOUT_SWEEP_MS = 10 * 60 * 1000;
 
 function resolveEscalationTimeoutHours(): number {
-  const raw = process.env.ESCALATION_TIMEOUT_HOURS;
-  const parsed = raw ? Number.parseFloat(raw) : NaN;
-  if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  return DEFAULT_ESCALATION_TIMEOUT_HOURS;
+  return getEscalationTimeoutHours();
 }
 
 function startEscalationTimeoutSweep(): void {
@@ -383,7 +401,7 @@ function verifyElevenLabsWebhook(
   res: Response,
   next: NextFunction
 ): void {
-  const secret = process.env.CONTROL_CENTER_ELEVENLABS_WEBHOOK_SECRET;
+  const secret = getElevenLabsWebhookSecret();
   if (!secret) {
     res.status(500).json({ error: "voice webhook secret not configured" });
     return;
@@ -437,7 +455,7 @@ function isLoopbackAddress(value: string | undefined): boolean {
   return normalized.startsWith("127.");
 }
 
-const HEALTH_PATHS = new Set(["/health", "/observability/vm-health"]);
+const HEALTH_PATHS = new Set(["/health", "/heartbeat", "/observability/vm-health"]);
 
 function normalizeHealthPath(value: string): string {
   if (value.length > 1 && value.endsWith("/")) return value.slice(0, -1);
@@ -452,24 +470,18 @@ function hasValidHealthToken(req: Request): boolean {
 }
 
 async function requestElevenLabsSignedUrl(): Promise<string> {
-  const agentId =
-    process.env.CONTROL_CENTER_ELEVENLABS_AGENT_ID ||
-    process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID;
+  const agentId = getElevenLabsAgentId();
   if (!agentId) {
     throw new Error("ElevenLabs agent ID not configured.");
   }
 
-  const apiKey =
-    process.env.CONTROL_CENTER_ELEVENLABS_API_KEY || process.env.ELEVENLABS_API_KEY;
+  const apiKey = getElevenLabsApiKey();
   if (!apiKey) {
     throw new Error("ElevenLabs API key not configured.");
   }
 
-  const ttlSeconds = Number.parseInt(
-    process.env.CONTROL_CENTER_ELEVENLABS_SIGNED_URL_TTL_SECONDS ?? "300",
-    10
-  );
-  const includeTtl = Number.isFinite(ttlSeconds) && ttlSeconds > 0;
+  const ttlSeconds = getElevenLabsSignedUrlTtlSeconds();
+  const includeTtl = ttlSeconds !== null;
   const baseUrl = new URL(
     "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url"
   );
@@ -544,15 +556,15 @@ if (!allowLan && !isLoopbackHost(host)) {
   );
 }
 
-const allowAllCorsRequested = process.env.CONTROL_CENTER_CORS_ALLOW_ALL === "1";
+const allowAllCorsRequested = getCorsAllowAllRequested();
 const allowAllCors =
   allowAllCorsRequested &&
-  process.env.NODE_ENV !== "production" &&
+  !isProductionEnv() &&
   isLoopbackHost(host);
 if (allowAllCorsRequested && !allowAllCors) {
   // eslint-disable-next-line no-console
   console.warn(
-    `[cors] ignoring CONTROL_CENTER_CORS_ALLOW_ALL=1 (NODE_ENV=${process.env.NODE_ENV ?? "unknown"}, host=${host}); CORS allow-all is dev-only and loopback-only.`
+    `[cors] ignoring CONTROL_CENTER_CORS_ALLOW_ALL=1 (NODE_ENV=${getNodeEnvLabel()}, host=${host}); CORS allow-all is dev-only and loopback-only.`
   );
 }
 
@@ -561,10 +573,7 @@ const allowedOrigins = new Set(
   defaultDevPorts
     .flatMap((p) => [`http://localhost:${p}`, `http://127.0.0.1:${p}`])
     .concat(
-      (process.env.CONTROL_CENTER_ALLOWED_ORIGINS || "")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
+      getAllowedOrigins()
     )
 );
 app.use((req, res, next) => {
@@ -605,7 +614,23 @@ app.use(
 app.use(express.json({ verify: captureRawBody }));
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, ts: new Date().toISOString() });
+  res.json(getHealthResponse());
+});
+
+app.get("/heartbeat", (req, res) => {
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit = Number.isFinite(limitRaw)
+    ? Math.max(1, Math.min(100, Math.trunc(limitRaw)))
+    : 20;
+  const heartbeat = getHeartbeatResponse(limit);
+  return res.json({
+    ok: true,
+    status: "ok",
+    mode: getPccMode(),
+    version: getAppVersion(),
+    uptime_seconds: getServerUptimeSeconds(),
+    ...heartbeat,
+  });
 });
 
 app.post("/subscribe", (req, res) => {
@@ -4707,7 +4732,7 @@ app.post("/chat/actions/:ledgerId/undo", (req, res) => {
 });
 
 const failRunsOnRestart =
-  process.env.CONTROL_CENTER_FAIL_IN_PROGRESS_ON_RESTART === "1";
+  getFailRunsOnRestart();
 const recovered = failRunsOnRestart
   ? markInProgressRunsFailed("Server restarted; run aborted.")
   : 0;

@@ -1,5 +1,6 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { getClaudeCliPath } from "./config.js";
 import {
   getEstimationContextSummary,
   listEstimationContextRuns,
@@ -118,7 +119,7 @@ type EstimationContextCandidate = {
 };
 
 function claudeCommand(cliPath?: string): string {
-  return cliPath?.trim() || process.env.CONTROL_CENTER_CLAUDE_PATH || "claude";
+  return cliPath?.trim() || getClaudeCliPath();
 }
 
 function normalizeCount(value: unknown, fallback = 0): number {

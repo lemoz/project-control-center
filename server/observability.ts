@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import { promisify } from "util";
 import { getGlobalBudget } from "./budgeting.js";
+import { getVmHealthLocal } from "./config.js";
 import {
   findProjectById,
   getDb,
@@ -87,6 +88,12 @@ export type BudgetSummaryResponse = {
   status: "healthy" | "warning" | "critical";
 };
 
+export type HeartbeatResponse = {
+  active_runs: ActiveRunResponse[];
+  last_activity_at: string | null;
+  last_activity: string | null;
+};
+
 export type ObservabilityAlert = {
   id: string;
   type: string;
@@ -117,7 +124,7 @@ const PASSED_STATUSES = new Set(["merged", "you_review"]);
 const execFileAsync = promisify(execFile);
 
 const VM_HEALTH_CACHE_TTL_MS = 25_000;
-const VM_HEALTH_LOCAL = process.env.CONTROL_CENTER_VM_HEALTH_LOCAL === "1";
+const VM_HEALTH_LOCAL = getVmHealthLocal();
 const LOCAL_VM_COMMAND_TIMEOUT_MS = 5_000;
 let vmHealthCache: {
   projectId: string | null;
@@ -559,6 +566,34 @@ function outcomeForStatus(status: string): "passed" | "failed" | "in_progress" {
   if (PASSED_STATUSES.has(status)) return "passed";
   if (FAILED_STATUSES.has(status)) return "failed";
   return "in_progress";
+}
+
+function fetchLastActivityAt(): string | null {
+  const database = getDb();
+  const row = database
+    .prepare(
+      "SELECT MAX(COALESCE(finished_at, started_at, created_at)) AS last_activity FROM runs"
+    )
+    .get() as { last_activity?: string | null } | undefined;
+  const value = row?.last_activity ?? null;
+  if (typeof value === "string" && value.trim()) return value;
+  return null;
+}
+
+function pickLastActivityMessage(activeRuns: ActiveRunResponse[]): string | null {
+  for (const run of activeRuns) {
+    if (run.current_activity) return run.current_activity;
+  }
+  return null;
+}
+
+export function getHeartbeatResponse(limit = 20): HeartbeatResponse {
+  const active_runs = listActiveRuns(limit, { includeActivity: true });
+  return {
+    active_runs,
+    last_activity_at: fetchLastActivityAt(),
+    last_activity: pickLastActivityMessage(active_runs),
+  };
 }
 
 export function listRunTimeline(hours = 24): RunTimelineEntry[] {

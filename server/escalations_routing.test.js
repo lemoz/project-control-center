@@ -7,7 +7,9 @@ import { after, test } from "node:test";
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pcc-escalations-routing-"));
 const dbPath = path.join(tmpDir, "escalations.db");
 const originalDbPath = process.env.CONTROL_CENTER_DB_PATH;
+const originalPccDbPath = process.env.PCC_DATABASE_PATH;
 process.env.CONTROL_CENTER_DB_PATH = dbPath;
+process.env.PCC_DATABASE_PATH = dbPath;
 
 const {
   createEscalation,
@@ -68,6 +70,11 @@ after(() => {
     delete process.env.CONTROL_CENTER_DB_PATH;
   } else {
     process.env.CONTROL_CENTER_DB_PATH = originalDbPath;
+  }
+  if (originalPccDbPath === undefined) {
+    delete process.env.PCC_DATABASE_PATH;
+  } else {
+    process.env.PCC_DATABASE_PATH = originalPccDbPath;
   }
 });
 

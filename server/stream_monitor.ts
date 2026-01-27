@@ -1,4 +1,5 @@
 import type { ChildProcess } from "child_process";
+import { getGeminiApiKey } from "./config.js";
 import { createSecurityIncident } from "./db.js";
 
 type PatternCategory =
@@ -259,11 +260,7 @@ function parseGeminiVerdict(raw: string): GeminiVerdict {
 }
 
 async function requestGeminiVerdict(prompt: string): Promise<GeminiVerdict> {
-  const apiKey =
-    process.env.CONTROL_CENTER_GEMINI_API_KEY ||
-    process.env.GEMINI_API_KEY ||
-    process.env.GOOGLE_API_KEY ||
-    "";
+  const apiKey = getGeminiApiKey() || "";
   if (!apiKey) {
     throw new Error("Gemini API key missing.");
   }

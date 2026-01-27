@@ -4,6 +4,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { z } from "zod";
+import { getCodexCliPath, getProcessEnv } from "./config.js";
 import { findProjectById, getDb } from "./db.js";
 import { ensurePortfolioWorkspace } from "./portfolio_workspace.js";
 import {
@@ -1059,7 +1060,7 @@ function listPccConversations(
 }
 
 function codexCommand(cliPath: string | undefined): string {
-  return cliPath?.trim() || process.env.CONTROL_CENTER_CODEX_PATH || "codex";
+  return cliPath?.trim() || getCodexCliPath();
 }
 
 type CodexExecParams = {
@@ -1151,7 +1152,7 @@ async function runCodexExecJson(params: CodexExecParams): Promise<void> {
   const child = spawn(codexCommand(params.cliPath), args, {
     cwd: params.cwd,
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env },
+    env: { ...getProcessEnv() },
   });
 
   child.stdout?.on("data", (buf) => logStream.write(buf));
