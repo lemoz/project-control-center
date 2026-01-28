@@ -117,40 +117,6 @@ function pulseColor(action?: string): string {
   return PULSE_COLORS[action] ?? PULSE_COLORS.DELEGATE;
 }
 
-const GLOBAL_SESSION_STATES = new Set([
-  "onboarding",
-  "briefing",
-  "autonomous",
-  "debrief",
-  "ended",
-]);
-
-type GlobalSessionState =
-  | "onboarding"
-  | "briefing"
-  | "autonomous"
-  | "debrief"
-  | "ended";
-
-type GlobalSessionSummary = {
-  id: string;
-  state: GlobalSessionState;
-  paused_at: string | null;
-};
-
-function parseSessionSummary(raw: unknown): GlobalSessionSummary | null {
-  if (!raw || typeof raw !== "object") return null;
-  const record = raw as Record<string, unknown>;
-  const id = typeof record.id === "string" ? record.id : null;
-  const state =
-    typeof record.state === "string" && GLOBAL_SESSION_STATES.has(record.state)
-      ? (record.state as GlobalSessionState)
-      : null;
-  const pausedAt = typeof record.paused_at === "string" ? record.paused_at : null;
-  if (!id || !state) return null;
-  return { id, state, paused_at: pausedAt };
-}
-
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -188,7 +154,7 @@ export function GlobalOrbitalCanvas({
   const projectLookupRef = useRef<Map<string, ProjectNode>>(new Map());
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0, dpr: 1 });
   const [highlightedProjectId, setHighlightedProjectId] = useState<string | null>(null);
-  const [globalSession, setGlobalSession] = useState<GlobalSessionSummary | null>(null);
+  // globalSession is provided via props from HomeCanvas
   const lastFrame = useRef<number | null>(null);
   const selectedRef = useRef<VisualizationNode | null>(null);
   const hoveredRef = useRef<VisualizationNode | null>(null);
@@ -289,36 +255,7 @@ export function GlobalOrbitalCanvas({
     selectNode(selectedProjectId);
   }, [clearSelection, selectNode, selectedProjectId, selectedNode]);
 
-  // -----------------------------------------------------------------------
-  // Global session polling for voice context
-  // -----------------------------------------------------------------------
-  useEffect(() => {
-    let cancelled = false;
-
-    const loadSession = async () => {
-      try {
-        const res = await fetch("/api/global/sessions/active", { cache: "no-store" });
-        const json = (await res.json().catch(() => null)) as unknown;
-        if (!res.ok) return;
-        if (!json || typeof json !== "object" || !("session" in json)) {
-          if (!cancelled) setGlobalSession(null);
-          return;
-        }
-        const record = json as { session?: unknown };
-        const parsed = parseSessionSummary(record.session ?? null);
-        if (!cancelled) setGlobalSession(parsed);
-      } catch {
-        if (!cancelled) setGlobalSession(null);
-      }
-    };
-
-    void loadSession();
-    const interval = window.setInterval(loadSession, 15000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, []);
+  // Global session is now provided via props from HomeCanvas
 
   // -----------------------------------------------------------------------
   // Viz initialization
@@ -606,13 +543,15 @@ export function GlobalOrbitalCanvas({
     (projectId: string) => {
       const target = projectNodes.find((node) => node.id === projectId);
       if (!target || target.x === undefined || target.y === undefined) return false;
+      const tx = target.x as number;
+      const ty = target.y as number;
       const scale = transformRef.current.scale;
       const width = sizeRef.current.width || canvasSize.width;
       const height = sizeRef.current.height || canvasSize.height;
       setTransform((prev) => ({
         ...prev,
-        offsetX: width / 2 - target.x * scale,
-        offsetY: height / 2 - target.y * scale,
+        offsetX: width / 2 - tx * scale,
+        offsetY: height / 2 - ty * scale,
       }));
       return true;
     },

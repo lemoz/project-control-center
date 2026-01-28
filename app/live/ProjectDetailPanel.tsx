@@ -117,10 +117,11 @@ async function fetchGlobalContext(): Promise<GlobalContextResponse> {
     const error = (json as { error?: string } | null)?.error || "failed to load global context";
     throw new Error(error);
   }
-  if (!json || !Array.isArray(json.projects)) {
+  const ctx = json as GlobalContextResponse | null;
+  if (!ctx || !Array.isArray(ctx.projects)) {
     throw new Error("missing global context");
   }
-  return json;
+  return ctx;
 }
 
 async function fetchWorkOrders(projectId: string): Promise<WorkOrdersResponse> {
@@ -132,7 +133,7 @@ async function fetchWorkOrders(projectId: string): Promise<WorkOrdersResponse> {
     const error = (json as { error?: string } | null)?.error || "failed to load work orders";
     throw new Error(error);
   }
-  return json ?? {};
+  return (json as WorkOrdersResponse) ?? {};
 }
 
 // ---------------------------------------------------------------------------

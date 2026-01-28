@@ -754,7 +754,7 @@ export class OrbitalGravityVisualization implements Visualization {
     const layout = this.getLayout();
     const globalAutonomous = isAutonomousActive(this.globalSessionState);
     this.drawZones(ctx, layout);
-    this.drawSun(ctx, layout, now);
+    this.drawSun(ctx, layout);
 
     // First pass: calculate positions and sizes
     const nodeData: Array<{
