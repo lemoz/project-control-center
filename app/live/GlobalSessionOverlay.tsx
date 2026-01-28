@@ -2,71 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import styles from "./live.module.css";
-
-// ── Types (local copies — do not import from GlobalSessionPanel) ──
-
-type GlobalAgentSessionState =
-  | "onboarding"
-  | "briefing"
-  | "autonomous"
-  | "debrief"
-  | "ended";
-
-type OnboardingRubricItem = {
-  id: string;
-  label: string;
-  done: boolean;
-  optional?: boolean;
-};
-
-type IntegrationsConfigured = {
-  github: boolean;
-  slack: boolean;
-  linear: boolean;
-};
-
-type SessionConstraints = {
-  max_budget_usd?: number;
-  max_duration_minutes?: number;
-  max_iterations?: number;
-  do_not_touch?: string[];
-};
-
-type GlobalAgentSession = {
-  id: string;
-  chat_thread_id: string | null;
-  state: GlobalAgentSessionState;
-  onboarding_rubric: OnboardingRubricItem[];
-  integrations_configured: IntegrationsConfigured;
-  goals: string[];
-  priority_projects: string[];
-  constraints: SessionConstraints;
-  briefing_summary: string | null;
-  briefing_confirmed_at: string | null;
-  autonomous_started_at: string | null;
-  paused_at: string | null;
-  iteration_count: number;
-  decisions_count: number;
-  actions_count: number;
-  last_check_in_at: string | null;
-  ended_at: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-type GlobalAgentSessionEvent = {
-  id: string;
-  session_id: string;
-  type: string;
-  payload: Record<string, unknown> | null;
-  created_at: string;
-};
-
-type ActiveSessionResponse = {
-  session: GlobalAgentSession | null;
-  events: GlobalAgentSessionEvent[];
-  error?: string;
-};
+import type {
+  ActiveSessionResponse,
+  GlobalAgentSession,
+  GlobalAgentSessionEvent,
+  IntegrationsConfigured,
+} from "./globalSessionTypes";
 
 // ── Helpers ──
 
@@ -101,7 +42,11 @@ function formatTimestamp(value: string | null): string {
 
 // ── Component ──
 
-export function GlobalSessionOverlay() {
+type GlobalSessionOverlayProps = {
+  onSessionChange?: (session: GlobalAgentSession | null) => void;
+};
+
+export function GlobalSessionOverlay({ onSessionChange }: GlobalSessionOverlayProps) {
   const [session, setSession] = useState<GlobalAgentSession | null>(null);
   const [events, setEvents] = useState<GlobalAgentSessionEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -111,6 +56,7 @@ export function GlobalSessionOverlay() {
   // Briefing form drafts
   const [goalsDraft, setGoalsDraft] = useState("");
   const [priorityDraft, setPriorityDraft] = useState("");
+  const [summaryDraft, setSummaryDraft] = useState("");
   const [maxIterationsDraft, setMaxIterationsDraft] = useState("");
   const [maxDurationDraft, setMaxDurationDraft] = useState("");
   const [maxBudgetDraft, setMaxBudgetDraft] = useState("");
@@ -144,6 +90,10 @@ export function GlobalSessionOverlay() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    onSessionChange?.(session);
+  }, [onSessionChange, session]);
+
   // Poll every 10s in autonomous state
   useEffect(() => {
     if (!session) return;
@@ -159,6 +109,7 @@ export function GlobalSessionOverlay() {
     if (!session) return;
     setGoalsDraft(session.goals.join("\n"));
     setPriorityDraft(session.priority_projects.join("\n"));
+    setSummaryDraft(session.briefing_summary ?? "");
     setMaxIterationsDraft(
       session.constraints.max_iterations
         ? String(session.constraints.max_iterations)
@@ -231,7 +182,7 @@ export function GlobalSessionOverlay() {
     }
   }, [session]);
 
-  const saveBriefingAndStart = useCallback(async () => {
+  const saveBriefingAndStart = useCallback(async (resume = false) => {
     if (!session) return;
     setSaving(true);
     setError(null);
@@ -246,9 +197,10 @@ export function GlobalSessionOverlay() {
           max_budget_usd: parseOptionalNumber(maxBudgetDraft),
           do_not_touch: splitLines(doNotTouchDraft),
         },
+        briefing_summary: summaryDraft.trim() || null,
       };
       const briefRes = await fetch(
-        `/api/global/sessions/${encodeURIComponent(session.id)}/briefing`,
+        `/api/global/sessions/${encodeURIComponent(session.id)}`,
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -262,7 +214,13 @@ export function GlobalSessionOverlay() {
       // 2. Start autonomous
       const startRes = await fetch(
         `/api/global/sessions/${encodeURIComponent(session.id)}/start`,
-        { method: "POST" }
+        resume
+          ? {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ resume: true }),
+            }
+          : { method: "POST" }
       );
       const startJson = await startRes.json().catch(() => null);
       if (!startRes.ok)
@@ -278,6 +236,7 @@ export function GlobalSessionOverlay() {
     session,
     goalsDraft,
     priorityDraft,
+    summaryDraft,
     maxIterationsDraft,
     maxDurationDraft,
     maxBudgetDraft,
@@ -391,6 +350,41 @@ export function GlobalSessionOverlay() {
         setSession(json?.session ?? session);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to update");
+      } finally {
+        setSaving(false);
+      }
+    },
+    [session]
+  );
+
+  const toggleIntegration = useCallback(
+    async (key: keyof IntegrationsConfigured) => {
+      if (!session) return;
+      setSaving(true);
+      setError(null);
+      try {
+        const res = await fetch(
+          `/api/global/sessions/${encodeURIComponent(session.id)}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              integrations_configured: {
+                ...session.integrations_configured,
+                [key]: !session.integrations_configured[key],
+              },
+            }),
+          }
+        );
+        const json = await res.json().catch(() => null);
+        if (!res.ok) {
+          throw new Error(json?.error || "Failed to update integrations");
+        }
+        setSession(json?.session ?? session);
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Failed to update integrations"
+        );
       } finally {
         setSaving(false);
       }
@@ -532,6 +526,30 @@ export function GlobalSessionOverlay() {
             </label>
           ))}
         </div>
+        <div style={{ fontSize: 11, color: "#6b7280", marginTop: 10 }}>
+          Integrations configured
+        </div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 6 }}>
+          {(["github", "slack", "linear"] as const).map((key) => (
+            <label
+              key={key}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={session.integrations_configured[key]}
+                onChange={() => toggleIntegration(key)}
+                disabled={saving}
+              />
+              <span>{key.toUpperCase()}</span>
+            </label>
+          ))}
+        </div>
         <button
           style={{
             ...btnPrimary,
@@ -562,7 +580,22 @@ export function GlobalSessionOverlay() {
         className={styles.overlayCard}
         style={{ position: "relative", maxWidth: 380 }}
       >
-        <div style={{ fontWeight: 700, fontSize: 14 }}>Briefing</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>Briefing</div>
+          {isPaused && (
+            <span
+              style={{
+                fontSize: 10,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                color: "#fbbf24",
+                fontWeight: 700,
+              }}
+            >
+              Paused
+            </span>
+          )}
+        </div>
         <div
           style={{
             display: "flex",
@@ -587,6 +620,15 @@ export function GlobalSessionOverlay() {
               rows={2}
               value={priorityDraft}
               onChange={(e) => setPriorityDraft(e.target.value)}
+            />
+          </div>
+          <div>
+            <div style={labelStyle}>Briefing summary</div>
+            <textarea
+              style={textareaStyle}
+              rows={3}
+              value={summaryDraft}
+              onChange={(e) => setSummaryDraft(e.target.value)}
             />
           </div>
           <div
@@ -631,19 +673,43 @@ export function GlobalSessionOverlay() {
             />
           </div>
         </div>
-        <button
-          style={{
-            ...btnPrimary,
-            marginTop: 10,
-            width: "100%",
-            opacity: saving ? 0.6 : 1,
-            cursor: saving ? "not-allowed" : "pointer",
-          }}
-          onClick={saveBriefingAndStart}
-          disabled={saving}
-        >
-          {saving ? "Starting..." : "Confirm & Start"}
-        </button>
+        {isPaused ? (
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button
+              style={{ ...btnPrimary, flex: 1 }}
+              onClick={() => saveBriefingAndStart(true)}
+              disabled={saving}
+            >
+              {saving ? "Resuming..." : "Resume"}
+            </button>
+            <button
+              style={{
+                ...btnSecondary,
+                flex: 1,
+                borderColor: "#5a1f2a",
+                color: "#ffb4c0",
+              }}
+              onClick={stopSession}
+              disabled={saving}
+            >
+              Stop
+            </button>
+          </div>
+        ) : (
+          <button
+            style={{
+              ...btnPrimary,
+              marginTop: 10,
+              width: "100%",
+              opacity: saving ? 0.6 : 1,
+              cursor: saving ? "not-allowed" : "pointer",
+            }}
+            onClick={() => saveBriefingAndStart(false)}
+            disabled={saving}
+          >
+            {saving ? "Starting..." : "Confirm & Start"}
+          </button>
+        )}
         {error && (
           <div className="error" style={{ marginTop: 8, fontSize: 12 }}>
             {error}

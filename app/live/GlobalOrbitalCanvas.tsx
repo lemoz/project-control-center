@@ -25,6 +25,7 @@ import {
   type CanvasVoiceNode,
   type CanvasVoiceShift,
 } from "../landing/components/VoiceWidget/voiceClientTools";
+import type { GlobalAgentSession } from "./globalSessionTypes";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -157,6 +158,7 @@ function parseSessionSummary(raw: unknown): GlobalSessionSummary | null {
 type GlobalOrbitalCanvasProps = {
   onSelectProject?: (projectId: string) => void;
   selectedProjectId?: string | null;
+  globalSession?: GlobalAgentSession | null;
 };
 
 const MAX_VOICE_CONTEXT_ITEMS = 12;
@@ -177,6 +179,7 @@ function toVoiceNode(node: ProjectNode): CanvasVoiceNode {
 export function GlobalOrbitalCanvas({
   onSelectProject,
   selectedProjectId = null,
+  globalSession = null,
 }: GlobalOrbitalCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -343,6 +346,14 @@ export function GlobalOrbitalCanvas({
   useEffect(() => {
     vizRef.current?.update(data);
   }, [data]);
+
+  useEffect(() => {
+    vizRef.current?.setGlobalSessionState(
+      globalSession
+        ? { state: globalSession.state, paused_at: globalSession.paused_at }
+        : null
+    );
+  }, [globalSession]);
 
   // -----------------------------------------------------------------------
   // Notify viz of hover/click state
