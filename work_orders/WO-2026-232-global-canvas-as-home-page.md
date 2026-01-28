@@ -1,7 +1,7 @@
 ---
 id: WO-2026-232
 title: Global Canvas as Home Page
-status: you_review
+status: done
 priority: 1
 tags:
   - ui

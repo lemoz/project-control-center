@@ -1,7 +1,7 @@
 ---
 id: WO-2026-231
 title: Global Orbital Canvas Component
-status: you_review
+status: done
 priority: 1
 tags:
   - ui

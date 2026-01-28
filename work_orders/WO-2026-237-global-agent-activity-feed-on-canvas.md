@@ -1,7 +1,7 @@
 ---
 id: WO-2026-237
 title: Global Agent Activity Feed on Canvas
-status: you_review
+status: done
 priority: 2
 tags:
   - ui
