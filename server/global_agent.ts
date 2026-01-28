@@ -64,6 +64,12 @@ type GlobalAgentActionResult = {
   action: GlobalAgentDecision["action"];
   ok: boolean;
   detail: string;
+  context?: {
+    project_id?: string;
+    project_name?: string;
+    escalation_id?: string;
+    escalation_type?: string;
+  };
 };
 
 export type GlobalAgentLoopOptions = {
@@ -390,7 +396,12 @@ async function executeDecision(
     case "DELEGATE": {
       const project = findProjectById(decision.project_id);
       if (!project) {
-        return { action: "DELEGATE", ok: false, detail: "project not found" };
+        return {
+          action: "DELEGATE",
+          ok: false,
+          detail: "project not found",
+          context: { project_id: decision.project_id },
+        };
       }
       const result = startShift({
         projectId: project.id,
@@ -402,22 +413,32 @@ async function executeDecision(
           action: "DELEGATE",
           ok: true,
           detail: `started shift for ${project.name}`,
+          context: { project_id: project.id, project_name: project.name },
         };
       }
       return {
         action: "DELEGATE",
         ok: true,
         detail: `shift already active for ${project.name}`,
+        context: { project_id: project.id, project_name: project.name },
       };
     }
     case "RESOLVE": {
       const escalation = getEscalationById(decision.escalation_id);
+      const escalationProject = escalation ? findProjectById(escalation.project_id) : null;
+      const escalationContext = {
+        escalation_id: decision.escalation_id,
+        escalation_type: escalation?.type,
+        project_id: escalation?.project_id,
+        project_name: escalationProject?.name,
+      };
       if (escalation) {
         if (escalation.status === "resolved") {
           return {
             action: "RESOLVE",
             ok: true,
             detail: "escalation already resolved",
+            context: escalationContext,
           };
         }
         if (
@@ -429,6 +450,7 @@ async function executeDecision(
             action: "RESOLVE",
             ok: false,
             detail: `escalation not resolvable (${escalation.status})`,
+            context: escalationContext,
           };
         }
         const resolvedAt = new Date().toISOString();
@@ -440,6 +462,7 @@ async function executeDecision(
             action: "RESOLVE",
             ok: false,
             detail: "resolution payload invalid",
+            context: escalationContext,
           };
         }
         const updated = updateEscalation(escalation.id, {
@@ -449,12 +472,18 @@ async function executeDecision(
           resolved_at: resolvedAt,
         });
         if (!updated) {
-          return { action: "RESOLVE", ok: false, detail: "failed to resolve" };
+          return {
+            action: "RESOLVE",
+            ok: false,
+            detail: "failed to resolve",
+            context: escalationContext,
+          };
         }
         return {
           action: "RESOLVE",
           ok: true,
           detail: `resolved escalation ${escalation.id}`,
+          context: escalationContext,
         };
       }
 
@@ -464,16 +493,23 @@ async function executeDecision(
           action: "RESOLVE",
           ok: false,
           detail: "run input resolution must be a JSON object",
+          context: escalationContext,
         };
       }
       const provided = provideRunInput(decision.escalation_id, inputs);
       if (!provided.ok) {
-        return { action: "RESOLVE", ok: false, detail: provided.error };
+        return {
+          action: "RESOLVE",
+          ok: false,
+          detail: provided.error,
+          context: escalationContext,
+        };
       }
       return {
         action: "RESOLVE",
         ok: true,
         detail: `provided run input for ${decision.escalation_id}`,
+        context: escalationContext,
       };
     }
     case "CREATE_PROJECT": {
@@ -485,10 +521,15 @@ async function executeDecision(
           detail: created.error,
         };
       }
+      const createdProject = findProjectById(created.projectId);
       return {
         action: "CREATE_PROJECT",
         ok: true,
         detail: `created project ${created.projectId}`,
+        context: {
+          project_id: created.projectId,
+          project_name: createdProject?.name ?? decision.project.name,
+        },
       };
     }
     case "REPORT": {
