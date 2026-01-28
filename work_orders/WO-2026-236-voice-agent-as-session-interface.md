@@ -1,9 +1,12 @@
 ---
 id: WO-2026-236
 title: Voice Agent as Session Interface
-status: ready
+status: you_review
 priority: 2
-tags: [voice, global-session, ux]
+tags:
+  - voice
+  - global-session
+  - ux
 estimate_hours: 5
 created_at: 2026-01-28
 updated_at: 2026-01-28

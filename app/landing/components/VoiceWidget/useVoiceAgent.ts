@@ -1,8 +1,12 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useConversation, type Status } from "@elevenlabs/react";
-import { createVoiceClientTools } from "./voiceClientTools";
+import {
+  createVoiceClientTools,
+  useCanvasVoiceState,
+  type CanvasVoiceSession,
+} from "./voiceClientTools";
 
 type TranscriptEntry = {
   id: string;
@@ -21,9 +25,23 @@ type StartOptions = {
 };
 
 const TRANSCRIPT_LIMIT = 12;
+const SYSTEM_MESSAGE_PREFIX = "[system]";
 
 function formatTimestamp(value: Date): string {
   return value.toLocaleTimeString();
+}
+
+function buildSessionGreeting(session: CanvasVoiceSession): string {
+  if (session.status === "onboarding") {
+    return "Welcome to Project Control Center. You're onboarding the global session. Ask me to continue setup or review the briefing.";
+  }
+  if (session.status === "autonomous") {
+    return "Welcome back. The global session is running autonomously. Ask what's happening for the latest update or tell me what to focus on.";
+  }
+  if (session.status === "paused") {
+    return "Welcome back. The global session is paused. Ask what's happening for context or tell me to resume and reprioritize.";
+  }
+  return "Welcome back. There's no active global session yet. Ask me to start onboarding or review the portfolio.";
 }
 
 function normalizeErrorMessage(error: unknown): string {
@@ -49,6 +67,8 @@ export function useVoiceAgent() {
   const [starting, setStarting] = useState(false);
   const clientTools = useMemo(() => createVoiceClientTools(), []);
   const serverLocation = process.env.NEXT_PUBLIC_ELEVENLABS_SERVER_LOCATION;
+  const canvasState = useCanvasVoiceState();
+  const greetingSentRef = useRef(false);
 
   const conversation = useConversation({
     clientTools,
@@ -61,6 +81,12 @@ export function useVoiceAgent() {
     },
     onMessage: (message: ConversationMessage) => {
       setTranscript((prev) => {
+        if (
+          message.role === "user" &&
+          message.message.trim().toLowerCase().startsWith(SYSTEM_MESSAGE_PREFIX)
+        ) {
+          return prev;
+        }
         const nextEntry: TranscriptEntry = {
           id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
           role: message.role,
@@ -191,6 +217,26 @@ export function useVoiceAgent() {
     [conversationControls, start, status]
   );
 
+  const sendSystemMessage = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return false;
+      return sendTextMessage(`${SYSTEM_MESSAGE_PREFIX} ${trimmed}`, { textOnly: true });
+    },
+    [sendTextMessage]
+  );
+
+  useEffect(() => {
+    if (status !== "connected") {
+      greetingSentRef.current = false;
+      return;
+    }
+    if (greetingSentRef.current) return;
+    const greeting = buildSessionGreeting(canvasState.session);
+    greetingSentRef.current = true;
+    void sendSystemMessage(greeting);
+  }, [canvasState.session, sendSystemMessage, status]);
+
   return {
     status,
     isSpeaking,
@@ -201,6 +247,7 @@ export function useVoiceAgent() {
     start,
     stop,
     sendTextMessage,
+    sendSystemMessage,
     sendContextualUpdate,
   };
 }
