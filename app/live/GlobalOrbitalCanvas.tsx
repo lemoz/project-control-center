@@ -339,9 +339,9 @@ export function GlobalOrbitalCanvas({
     if (!loading && projectNodes.length === 0) {
       return (
         <div className={styles.overlayCard}>
-          <div style={{ fontWeight: 600 }}>No projects found</div>
+          <div style={{ fontWeight: 600 }}>No projects yet</div>
           <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-            Add a project to see it appear on the orbital canvas.
+            Add a repo to see it appear on the orbital canvas.
           </div>
         </div>
       );
