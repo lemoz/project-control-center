@@ -36,9 +36,9 @@ tags:
   - multi-repo
   - communication
 estimate_hours: 4
-status: backlog
+status: ready
 created_at: 2026-01-12
-updated_at: 2026-01-26
+updated_at: 2026-01-28
 depends_on:
   - WO-2026-098
   - WO-2026-085
