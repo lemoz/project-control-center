@@ -19,6 +19,7 @@ import {
   type ConstitutionGenerationMeta,
   type ConstitutionInsightCategory,
   type ConstitutionInsightInput,
+  type ConstitutionInsightScope,
 } from "./constitution.js";
 import { resolveChatSettings } from "./settings.js";
 
@@ -111,6 +112,7 @@ const MAX_CONVERSATION_CHARS = 2000;
 const MAX_PROMPT_CHARS = 140_000;
 
 const INSIGHT_CATEGORIES = ["decision", "style", "anti", "success", "communication"] as const;
+const INSIGHT_SCOPES = ["global", "project"] as const;
 
 const AnalysisResponseSchema = z
   .object({
@@ -121,6 +123,7 @@ const AnalysisResponseSchema = z
           text: z.string().min(1),
           confidence: z.enum(["high", "medium", "low"]),
           evidence_count: z.number().int().min(1),
+          scope: z.enum(INSIGHT_SCOPES).optional(),
         })
         .strict()
     ),
@@ -150,6 +153,7 @@ function analysisJsonSchema() {
             text: { type: "string" },
             confidence: { type: "string", enum: ["high", "medium", "low"] },
             evidence_count: { type: "integer", minimum: 1 },
+            scope: { type: "string", enum: INSIGHT_SCOPES },
           },
         },
       },
@@ -1451,12 +1455,14 @@ export async function analyzeConstitutionSources(params: {
     if (!parsed.success) {
       throw new Error("analysis response did not match schema");
     }
+    const defaultScope: ConstitutionInsightScope = params.projectId ? "project" : "global";
     parsedInsights = parsed.data.insights.map((insight) => ({
       id: crypto.randomUUID(),
       category: insight.category,
       text: insight.text.trim(),
       confidence: insight.confidence,
       evidence_count: insight.evidence_count,
+      scope: insight.scope ?? defaultScope,
     }));
   } catch (err) {
     const message = err instanceof Error ? err.message : "AI analysis failed.";
@@ -1531,6 +1537,13 @@ export async function generateConstitutionDraft(params: {
   const baseForDraft = baseHasContent ? baseSnapshot : fallbackTemplate.trim();
 
   if (params.insights.length === 0) {
+    if (params.projectId && !baseHasContent) {
+      return {
+        draft: "",
+        warnings: ["No project insights selected; skipping project draft."],
+        used_ai: false,
+      };
+    }
     return {
       draft: baseForDraft,
       warnings: ["No insights selected; draft uses existing constitution."],
