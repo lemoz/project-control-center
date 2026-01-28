@@ -160,6 +160,7 @@ import {
 import {
   type ConstitutionInsightCategory,
   type ConstitutionInsightInput,
+  type ConstitutionInsightScope,
   listGlobalConstitutionVersions,
   listProjectConstitutionVersions,
   mergeConstitutions,
@@ -1137,9 +1138,14 @@ const INSIGHT_CATEGORY_SET = new Set([
   "success",
   "communication",
 ]);
+const INSIGHT_SCOPE_SET = new Set<ConstitutionInsightScope>(["global", "project"]);
 
 function isInsightCategory(value: string): value is ConstitutionInsightCategory {
   return INSIGHT_CATEGORY_SET.has(value);
+}
+
+function isInsightScope(value: string): value is ConstitutionInsightScope {
+  return INSIGHT_SCOPE_SET.has(value as ConstitutionInsightScope);
 }
 
 app.post("/constitution/generation/sources", (req, res) => {
@@ -1180,7 +1186,11 @@ app.post("/constitution/generation/analyze", async (req, res) => {
 app.post("/constitution/generation/draft", async (req, res) => {
   try {
     const projectId = typeof req.body?.projectId === "string" ? req.body.projectId : null;
-    const base = typeof req.body?.base === "string" ? req.body.base : null;
+    const baseGlobal =
+      typeof req.body?.baseGlobal === "string" ? req.body.baseGlobal : null;
+    const baseProject =
+      typeof req.body?.baseProject === "string" ? req.body.baseProject : null;
+    const baseLegacy = typeof req.body?.base === "string" ? req.body.base : null;
     const insightsRaw: unknown[] = Array.isArray(req.body?.insights) ? req.body.insights : [];
     const insights: ConstitutionInsightInput[] = insightsRaw
       .map((entry): ConstitutionInsightInput | null => {
@@ -1188,12 +1198,53 @@ app.post("/constitution/generation/draft", async (req, res) => {
         const record = entry as Record<string, unknown>;
         const category = typeof record.category === "string" ? record.category : "";
         const text = typeof record.text === "string" ? record.text : "";
+        const scopeRaw = typeof record.scope === "string" ? record.scope : "";
+        const scope = isInsightScope(scopeRaw) ? scopeRaw : undefined;
         if (!isInsightCategory(category) || !text.trim()) return null;
-        return { category, text: text.trim() };
+        return { category, text: text.trim(), scope };
       })
       .filter((entry): entry is ConstitutionInsightInput => Boolean(entry));
-    const result = await generateConstitutionDraft({ projectId, insights, base });
-    return res.json(result);
+    const warnings: string[] = [];
+    const globalInsights: ConstitutionInsightInput[] = [];
+    const projectInsights: ConstitutionInsightInput[] = [];
+    const defaultScope: ConstitutionInsightScope = projectId ? "project" : "global";
+    let defaultedScopes = 0;
+    let ignoredProject = 0;
+
+    for (const insight of insights) {
+      const scope = insight.scope ?? defaultScope;
+      if (!insight.scope) defaultedScopes += 1;
+      if (scope === "project" && !projectId) {
+        ignoredProject += 1;
+        continue;
+      }
+      if (scope === "global") {
+        globalInsights.push(insight);
+      } else {
+        projectInsights.push(insight);
+      }
+    }
+
+    if (defaultedScopes > 0 && projectId) {
+      warnings.push("Some insights were missing scope and defaulted to project.");
+    }
+    if (ignoredProject > 0) {
+      warnings.push("Project-scoped insights were ignored because no project is selected.");
+    }
+
+    const globalDraft = await generateConstitutionDraft({
+      projectId: null,
+      insights: globalInsights,
+      base: baseGlobal ?? (!projectId ? baseLegacy : null),
+    });
+    const projectDraft = projectId
+      ? await generateConstitutionDraft({
+          projectId,
+          insights: projectInsights,
+          base: baseProject ?? baseLegacy,
+        })
+      : null;
+    return res.json({ drafts: { global: globalDraft, project: projectDraft }, warnings });
   } catch (err) {
     return res.status(400).json({
       error: err instanceof Error ? err.message : "draft generation failed",

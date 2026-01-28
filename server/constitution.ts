@@ -92,9 +92,12 @@ export type ConstitutionInsightCategory =
   | "success"
   | "communication";
 
+export type ConstitutionInsightScope = "global" | "project";
+
 export type ConstitutionInsightInput = {
   category: ConstitutionInsightCategory;
   text: string;
+  scope?: ConstitutionInsightScope;
 };
 
 export type ConstitutionGenerationMeta = {
