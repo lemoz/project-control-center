@@ -1,9 +1,12 @@
 ---
 id: WO-2026-230
 title: Navigation Bar with Route Hierarchy
-status: ready
+status: you_review
 priority: 1
-tags: [ui, navigation, layout]
+tags:
+  - ui
+  - navigation
+  - layout
 estimate_hours: 3
 created_at: 2026-01-28
 updated_at: 2026-01-28

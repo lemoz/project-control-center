@@ -11,6 +11,10 @@ html {
   scroll-padding-top: 96px;
 }
 
+:root {
+  --nav-offset: 49px;
+}
+
 a {
   color: inherit;
   text-decoration: none;
@@ -682,11 +686,21 @@ a {
 .nav-bar-inner {
   max-width: 1100px;
   margin: 0 auto;
-  padding: 0 16px;
-  height: 48px;
+  padding: 6px 16px;
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas: "left links actions";
+  align-items: center;
+  gap: 12px;
+}
+
+.nav-left {
+  grid-area: left;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
+  min-width: 0;
 }
 
 .nav-brand {
@@ -702,10 +716,60 @@ a {
   color: #ffffff;
 }
 
+.nav-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.nav-breadcrumb::-webkit-scrollbar {
+  display: none;
+}
+
+.nav-project-name {
+  font-weight: 600;
+  color: #e6e8ee;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nav-project-links {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.nav-project-link {
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #a9b0c2;
+  border: 1px solid transparent;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.nav-project-link:hover {
+  color: #e6e8ee;
+  background: rgba(255,255,255,0.05);
+}
+
+.nav-project-link--active {
+  color: #e6e8ee;
+  background: rgba(43, 92, 255, 0.12);
+  border-color: rgba(43, 92, 255, 0.18);
+}
+
 .nav-links {
+  grid-area: links;
   display: flex;
   gap: 4px;
-  margin-left: auto;
+  justify-content: flex-end;
 }
 
 .nav-link {
@@ -713,6 +777,7 @@ a {
   border-radius: 8px;
   font-size: 13px;
   color: #a9b0c2;
+  white-space: nowrap;
   transition: color 0.15s, background 0.15s;
 }
 
@@ -727,49 +792,81 @@ a {
   border: 1px solid rgba(43, 92, 255, 0.18);
 }
 
-.nav-breadcrumb {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.nav-back {
-  color: #a9b0c2;
-}
-
-.nav-back:hover {
-  color: #e6e8ee;
-}
-
-.nav-breadcrumb-sep {
-  color: #22293a;
-}
-
-.nav-breadcrumb-context {
-  color: #a9b0c2;
-}
-
 .nav-actions {
+  grid-area: actions;
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-left: 8px;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 720px) {
+  :root {
+    --nav-offset: calc(72px + env(safe-area-inset-bottom));
+  }
+
+  .nav-bar {
+    position: fixed;
+    top: auto;
+    bottom: 0;
+    border-top: 1px solid rgba(34, 41, 58, 0.6);
+    border-bottom: none;
+  }
+
   .nav-bar-inner {
-    padding: 0 12px;
+    padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "left actions"
+      "links links";
+    row-gap: 8px;
+  }
+
+  .nav-left {
     gap: 8px;
   }
 
-  .nav-link {
-    padding: 6px 8px;
+  .nav-breadcrumb {
+    font-size: 12px;
+    gap: 8px;
+  }
+
+  .nav-project-name {
+    max-width: 140px;
     font-size: 12px;
   }
 
-  .nav-breadcrumb {
-    display: none;
+  .nav-project-links {
+    gap: 4px;
+  }
+
+  .nav-project-link {
+    padding: 4px 6px;
+    font-size: 11px;
+  }
+
+  .nav-links {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .nav-link {
+    padding: 6px 4px;
+    font-size: 11px;
+    text-align: center;
+  }
+
+  .nav-actions {
+    justify-self: end;
+  }
+
+  .container {
+    padding-bottom: calc(16px + var(--nav-offset));
+  }
+
+  .chat-widget {
+    bottom: calc(16px + var(--nav-offset));
   }
 }
 
@@ -790,7 +887,7 @@ a {
   width: 100vw;
   margin-left: calc(-50vw + 50%);
   margin-top: -16px;
-  height: calc(100vh - 49px);
+  height: calc(100vh - var(--nav-offset));
   position: relative;
   overflow: hidden;
   --live-canvas-height: 100%;
@@ -818,7 +915,7 @@ a {
 @media (max-width: 600px) {
   .home-canvas {
     margin-top: -12px;
-    height: calc(100vh - 49px);
+    height: calc(100vh - var(--nav-offset));
   }
 
   .home-session-overlay {

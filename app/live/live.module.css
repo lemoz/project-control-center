@@ -658,3 +658,9 @@
     max-height: 90vh;
   }
 }
+
+@media (max-width: 720px) {
+  .page {
+    padding-bottom: calc(16px + var(--nav-offset));
+  }
+}
