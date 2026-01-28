@@ -15,7 +15,6 @@ import { useBudgetSummary } from "./hooks/useBudgetSummary";
 import { useFailureBreakdown } from "./hooks/useFailureBreakdown";
 import { useIncidentStats } from "./hooks/useIncidentStats";
 import { useRunTimeline } from "./hooks/useRunTimeline";
-import { useVMHealth } from "./hooks/useVMHealth";
 
 const REFRESH_INTERVAL_MS = 30_000;
 const TIMELINE_HOURS = 24;
@@ -41,7 +40,6 @@ export default function ObservabilityPage() {
     return () => clearInterval(interval);
   }, []);
 
-  const vmHealth = useVMHealth(refreshToken);
   const activeRuns = useActiveRuns(refreshToken);
   const budget = useBudgetSummary(refreshToken);
   const failures = useFailureBreakdown(refreshToken);
@@ -79,7 +77,7 @@ export default function ObservabilityPage() {
       </section>
 
       <section className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
-        <VMHealthPanel data={vmHealth.data} loading={vmHealth.loading} error={vmHealth.error} />
+        <VMHealthPanel />
         <BudgetPanel data={budget.data} loading={budget.loading} error={budget.error} />
         <FailureBreakdownPanel data={failures.data} loading={failures.loading} error={failures.error} />
         <SecurityIncidentsPanel

@@ -1,11 +1,11 @@
 import crypto from "crypto";
 import Database from "better-sqlite3";
-import { getDatabasePath, getVmRepoRoot } from "./config.js";
+import { getDatabasePath } from "./config.js";
 
 export const LAST_ESCALATION_AT_KEY = "last_escalation_at";
 
 export type ProjectIsolationMode = "local" | "vm" | "vm+container";
-export type ProjectVmSize = "medium" | "large" | "xlarge";
+export type ProjectIsolationSize = "medium" | "large" | "xlarge";
 
 export type ProjectRow = {
   id: string;
@@ -23,45 +23,11 @@ export type ProjectRow = {
   auto_shift_enabled: 0 | 1;
   tags: string; // JSON array
   isolation_mode: ProjectIsolationMode;
-  vm_size: ProjectVmSize;
+  vm_size: ProjectIsolationSize;
   last_run_at: string | null;
   created_at: string;
   updated_at: string;
 };
-
-export type ProjectVmStatus =
-  | "not_provisioned"
-  | "provisioning"
-  | "installing"
-  | "syncing"
-  | "installing_deps"
-  | "running"
-  | "stopped"
-  | "deleted"
-  | "error";
-
-export type ProjectVmProvider = "gcp";
-
-export type ProjectVmRow = {
-  project_id: string;
-  provider: ProjectVmProvider | null;
-  repo_path: string | null;
-  gcp_instance_id: string | null;
-  gcp_instance_name: string | null;
-  gcp_project: string | null;
-  gcp_zone: string | null;
-  external_ip: string | null;
-  internal_ip: string | null;
-  status: ProjectVmStatus;
-  size: ProjectVmSize | null;
-  created_at: string | null;
-  last_started_at: string | null;
-  last_activity_at: string | null;
-  last_error: string | null;
-  total_hours_used: number;
-};
-
-export type ProjectVmPatch = Partial<Omit<ProjectVmRow, "project_id">>;
 
 export type RunFailureCategory =
   | "baseline_failure"
@@ -669,8 +635,6 @@ export type GlobalShiftStateSnapshot = {
     waiting_since: string;
   }>;
   resources: {
-    vms_running: number;
-    vms_available: number;
     budget_used_today: number;
   };
   assembled_at: string;
@@ -830,26 +794,6 @@ function initSchema(database: Database.Database) {
       last_run_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS project_vms (
-      project_id TEXT PRIMARY KEY,
-      provider TEXT,
-      repo_path TEXT,
-      gcp_instance_id TEXT,
-      gcp_instance_name TEXT,
-      gcp_project TEXT,
-      gcp_zone TEXT,
-      external_ip TEXT,
-      internal_ip TEXT,
-      status TEXT NOT NULL DEFAULT 'not_provisioned',
-      size TEXT,
-      created_at TEXT,
-      last_started_at TEXT,
-      last_activity_at TEXT,
-      last_error TEXT,
-      total_hours_used REAL NOT NULL DEFAULT 0,
-      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS autopilot_policies (
@@ -1570,41 +1514,6 @@ function initSchema(database: Database.Database) {
   }
   if (!hasVmSize) {
     database.exec("ALTER TABLE projects ADD COLUMN vm_size TEXT NOT NULL DEFAULT 'medium';");
-  }
-
-  const projectVmColumns = database.prepare("PRAGMA table_info(project_vms)").all() as Array<{ name: string }>;
-  const hasVmInstanceId = projectVmColumns.some((c) => c.name === "gcp_instance_id");
-  const hasVmProject = projectVmColumns.some((c) => c.name === "gcp_project");
-  const hasVmLastActivityAt = projectVmColumns.some((c) => c.name === "last_activity_at");
-  const hasVmLastError = projectVmColumns.some((c) => c.name === "last_error");
-  const hasVmTotalHours = projectVmColumns.some((c) => c.name === "total_hours_used");
-  const hasVmProvider = projectVmColumns.some((c) => c.name === "provider");
-  const hasVmRepoPath = projectVmColumns.some((c) => c.name === "repo_path");
-  if (!hasVmInstanceId) {
-    database.exec("ALTER TABLE project_vms ADD COLUMN gcp_instance_id TEXT;");
-  }
-  if (!hasVmProject) {
-    database.exec("ALTER TABLE project_vms ADD COLUMN gcp_project TEXT;");
-  }
-  if (!hasVmProvider) {
-    database.exec("ALTER TABLE project_vms ADD COLUMN provider TEXT;");
-  }
-  if (!hasVmRepoPath) {
-    database.exec("ALTER TABLE project_vms ADD COLUMN repo_path TEXT;");
-  }
-  const defaultRepoPath = getVmRepoRoot();
-  database.exec("UPDATE project_vms SET provider = COALESCE(provider, 'gcp');");
-  database
-    .prepare("UPDATE project_vms SET repo_path = COALESCE(repo_path, ?)")
-    .run(defaultRepoPath);
-  if (!hasVmLastActivityAt) {
-    database.exec("ALTER TABLE project_vms ADD COLUMN last_activity_at TEXT;");
-  }
-  if (!hasVmLastError) {
-    database.exec("ALTER TABLE project_vms ADD COLUMN last_error TEXT;");
-  }
-  if (!hasVmTotalHours) {
-    database.exec("ALTER TABLE project_vms ADD COLUMN total_hours_used REAL NOT NULL DEFAULT 0;");
   }
 
   const initiativeColumns = database
@@ -2401,96 +2310,6 @@ export function updateProjectSuccess(
     .prepare(`UPDATE projects SET ${sets.join(", ")}, updated_at = @updated_at WHERE id = @id`)
     .run({ id, updated_at: now, ...patch });
   return findProjectById(id);
-}
-
-export function getProjectVm(projectId: string): ProjectVmRow | null {
-  const database = getDb();
-  const row = database
-    .prepare("SELECT * FROM project_vms WHERE project_id = ? LIMIT 1")
-    .get(projectId) as ProjectVmRow | undefined;
-  return row || null;
-}
-
-export function upsertProjectVm(vm: ProjectVmRow): void {
-  const database = getDb();
-  database
-    .prepare(
-      `INSERT INTO project_vms
-        (project_id, provider, repo_path, gcp_instance_id, gcp_instance_name, gcp_project, gcp_zone, external_ip, internal_ip, status, size, created_at, last_started_at, last_activity_at, last_error, total_hours_used)
-       VALUES
-        (@project_id, @provider, @repo_path, @gcp_instance_id, @gcp_instance_name, @gcp_project, @gcp_zone, @external_ip, @internal_ip, @status, @size, @created_at, @last_started_at, @last_activity_at, @last_error, @total_hours_used)
-       ON CONFLICT(project_id) DO UPDATE SET
-        provider=excluded.provider,
-        repo_path=excluded.repo_path,
-        gcp_instance_id=excluded.gcp_instance_id,
-        gcp_instance_name=excluded.gcp_instance_name,
-        gcp_project=excluded.gcp_project,
-        gcp_zone=excluded.gcp_zone,
-        external_ip=excluded.external_ip,
-        internal_ip=excluded.internal_ip,
-        status=excluded.status,
-        size=excluded.size,
-        created_at=excluded.created_at,
-        last_started_at=excluded.last_started_at,
-        last_activity_at=excluded.last_activity_at,
-        last_error=excluded.last_error,
-        total_hours_used=excluded.total_hours_used`
-    )
-    .run(vm);
-}
-
-export function updateProjectVm(projectId: string, patch: ProjectVmPatch): ProjectVmRow | null {
-  const database = getDb();
-  const fields: Array<{ key: keyof ProjectVmPatch; column: string }> = [
-    { key: "provider", column: "provider" },
-    { key: "repo_path", column: "repo_path" },
-    { key: "gcp_instance_id", column: "gcp_instance_id" },
-    { key: "gcp_instance_name", column: "gcp_instance_name" },
-    { key: "gcp_project", column: "gcp_project" },
-    { key: "gcp_zone", column: "gcp_zone" },
-    { key: "external_ip", column: "external_ip" },
-    { key: "internal_ip", column: "internal_ip" },
-    { key: "status", column: "status" },
-    { key: "size", column: "size" },
-    { key: "created_at", column: "created_at" },
-    { key: "last_started_at", column: "last_started_at" },
-    { key: "last_activity_at", column: "last_activity_at" },
-    { key: "last_error", column: "last_error" },
-    { key: "total_hours_used", column: "total_hours_used" },
-  ];
-  const sets = fields
-    .filter((f) => patch[f.key] !== undefined)
-    .map((f) => `${f.column} = @${f.key}`);
-  if (!sets.length) return getProjectVm(projectId);
-
-  database
-    .prepare(`UPDATE project_vms SET ${sets.join(", ")} WHERE project_id = @project_id`)
-    .run({ project_id: projectId, ...patch });
-
-  const updated = getProjectVm(projectId);
-  if (updated) return updated;
-
-  const fallback: ProjectVmRow = {
-    project_id: projectId,
-    provider: null,
-    repo_path: null,
-    gcp_instance_id: null,
-    gcp_instance_name: null,
-    gcp_project: null,
-    gcp_zone: null,
-    external_ip: null,
-    internal_ip: null,
-    status: "not_provisioned",
-    size: null,
-    created_at: null,
-    last_started_at: null,
-    last_activity_at: null,
-    last_error: null,
-    total_hours_used: 0,
-  };
-  upsertProjectVm({ ...fallback, ...patch, project_id: projectId });
-
-  return getProjectVm(projectId);
 }
 
 export function createRun(run: RunRow): void {

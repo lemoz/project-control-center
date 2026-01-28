@@ -4,14 +4,12 @@ import { spawnSync } from "child_process";
 import {
   findProjectById,
   getDb,
-  getProjectVm,
   listProjectCommunications,
   listTracks,
   listRunsByProject,
   type EscalationStatus,
   type ProjectCommunicationIntent,
   type ProjectCommunicationScope,
-  type ProjectVmRow,
   type RunRow,
   type Track,
 } from "./db.js";
@@ -158,11 +156,6 @@ export type ShiftContext = {
   communications_inbox: CommunicationInboxItem[];
   last_human_interaction: LastHumanInteraction | null;
   environment: {
-    vm: {
-      provisioned: boolean;
-      host: string | null;
-      status: "running" | "stopped" | "unknown";
-    } | null;
     env_vars_available: string[];
     runner_ready: boolean;
   };
@@ -272,7 +265,6 @@ export function buildShiftContext(
     now
   );
   const gitState = buildGitState(project.path);
-  const vmState = buildVmState(getProjectVm(project.id));
   const economy = buildEconomyContext({
     projectId: project.id,
     workOrders,
@@ -302,7 +294,6 @@ export function buildShiftContext(
     communications_inbox: communicationsInbox,
     last_human_interaction: lastHumanInteraction,
     environment: {
-      vm: vmState,
       env_vars_available: listEnvVarNames(),
       runner_ready: isRunnerReady(project.path),
     },
@@ -892,15 +883,6 @@ function runGit(repoPath: string, args: string[]): {
     stdout: typeof result.stdout === "string" ? result.stdout : "",
     stderr: typeof result.stderr === "string" ? result.stderr : "",
   };
-}
-
-function buildVmState(vm: ProjectVmRow | null): ShiftContext["environment"]["vm"] {
-  if (!vm) return null;
-  const provisioned = vm.status !== "not_provisioned" && vm.status !== "deleted";
-  const status =
-    vm.status === "running" ? "running" : vm.status === "stopped" ? "stopped" : "unknown";
-  const host = vm.external_ip ?? vm.internal_ip ?? null;
-  return { provisioned, host, status };
 }
 
 function listEnvVarNames(): string[] {

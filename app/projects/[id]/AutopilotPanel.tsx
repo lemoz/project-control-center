@@ -14,7 +14,6 @@ type AutopilotPolicy = {
 type AutopilotStatus = {
   state: "disabled" | "paused" | "running" | "idle";
   enabled: boolean;
-  vm_ready: boolean;
   failure_count: number;
   stop_on_failure_count: number;
   active_run: {
@@ -130,9 +129,6 @@ export function AutopilotPanel({ repoId }: { repoId: string }) {
   const statusDetail = useMemo(() => {
     const status = snapshot?.status;
     if (!status) return "";
-    if (status.blocked_reason === "vm_not_ready") {
-      return "VM not provisioned or running.";
-    }
     if (status.blocked_reason === "failure_limit") {
       return `Paused after ${status.failure_count}/${status.stop_on_failure_count} failures.`;
     }

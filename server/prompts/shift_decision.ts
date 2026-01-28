@@ -314,10 +314,6 @@ export function buildShiftDecisionPrompt(context: ShiftContext): string {
   lines.push(formatActiveRuns(context.active_runs, MAX_ACTIVE_RUNS));
   lines.push("");
   lines.push("### Environment");
-  const vmLine = context.environment.vm
-    ? `${context.environment.vm.status} at ${context.environment.vm.host ?? "unknown host"}`
-    : "Not provisioned";
-  lines.push(`- VM: ${vmLine}`);
   lines.push(`- Runner ready: ${context.environment.runner_ready}`);
   lines.push(
     `- Available env vars: ${formatEnvVars(context.environment.env_vars_available, MAX_ENV_VARS)}`
@@ -364,7 +360,6 @@ export function buildShiftDecisionPrompt(context: ShiftContext): string {
   lines.push("## Method Choice");
   lines.push("- WO run: multi-file or substantial changes, or when isolation helps.");
   lines.push("- Direct action: small, safe edits or config changes.");
-  lines.push("- VM: heavy compute or when isolation is required.");
   lines.push("- Research: gather missing info before acting.");
   lines.push("");
   lines.push("## Phase 1: Assess (keep internal)");
@@ -375,7 +370,7 @@ export function buildShiftDecisionPrompt(context: ShiftContext): string {
   lines.push("Output your decision as:");
   lines.push("```");
   lines.push("DECISION: [What you will do]");
-  lines.push("METHOD: [WO run | direct action | VM | research]");
+  lines.push("METHOD: [WO run | direct action | research]");
   lines.push("WHY: [How this connects to success criteria]");
   lines.push("EXPECTED_OUTCOME: [What will be true after this shift]");
   lines.push("RISK: [What could go wrong]");
