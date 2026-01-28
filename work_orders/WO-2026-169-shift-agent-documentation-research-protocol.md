@@ -1,7 +1,7 @@
 ---
 id: WO-2026-169
 title: Shift agent documentation research protocol
-status: you_review
+status: done
 priority: 2
 tags:
   - shift-agent

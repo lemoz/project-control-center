@@ -1,7 +1,7 @@
 ---
 id: WO-2026-170
 title: Add documentation field to WO generation
-status: backlog
+status: ready
 priority: 3
 tags:
   - wo-generation
@@ -11,7 +11,7 @@ estimate_hours: 0.5
 depends_on:
   - WO-2026-169
 era: v2
-updated_at: 2026-01-26
+updated_at: 2026-01-28
 goal: Add optional "documentation" field to work order generation prompt so LLM-generated WOs include relevant external docs for sandboxed builders.
 context:
   - WO generation prompt at server/prompts/wo_generation.ts (buildWorkOrderGenerationPrompt)
