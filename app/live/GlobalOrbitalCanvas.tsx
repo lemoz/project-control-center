@@ -88,6 +88,7 @@ export function GlobalOrbitalCanvas({
   const hoveredRef = useRef<VisualizationNode | null>(null);
   const transformRef = useRef({ offsetX: 0, offsetY: 0, scale: 1 });
   const sizeRef = useRef(canvasSize);
+  const selectedProjectRef = useRef<string | null>(selectedProjectId ?? null);
 
   // Data hook — fetches all projects, work orders, runs, global context, etc.
   const { data, loading, error } = useProjectsVisualization();
@@ -104,6 +105,8 @@ export function GlobalOrbitalCanvas({
     hoveredNode,
     tooltipPosition,
     isPanning,
+    clearSelection,
+    selectNode,
     handlers,
   } = useCanvasInteraction({
     canvasRef,
@@ -118,6 +121,20 @@ export function GlobalOrbitalCanvas({
       onSelectProject(selectedNode.id);
     }
   }, [selectedNode, onSelectProject]);
+
+  useEffect(() => {
+    const previous = selectedProjectRef.current;
+    selectedProjectRef.current = selectedProjectId ?? null;
+
+    if (!selectedProjectId) {
+      if (previous) {
+        clearSelection();
+      }
+      return;
+    }
+    if (selectedNode?.id === selectedProjectId) return;
+    selectNode(selectedProjectId);
+  }, [clearSelection, selectNode, selectedProjectId, selectedNode]);
 
   // -----------------------------------------------------------------------
   // Viz initialization
@@ -348,9 +365,9 @@ export function GlobalOrbitalCanvas({
     if (!loading && projectNodes.length === 0) {
       return (
         <div className={styles.overlayCard}>
-          <div style={{ fontWeight: 600 }}>No projects found</div>
+          <div style={{ fontWeight: 600 }}>No projects yet</div>
           <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-            Add a project to see it appear on the orbital canvas.
+            Add a repo to see it appear on the orbital canvas.
           </div>
         </div>
       );
