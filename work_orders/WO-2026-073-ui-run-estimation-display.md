@@ -25,7 +25,7 @@ tags:
   - estimation
   - ux
 estimate_hours: 2
-status: you_review
+status: done
 created_at: 2026-01-12
 updated_at: 2026-01-28
 depends_on:
