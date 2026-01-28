@@ -10,6 +10,7 @@ type RepoSummary = {
   type: "prototype" | "long_term";
   stage: string;
   status: "active" | "blocked" | "parked";
+  lifecycle_status?: "active" | "stable" | "maintenance" | "archived";
   priority: number;
   starred: boolean;
   hidden: boolean;
@@ -87,6 +88,7 @@ export default async function PortfolioPage() {
               <span className="badge">{repo.type}</span>
               <span className="badge">{repo.stage}</span>
               <span className="badge">{repo.status}</span>
+              {repo.lifecycle_status && <span className="badge">{repo.lifecycle_status}</span>}
               <span className="badge">p{repo.priority}</span>
             </div>
 
@@ -152,6 +154,9 @@ export default async function PortfolioPage() {
                     <span className="badge">{repo.type}</span>
                     <span className="badge">{repo.stage}</span>
                     <span className="badge">{repo.status}</span>
+                    {repo.lifecycle_status && (
+                      <span className="badge">{repo.lifecycle_status}</span>
+                    )}
                     <span className="badge">p{repo.priority}</span>
                   </div>
                 </div>

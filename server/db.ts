@@ -6,6 +6,13 @@ export const LAST_ESCALATION_AT_KEY = "last_escalation_at";
 
 export type ProjectIsolationMode = "local" | "vm" | "vm+container";
 export type ProjectIsolationSize = "medium" | "large" | "xlarge";
+export const PROJECT_LIFECYCLE_STATUSES = [
+  "active",
+  "stable",
+  "maintenance",
+  "archived",
+] as const;
+export type ProjectLifecycleStatus = (typeof PROJECT_LIFECYCLE_STATUSES)[number];
 
 export type ProjectRow = {
   id: string;
@@ -17,6 +24,7 @@ export type ProjectRow = {
   type: "prototype" | "long_term";
   stage: string;
   status: "active" | "blocked" | "parked";
+  lifecycle_status: ProjectLifecycleStatus;
   priority: number;
   starred: 0 | 1;
   hidden: 0 | 1;
@@ -784,6 +792,7 @@ function initSchema(database: Database.Database) {
       type TEXT NOT NULL,
       stage TEXT NOT NULL,
       status TEXT NOT NULL,
+      lifecycle_status TEXT NOT NULL DEFAULT 'active',
       priority INTEGER NOT NULL,
       starred INTEGER NOT NULL DEFAULT 0,
       hidden INTEGER NOT NULL DEFAULT 0,
@@ -1491,6 +1500,7 @@ function initSchema(database: Database.Database) {
   const hasAutoShiftEnabled = projectColumns.some((c) => c.name === "auto_shift_enabled");
   const hasIsolationMode = projectColumns.some((c) => c.name === "isolation_mode");
   const hasVmSize = projectColumns.some((c) => c.name === "vm_size");
+  const hasLifecycleStatus = projectColumns.some((c) => c.name === "lifecycle_status");
   if (!hasStarred) {
     database.exec("ALTER TABLE projects ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;");
   }
@@ -1514,6 +1524,11 @@ function initSchema(database: Database.Database) {
   }
   if (!hasVmSize) {
     database.exec("ALTER TABLE projects ADD COLUMN vm_size TEXT NOT NULL DEFAULT 'medium';");
+  }
+  if (!hasLifecycleStatus) {
+    database.exec(
+      "ALTER TABLE projects ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'active';"
+    );
   }
 
   const initiativeColumns = database
@@ -2078,8 +2093,8 @@ export function upsertProject(p: Omit<ProjectRow, "created_at" | "updated_at"> &
   const updatedAt = p.updated_at || now;
   database
     .prepare(
-      `INSERT INTO projects (id, path, name, description, success_criteria, success_metrics, type, stage, status, priority, starred, hidden, auto_shift_enabled, tags, isolation_mode, vm_size, last_run_at, created_at, updated_at)
-       VALUES (@id, @path, @name, @description, @success_criteria, @success_metrics, @type, @stage, @status, @priority, @starred, @hidden, @auto_shift_enabled, @tags, @isolation_mode, @vm_size, @last_run_at, @created_at, @updated_at)
+      `INSERT INTO projects (id, path, name, description, success_criteria, success_metrics, type, stage, status, lifecycle_status, priority, starred, hidden, auto_shift_enabled, tags, isolation_mode, vm_size, last_run_at, created_at, updated_at)
+       VALUES (@id, @path, @name, @description, @success_criteria, @success_metrics, @type, @stage, @status, @lifecycle_status, @priority, @starred, @hidden, @auto_shift_enabled, @tags, @isolation_mode, @vm_size, @last_run_at, @created_at, @updated_at)
        ON CONFLICT(id) DO UPDATE SET
          path=excluded.path,
          name=excluded.name,
@@ -2089,6 +2104,7 @@ export function upsertProject(p: Omit<ProjectRow, "created_at" | "updated_at"> &
          type=excluded.type,
          stage=excluded.stage,
          status=excluded.status,
+         lifecycle_status=excluded.lifecycle_status,
          priority=excluded.priority,
          starred=projects.starred,
         hidden=projects.hidden,
@@ -2269,6 +2285,18 @@ export function updateProjectStatus(id: string, status: ProjectRow["status"]): P
   database
     .prepare("UPDATE projects SET status = ?, updated_at = ? WHERE id = ?")
     .run(status, now, id);
+  return findProjectById(id);
+}
+
+export function updateProjectLifecycleStatus(
+  id: string,
+  lifecycle_status: ProjectLifecycleStatus
+): ProjectRow | null {
+  const database = getDb();
+  const now = new Date().toISOString();
+  database
+    .prepare("UPDATE projects SET lifecycle_status = ?, updated_at = ? WHERE id = ?")
+    .run(lifecycle_status, now, id);
   return findProjectById(id);
 }
 

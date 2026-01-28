@@ -637,7 +637,9 @@ function formatEscalationChangeSummary(escalation: NarrationEscalation): string 
 }
 
 function buildActiveProjectSummaries(projects: ProjectRow[]): NarrationProjectSummary[] {
-  const activeProjects = projects.filter((project) => project.status !== "parked");
+  const activeProjects = projects.filter(
+    (project) => project.status !== "parked" && project.lifecycle_status !== "archived"
+  );
   if (!activeProjects.length) return [];
   const projectIds = activeProjects.map((project) => project.id);
   const projectIdSet = new Set(projectIds);
