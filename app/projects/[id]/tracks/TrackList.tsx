@@ -11,6 +11,7 @@ import {
 } from "../../../../lib/api";
 import { TrackCard } from "./TrackCard";
 import { TrackModal } from "./TrackModal";
+import { TrackOrganizerPanel } from "./TrackOrganizerPanel";
 
 type TrackFormValues = {
   name: string;
@@ -209,6 +210,14 @@ export function TrackList({ projectId }: { projectId: string }) {
           Create Track
         </button>
       </section>
+
+      <TrackOrganizerPanel
+        projectId={projectId}
+        tracks={tracks}
+        onApplied={() => {
+          void loadTracks();
+        }}
+      />
 
       {error && <div className="error">{error}</div>}
       {actionError && !modalOpen && !deleteModalOpen && (

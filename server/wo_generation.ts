@@ -758,6 +758,8 @@ export async function generateWorkOrderDraft(params: {
     validation_warnings: [],
     trackId: null,
     track: null,
+    trackIds: [],
+    tracks: [],
   };
 
   return {

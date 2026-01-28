@@ -29,6 +29,8 @@ type DependencyNode = {
   dependents: string[];
   trackId: string | null;
   track: { id: string; name: string; color: string | null } | null;
+  trackIds: string[];
+  tracks: { id: string; name: string; color: string | null }[];
   projectId: string;
   projectName: string;
   isExternal: boolean;
@@ -103,8 +105,17 @@ const HIDDEN_EDGE_STUB = 40;
 const DEFAULT_TRACK_COLOR = "#334155";
 const BASE_NODE_FILL = "#2d2d44";
 
+const resolveTrackIds = (node: DependencyNode): string[] => {
+  const ids = Array.isArray(node.trackIds) ? node.trackIds : [];
+  if (ids.length > 0) return ids;
+  if (node.track?.id) return [node.track.id];
+  if (node.trackId) return [node.trackId];
+  return [];
+};
+
 const resolveTrackId = (node: DependencyNode): string => {
-  return node.track?.id ?? node.trackId ?? UNASSIGNED_LANE_ID;
+  const ids = resolveTrackIds(node);
+  return ids[0] ?? UNASSIGNED_LANE_ID;
 };
 
 const parseHexColor = (value: string) => {
@@ -328,13 +339,16 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
     if (!data) return { counts, latestActivity };
 
     for (const node of data.nodes) {
-      const trackId = resolveTrackId(node);
-      counts.set(trackId, (counts.get(trackId) ?? 0) + 1);
-      if (node.updatedAt) {
-        const timestamp = Date.parse(node.updatedAt);
-        if (!Number.isNaN(timestamp)) {
-          const current = latestActivity.get(trackId) ?? 0;
-          if (timestamp > current) latestActivity.set(trackId, timestamp);
+      const ids = resolveTrackIds(node);
+      const trackIds = ids.length > 0 ? ids : [UNASSIGNED_LANE_ID];
+      for (const trackId of trackIds) {
+        counts.set(trackId, (counts.get(trackId) ?? 0) + 1);
+        if (node.updatedAt) {
+          const timestamp = Date.parse(node.updatedAt);
+          if (!Number.isNaN(timestamp)) {
+            const current = latestActivity.get(trackId) ?? 0;
+            if (timestamp > current) latestActivity.set(trackId, timestamp);
+          }
         }
       }
     }
@@ -358,32 +372,37 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
     }
 
     for (const node of data.nodes) {
-      const trackId = node.track?.id ?? node.trackId;
-      if (!trackId) continue;
-      const existing = byId.get(trackId);
-      const nodeName = node.track?.name ?? trackId;
-      const nodeColor = node.track?.color ?? null;
-      if (existing) {
-        if (node.track?.name && existing.name === trackId) {
-          existing.name = node.track.name;
+      const nodeTrackIds = resolveTrackIds(node);
+      if (nodeTrackIds.length === 0) continue;
+      for (const trackId of nodeTrackIds) {
+        const trackMeta =
+          (node.tracks ?? []).find((track) => track.id === trackId) ??
+          (node.track?.id === trackId ? node.track : null);
+        const existing = byId.get(trackId);
+        const nodeName = trackMeta?.name ?? trackId;
+        const nodeColor = trackMeta?.color ?? null;
+        if (existing) {
+          if (trackMeta?.name && existing.name === trackId) {
+            existing.name = trackMeta.name;
+          }
+          if (!existing.color && nodeColor) {
+            existing.color = nodeColor;
+          }
+          existing.count = trackStats.counts.get(trackId) ?? existing.count;
+        } else {
+          byId.set(trackId, {
+            id: trackId,
+            name: nodeName,
+            color: nodeColor,
+            sortOrder: null,
+            isUnassigned: false,
+            count: trackStats.counts.get(trackId) ?? 0,
+          });
         }
-        if (!existing.color && nodeColor) {
-          existing.color = nodeColor;
-        }
-        existing.count = trackStats.counts.get(trackId) ?? existing.count;
-      } else {
-        byId.set(trackId, {
-          id: trackId,
-          name: nodeName,
-          color: nodeColor,
-          sortOrder: null,
-          isUnassigned: false,
-          count: trackStats.counts.get(trackId) ?? 0,
-        });
       }
     }
 
-    const hasUnassigned = data.nodes.some((node) => !node.track?.id && !node.trackId);
+    const hasUnassigned = data.nodes.some((node) => resolveTrackIds(node).length === 0);
     if (hasUnassigned && !byId.has(UNASSIGNED_LANE_ID)) {
       byId.set(UNASSIGNED_LANE_ID, {
         id: UNASSIGNED_LANE_ID,
@@ -450,6 +469,16 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
     return map;
   }, [data]);
 
+  const nodeTrackIdLists = useMemo(() => {
+    const map = new Map<string, string[]>();
+    if (!data) return map;
+    for (const node of data.nodes) {
+      const ids = resolveTrackIds(node);
+      map.set(node.id, ids.length > 0 ? ids : [UNASSIGNED_LANE_ID]);
+    }
+    return map;
+  }, [data]);
+
   const trackColorById = useMemo(() => {
     const map = new Map<string, string>();
     for (const track of trackOptions) {
@@ -463,11 +492,13 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
     if (!visibleTrackIds) return new Set(data.nodes.map((node) => node.id));
     const set = new Set<string>();
     for (const node of data.nodes) {
-      const trackId = nodeTrackIds.get(node.id) ?? UNASSIGNED_LANE_ID;
-      if (visibleTrackIds.has(trackId)) set.add(node.id);
+      const trackIds = nodeTrackIdLists.get(node.id) ?? [UNASSIGNED_LANE_ID];
+      if (trackIds.some((trackId) => visibleTrackIds.has(trackId))) {
+        set.add(node.id);
+      }
     }
     return set;
-  }, [data, nodeTrackIds, visibleTrackIds]);
+  }, [data, nodeTrackIdLists, visibleTrackIds]);
 
   const nodeCountLabel = useMemo(() => {
     if (!data) return "";
@@ -623,10 +654,14 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       for (const node of visibleNodes) {
         const laneId = resolveTrackId(node);
         const trackMeta = trackById.get(laneId);
+        const primaryTrack = (node.tracks ?? [])[0] ?? node.track ?? null;
         const isUnassigned = trackMeta?.isUnassigned ?? laneId === UNASSIGNED_LANE_ID;
         const laneName =
-          trackMeta?.name ?? node.track?.name ?? laneId ?? (isUnassigned ? "Unassigned" : "Unknown track");
-        const laneColor = trackMeta?.color ?? node.track?.color ?? DEFAULT_TRACK_COLOR;
+          trackMeta?.name ??
+          primaryTrack?.name ??
+          laneId ??
+          (isUnassigned ? "Unassigned" : "Unknown track");
+        const laneColor = trackMeta?.color ?? primaryTrack?.color ?? DEFAULT_TRACK_COLOR;
         const laneOrder = trackMeta?.sortOrder ?? null;
 
         const existing = lanesById.get(laneId);
@@ -1244,7 +1279,9 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
 
               const statusColor = STATUS_COLORS[node.status];
               const trackId = nodeTrackIds.get(node.id) ?? UNASSIGNED_LANE_ID;
-              const trackColor = node.track?.color ?? trackColorById.get(trackId) ?? DEFAULT_TRACK_COLOR;
+              const primaryTrack = (node.tracks ?? [])[0] ?? node.track ?? null;
+              const trackColor =
+                primaryTrack?.color ?? trackColorById.get(trackId) ?? DEFAULT_TRACK_COLOR;
               const nodeFill = trackTint(trackColor);
               const strokeColor = inCycle
                 ? "#ef4444"

@@ -4,6 +4,8 @@ export type Track = {
   name: string;
   description: string | null;
   goal: string | null;
+  status: "active" | "paused" | "completed";
+  parentTrackId: string | null;
   color: string | null;
   icon: string | null;
   sortOrder: number;
@@ -14,10 +16,54 @@ export type Track = {
   readyCount?: number;
 };
 
+export type TrackOrganizationMode = "initial" | "incremental" | "reorg";
+
+export type TrackOrganizationTrack = {
+  id: string;
+  name: string;
+  goal: string | null;
+  status: "active" | "paused" | "completed";
+  parent_track_id: string | null;
+};
+
+export type TrackOrganizationAssignment = {
+  wo_id: string;
+  track_ids: string[];
+};
+
+export type TrackOrganizationSuggestion = {
+  tracks: TrackOrganizationTrack[];
+  assignments: TrackOrganizationAssignment[];
+  recommendations: string[];
+};
+
+export type TrackOrganizationScope = {
+  total_work_orders: number;
+  unassigned_work_orders: number;
+  assigned_work_orders: number;
+};
+
+export type TrackOrganizationResult = {
+  mode: TrackOrganizationMode;
+  scope: TrackOrganizationScope;
+  suggestions: TrackOrganizationSuggestion;
+  warnings: string[];
+};
+
+export type TrackOrganizationApplyResult = {
+  created_tracks: Track[];
+  updated_tracks: Track[];
+  assignments_applied: number;
+  assignments_cleared: number;
+  warnings: string[];
+};
+
 export type CreateTrackInput = {
   name: string;
   description?: string | null;
   goal?: string | null;
+  status?: "active" | "paused" | "completed";
+  parentTrackId?: string | null;
   color?: string | null;
   icon?: string | null;
   sortOrder?: number;
@@ -27,6 +73,8 @@ export type UpdateTrackInput = {
   name?: string;
   description?: string | null;
   goal?: string | null;
+  status?: "active" | "paused" | "completed";
+  parentTrackId?: string | null;
   color?: string | null;
   icon?: string | null;
   sortOrder?: number;
@@ -35,6 +83,8 @@ export type UpdateTrackInput = {
 type TracksResponse = { tracks: Track[]; error?: string };
 type TrackResponse = { track: Track; error?: string };
 type ErrorResponse = { error?: string };
+type TrackOrganizationResponse = TrackOrganizationResult & { error?: string };
+type TrackOrganizationApplyResponse = TrackOrganizationApplyResult & { error?: string };
 
 export async function listTracks(projectId: string): Promise<Track[]> {
   const res = await fetch(
@@ -133,4 +183,59 @@ export async function reorderTracks(
       updateTrack(projectId, trackId, { sortOrder: index })
     )
   );
+}
+
+export async function generateTrackOrganizationSuggestions(
+  projectId: string,
+  mode: TrackOrganizationMode
+): Promise<TrackOrganizationResult> {
+  const res = await fetch(
+    `/api/repos/${encodeURIComponent(projectId)}/tracks/organize`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    }
+  ).catch(() => null);
+
+  if (!res) {
+    throw new Error("Control Center server unreachable");
+  }
+
+  const json = (await res.json().catch(() => null)) as TrackOrganizationResponse | null;
+  if (!res.ok) {
+    throw new Error(json?.error ?? "Failed to generate track suggestions");
+  }
+  if (!json) {
+    throw new Error("Track suggestions payload missing");
+  }
+  return json;
+}
+
+export async function applyTrackOrganizationSuggestions(
+  projectId: string,
+  mode: TrackOrganizationMode,
+  suggestions: TrackOrganizationSuggestion
+): Promise<TrackOrganizationApplyResult> {
+  const res = await fetch(
+    `/api/repos/${encodeURIComponent(projectId)}/tracks/organize/apply`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, suggestions }),
+    }
+  ).catch(() => null);
+
+  if (!res) {
+    throw new Error("Control Center server unreachable");
+  }
+
+  const json = (await res.json().catch(() => null)) as TrackOrganizationApplyResponse | null;
+  if (!res.ok) {
+    throw new Error(json?.error ?? "Failed to apply track suggestions");
+  }
+  if (!json) {
+    throw new Error("Track apply payload missing");
+  }
+  return json;
 }

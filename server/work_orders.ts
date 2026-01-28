@@ -71,6 +71,8 @@ export type WorkOrder = {
   validation_warnings: string[];
   trackId: string | null;
   track: { id: string; name: string; color: string | null } | null;
+  trackIds: string[];
+  tracks: { id: string; name: string; color: string | null }[];
 };
 
 export type WorkOrderSummary = Pick<
@@ -303,6 +305,8 @@ function normalizeWorkOrder(
     validation_warnings,
     trackId: null,
     track: null,
+    trackIds: [],
+    tracks: [],
   };
 }
 
@@ -318,6 +322,8 @@ function serializeWorkOrderFile(
 type WorkOrderTrackInfo = {
   trackId: string | null;
   track: { id: string; name: string; color: string | null } | null;
+  trackIds: string[];
+  tracks: { id: string; name: string; color: string | null }[];
 };
 
 type WorkOrderRowInput = {
@@ -384,32 +390,101 @@ function loadWorkOrderTrackInfo(
   const database = getDb();
   const rows = database
     .prepare(
-      `SELECT wo.id as work_order_id,
-              wo.track_id as track_id,
+      `SELECT wt.wo_id as work_order_id,
+              t.id as track_id,
               t.name as track_name,
-              t.color as track_color
-       FROM work_orders wo
-       LEFT JOIN tracks t ON t.id = wo.track_id
-       WHERE wo.project_id = ? AND wo.id IN (${buildInClause(workOrderIds)})`
+              t.color as track_color,
+              t.sort_order as track_sort_order
+       FROM wo_tracks wt
+       JOIN tracks t ON t.id = wt.track_id
+       WHERE wt.project_id = ? AND wt.wo_id IN (${buildInClause(workOrderIds)})`
     )
     .all(projectId, ...workOrderIds) as Array<{
     work_order_id: string;
-    track_id: string | null;
+    track_id: string;
     track_name: string | null;
     track_color: string | null;
+    track_sort_order: number | null;
   }>;
 
-  const map = new Map<string, WorkOrderTrackInfo>();
+  const map = new Map<
+    string,
+    Array<{ id: string; name: string; color: string | null; sortOrder: number }>
+  >();
   for (const row of rows) {
-    const trackId = typeof row.track_id === "string" ? row.track_id : null;
-    const trackName = typeof row.track_name === "string" ? row.track_name : null;
-    const trackColor = typeof row.track_color === "string" ? row.track_color : null;
-    map.set(row.work_order_id, {
-      trackId,
-      track: trackId && trackName ? { id: trackId, name: trackName, color: trackColor } : null,
+    const name = row.track_name ?? row.track_id;
+    const list = map.get(row.work_order_id) ?? [];
+    list.push({
+      id: row.track_id,
+      name,
+      color: row.track_color ?? null,
+      sortOrder:
+        typeof row.track_sort_order === "number" && Number.isFinite(row.track_sort_order)
+          ? row.track_sort_order
+          : 0,
+    });
+    map.set(row.work_order_id, list);
+  }
+
+  const missing = workOrderIds.filter((id) => !map.has(id) || map.get(id)?.length === 0);
+  if (missing.length > 0) {
+    const fallbackRows = database
+      .prepare(
+        `SELECT wo.id as work_order_id,
+                wo.track_id as track_id,
+                t.name as track_name,
+                t.color as track_color,
+                t.sort_order as track_sort_order
+         FROM work_orders wo
+         LEFT JOIN tracks t ON t.id = wo.track_id
+         WHERE wo.project_id = ? AND wo.id IN (${buildInClause(missing)})`
+      )
+      .all(projectId, ...missing) as Array<{
+      work_order_id: string;
+      track_id: string | null;
+      track_name: string | null;
+      track_color: string | null;
+      track_sort_order: number | null;
+    }>;
+
+    for (const row of fallbackRows) {
+      if (!row.track_id) continue;
+      const name = row.track_name ?? row.track_id;
+      const list = map.get(row.work_order_id) ?? [];
+      if (list.some((item) => item.id === row.track_id)) continue;
+      list.push({
+        id: row.track_id,
+        name,
+        color: row.track_color ?? null,
+        sortOrder:
+          typeof row.track_sort_order === "number" && Number.isFinite(row.track_sort_order)
+            ? row.track_sort_order
+            : 0,
+      });
+      map.set(row.work_order_id, list);
+    }
+  }
+
+  const infoMap = new Map<string, WorkOrderTrackInfo>();
+  for (const workOrderId of workOrderIds) {
+    const entries = map.get(workOrderId) ?? [];
+    const sorted = entries
+      .slice()
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+    const tracks = sorted.map((item) => ({
+      id: item.id,
+      name: item.name,
+      color: item.color,
+    }));
+    const primary = tracks[0] ?? null;
+    infoMap.set(workOrderId, {
+      trackId: primary?.id ?? null,
+      track: primary,
+      trackIds: tracks.map((item) => item.id),
+      tracks,
     });
   }
-  return map;
+  return infoMap;
 }
 
 export function listWorkOrders(repoPath: string): WorkOrder[] {
@@ -463,6 +538,8 @@ export function listWorkOrders(repoPath: string): WorkOrder[] {
       if (!info) continue;
       wo.trackId = info.trackId;
       wo.track = info.track;
+      wo.trackIds = info.trackIds;
+      wo.tracks = info.tracks;
     }
   }
 

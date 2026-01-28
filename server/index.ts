@@ -133,6 +133,10 @@ import { generateWorkOrderDraft } from "./wo_generation.js";
 import { generateNarration } from "./narration.js";
 import { generateNarrationAudio } from "./narration_tts.js";
 import {
+  applyTrackOrganizationSuggestions,
+  generateTrackOrganizationSuggestions,
+} from "./track_organization.js";
+import {
   deleteNetworkWhitelistEntry,
   getAgentMonitoringSettings,
   getChatSettingsResponse,
@@ -3894,19 +3898,23 @@ type TrackCounts = {
   readyCount: number;
 };
 
+const TRACK_STATUS_SET = new Set(["active", "paused", "completed"]);
+
 function buildTrackCounts(workOrders: WorkOrder[]): Map<string, TrackCounts> {
   const counts = new Map<string, TrackCounts>();
   for (const wo of workOrders) {
-    if (!wo.trackId) continue;
-    const entry = counts.get(wo.trackId) ?? {
-      workOrderCount: 0,
-      doneCount: 0,
-      readyCount: 0,
-    };
-    entry.workOrderCount += 1;
-    if (wo.status === "done") entry.doneCount += 1;
-    if (wo.status === "ready") entry.readyCount += 1;
-    counts.set(wo.trackId, entry);
+    const ids = wo.trackIds.length > 0 ? wo.trackIds : wo.trackId ? [wo.trackId] : [];
+    for (const trackId of ids) {
+      const entry = counts.get(trackId) ?? {
+        workOrderCount: 0,
+        doneCount: 0,
+        readyCount: 0,
+      };
+      entry.workOrderCount += 1;
+      if (wo.status === "done") entry.doneCount += 1;
+      if (wo.status === "ready") entry.readyCount += 1;
+      counts.set(trackId, entry);
+    }
   }
   return counts;
 }
@@ -4058,6 +4066,29 @@ app.post("/repos/:id/tracks", (req, res) => {
   if (goalValue !== undefined && goalValue !== null && typeof goalValue !== "string") {
     return res.status(400).json({ error: "`goal` must be a string" });
   }
+  const statusValue = payload.status;
+  if (statusValue !== undefined && statusValue !== null && typeof statusValue !== "string") {
+    return res.status(400).json({ error: "`status` must be a string" });
+  }
+  if (typeof statusValue === "string" && !TRACK_STATUS_SET.has(statusValue)) {
+    return res.status(400).json({ error: "`status` must be active, paused, or completed" });
+  }
+  const parentTrackValue = payload.parentTrackId ?? payload.parent_track_id;
+  if (
+    parentTrackValue !== undefined &&
+    parentTrackValue !== null &&
+    typeof parentTrackValue !== "string"
+  ) {
+    return res.status(400).json({ error: "`parentTrackId` must be a string" });
+  }
+  const parentTrackId =
+    typeof parentTrackValue === "string" ? normalizeOptionalText(parentTrackValue) : null;
+  if (parentTrackId) {
+    const parent = getTrackById(project.id, parentTrackId);
+    if (!parent) {
+      return res.status(400).json({ error: "parent track not found" });
+    }
+  }
   const colorValue = payload.color;
   if (colorValue !== undefined && colorValue !== null && typeof colorValue !== "string") {
     return res.status(400).json({ error: "`color` must be a string" });
@@ -4082,6 +4113,8 @@ app.post("/repos/:id/tracks", (req, res) => {
         ? normalizeOptionalText(descriptionValue)
         : null,
     goal: typeof goalValue === "string" ? normalizeOptionalText(goalValue) : null,
+    status: typeof statusValue === "string" ? (statusValue as "active" | "paused" | "completed") : undefined,
+    parent_track_id: parentTrackId,
     color: typeof colorValue === "string" ? normalizeOptionalText(colorValue) : null,
     icon: typeof iconValue === "string" ? normalizeOptionalText(iconValue) : null,
     sort_order:
@@ -4100,7 +4133,7 @@ app.get("/repos/:id/tracks/:trackId", (req, res) => {
   if (!track) return res.status(404).json({ error: "track not found" });
 
   const workOrders = listWorkOrders(project.path).filter(
-    (wo) => wo.trackId === trackId
+    (wo) => wo.trackIds.includes(trackId) || wo.trackId === trackId
   );
   const counts: TrackCounts = {
     workOrderCount: workOrders.length,
@@ -4121,6 +4154,8 @@ app.put("/repos/:id/tracks/:trackId", (req, res) => {
     name?: string;
     description?: string | null;
     goal?: string | null;
+    status?: "active" | "paused" | "completed";
+    parentTrackId?: string | null;
     color?: string | null;
     icon?: string | null;
     sortOrder?: number;
@@ -4148,6 +4183,25 @@ app.put("/repos/:id/tracks/:trackId", (req, res) => {
       patch.goal = normalizeOptionalText(payload.goal);
     } else {
       return res.status(400).json({ error: "`goal` must be a string or null" });
+    }
+  }
+  if ("status" in payload) {
+    if (payload.status === null) {
+      return res.status(400).json({ error: "`status` cannot be null" });
+    }
+    if (typeof payload.status !== "string" || !TRACK_STATUS_SET.has(payload.status)) {
+      return res.status(400).json({ error: "`status` must be active, paused, or completed" });
+    }
+    patch.status = payload.status as "active" | "paused" | "completed";
+  }
+  if ("parentTrackId" in payload || "parent_track_id" in payload) {
+    const rawParent = payload.parentTrackId ?? payload.parent_track_id;
+    if (rawParent === null) {
+      patch.parentTrackId = null;
+    } else if (typeof rawParent === "string") {
+      patch.parentTrackId = normalizeOptionalText(rawParent);
+    } else {
+      return res.status(400).json({ error: "`parentTrackId` must be a string or null" });
     }
   }
   if ("color" in payload) {
@@ -4182,6 +4236,16 @@ app.put("/repos/:id/tracks/:trackId", (req, res) => {
     return res.status(400).json({ error: "No valid fields to update" });
   }
 
+  if (patch.parentTrackId) {
+    if (patch.parentTrackId === trackId) {
+      return res.status(400).json({ error: "parent track cannot be the track itself" });
+    }
+    const parent = getTrackById(project.id, patch.parentTrackId);
+    if (!parent) {
+      return res.status(400).json({ error: "parent track not found" });
+    }
+  }
+
   const track = updateTrack(project.id, trackId, patch);
   if (!track) return res.status(404).json({ error: "track not found" });
   return res.json({ track });
@@ -4195,6 +4259,55 @@ app.delete("/repos/:id/tracks/:trackId", (req, res) => {
   const deleted = deleteTrack(project.id, trackId);
   if (!deleted) return res.status(404).json({ error: "track not found" });
   return res.json({ ok: true });
+});
+
+app.post("/repos/:id/tracks/organize", async (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const mode = req.body?.mode;
+  try {
+    const result = await generateTrackOrganizationSuggestions({
+      projectId: project.id,
+      mode,
+    });
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : "failed to generate track suggestions",
+    });
+  }
+});
+
+app.post("/repos/:id/tracks/organize/apply", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const mode = req.body?.mode;
+  const suggestions = req.body?.suggestions;
+  if (!suggestions || typeof suggestions !== "object") {
+    return res.status(400).json({ error: "`suggestions` is required" });
+  }
+  const modeValue = typeof mode === "string" ? mode : "";
+  const normalizedMode =
+    modeValue === "initial" || modeValue === "incremental" || modeValue === "reorg"
+      ? modeValue
+      : "incremental";
+
+  try {
+    const result = applyTrackOrganizationSuggestions({
+      projectId: project.id,
+      mode: normalizedMode,
+      suggestions,
+    });
+    return res.json(result);
+  } catch (err) {
+    return res
+      .status(500)
+      .json({ error: err instanceof Error ? err.message : "failed to apply track suggestions" });
+  }
 });
 
 app.get("/repos/:id/tech-tree", (req, res) => {
@@ -4231,6 +4344,8 @@ app.get("/repos/:id/tech-tree", (req, res) => {
     dependents: string[];
     trackId: string | null;
     track: { id: string; name: string; color: string | null } | null;
+    trackIds: string[];
+    tracks: { id: string; name: string; color: string | null }[];
     projectId: string;
     projectName: string;
     isExternal: boolean;
@@ -4263,6 +4378,8 @@ app.get("/repos/:id/tech-tree", (req, res) => {
         dependents: [],
         trackId: null,
         track: null,
+        trackIds: [],
+        tracks: [],
         projectId: parsed.projectId,
         projectName: lookup?.project.name ?? parsed.projectId,
         isExternal: true,
@@ -4311,6 +4428,8 @@ app.get("/repos/:id/tech-tree", (req, res) => {
     dependents: dependentsMap.get(wo.id) ?? [],
     trackId: wo.trackId,
     track: wo.track,
+    trackIds: wo.trackIds,
+    tracks: wo.tracks,
     projectId: project.id,
     projectName: project.name,
     isExternal: false,

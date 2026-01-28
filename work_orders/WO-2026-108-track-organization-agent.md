@@ -37,9 +37,9 @@ tags:
   - agent
   - tech-tree
 estimate_hours: 4
-status: ready
+status: you_review
 created_at: 2026-01-14
-updated_at: 2026-01-26
+updated_at: 2026-01-28
 depends_on: []
 era: v2
 ---
