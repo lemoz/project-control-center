@@ -8,7 +8,8 @@ import styles from "./live.module.css";
 // Helpers
 // ---------------------------------------------------------------------------
 
-const BUILDING_WORK_ORDER_STATUSES = new Set(["building", "ai_review", "you_review"]);
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4010";
 
 const HEALTH_COLORS: Record<string, string> = {
   healthy: "#22c55e",
@@ -50,89 +51,137 @@ type ProjectDetailPanelProps = {
   onClose: () => void;
 };
 
-type RepoSummary = {
-  id: string;
-  name: string;
-  stage?: string;
-  status?: string;
-  priority?: number;
-};
-
-type WorkOrder = {
-  id: string;
-  title: string;
-  status: string;
-  priority: number;
-};
-
-type WorkOrdersResponse = {
-  project?: { id: string; name: string };
-  work_orders?: WorkOrder[];
-};
-
-type GlobalContextProject = {
-  id: string;
-  name: string;
-  status: string;
-  health: string;
-  budget?: {
+type ShiftContextResponse = {
+  project: {
+    id: string;
+    name: string;
+    stage?: string;
+    status?: string;
+    priority?: number;
+  };
+  lifecycle?: {
     status: string;
-    remaining_usd: number;
-    allocation_usd: number;
+    metrics?: {
+      failure_rate_30d: number;
+      days_since_last_activity: number;
+    };
+  };
+  economy?: {
+    budget_remaining_usd: number;
     daily_drip_usd: number;
     runway_days: number;
+    budget_status: string;
   };
-  active_shift: { id: string; started_at: string; agent_id: string | null } | null;
+  work_orders?: {
+    summary: { ready: number; backlog: number; done: number; in_progress: number };
+  };
+  recent_runs?: Array<{
+    id: string;
+    work_order_id: string;
+    status: string;
+    error?: string | null;
+  }>;
+  communications_inbox?: Array<{
+    id: string;
+    intent: string;
+    type: string;
+    summary: string;
+  }>;
+};
+
+type ActiveShiftResponse = {
+  id: string;
+  started_at: string;
+  agent_id: string | null;
+} | null;
+
+type PanelData = {
+  name: string;
+  stage: string;
+  status: string | null;
+  priority: number | null;
+  health: string;
+  budget: { remaining_usd: number; daily_drip_usd: number; runway_days: number } | null;
+  woCounts: { ready: number; building: number; blocked: number; done: number };
   escalations: Array<{ id: string; type: string; summary: string }>;
-  work_orders: { ready: number; building: number; blocked: number };
-  recent_runs: Array<{ id: string; wo_id: string; status: string; outcome: string | null }>;
-  last_activity: string | null;
-};
-
-type GlobalContextResponse = {
-  projects: GlobalContextProject[];
-  economy: unknown;
-  assembled_at: string;
+  recentRuns: Array<{ id: string; status: string; outcome: string | null }>;
+  activeShift: { id: string; started_at: string; agent_id: string | null } | null;
 };
 
 // ---------------------------------------------------------------------------
-// Data loaders
+// Data loaders — fetch directly from API server (bypasses Next.js proxy)
 // ---------------------------------------------------------------------------
 
-async function fetchRepoSummary(projectId: string): Promise<RepoSummary | null> {
-  const res = await fetch(`/api/repos/${encodeURIComponent(projectId)}`, { cache: "no-store" });
-  const json = (await res.json().catch(() => null)) as RepoSummary | { error?: string } | null;
-  if (!res.ok) {
-    const error = (json as { error?: string } | null)?.error || "failed to load project";
-    throw new Error(error);
-  }
-  return (json as RepoSummary) ?? null;
+async function fetchShiftContext(projectId: string): Promise<ShiftContextResponse> {
+  const res = await fetch(
+    `${API_BASE}/projects/${encodeURIComponent(projectId)}/shift-context`,
+    { cache: "no-store" }
+  );
+  if (!res.ok) throw new Error("failed to load project context");
+  return res.json();
 }
 
-async function fetchGlobalContext(): Promise<GlobalContextResponse> {
-  const res = await fetch("/api/global/context", { cache: "no-store" });
-  const json = (await res.json().catch(() => null)) as GlobalContextResponse | { error?: string } | null;
-  if (!res.ok) {
-    const error = (json as { error?: string } | null)?.error || "failed to load global context";
-    throw new Error(error);
-  }
-  const ctx = json as GlobalContextResponse | null;
-  if (!ctx || !Array.isArray(ctx.projects)) {
-    throw new Error("missing global context");
-  }
-  return ctx;
+async function fetchActiveShift(projectId: string): Promise<ActiveShiftResponse> {
+  const res = await fetch(
+    `${API_BASE}/projects/${encodeURIComponent(projectId)}/shifts/active`,
+    { cache: "no-store" }
+  );
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data?.id ? data : null;
 }
 
-async function fetchWorkOrders(projectId: string): Promise<WorkOrdersResponse> {
-  const res = await fetch(`/api/repos/${encodeURIComponent(projectId)}/work-orders`, {
-    cache: "no-store",
-  });
-  const json = (await res.json().catch(() => null)) as WorkOrdersResponse | { error?: string } | null;
-  if (!res.ok) {
-    const error = (json as { error?: string } | null)?.error || "failed to load work orders";
-    throw new Error(error);
-  }
-  return (json as WorkOrdersResponse) ?? {};
+function deriveHealth(ctx: ShiftContextResponse): string {
+  const status = ctx.project.status;
+  if (status === "blocked") return "blocked";
+  if (status === "paused" || status === "parked") return "stalled";
+  const failureRate = ctx.lifecycle?.metrics?.failure_rate_30d ?? 0;
+  if (failureRate >= 0.6) return "failing";
+  const daysSince = ctx.lifecycle?.metrics?.days_since_last_activity ?? 0;
+  const ready = ctx.work_orders?.summary.ready ?? 0;
+  if (ready > 0 && daysSince >= 3) return "stalled";
+  const escalations = (ctx.communications_inbox ?? []).filter(
+    (c) => c.intent === "escalation"
+  );
+  if (escalations.length > 0) return "attention_needed";
+  return "healthy";
+}
+
+function buildPanelData(
+  ctx: ShiftContextResponse,
+  shift: ActiveShiftResponse
+): PanelData {
+  const woSummary = ctx.work_orders?.summary;
+  const escalations = (ctx.communications_inbox ?? []).filter(
+    (c) => c.intent === "escalation"
+  );
+  return {
+    name: ctx.project.name,
+    stage: ctx.project.stage ?? "Unspecified",
+    status: ctx.project.status ?? null,
+    priority: ctx.project.priority ?? null,
+    health: deriveHealth(ctx),
+    budget: ctx.economy
+      ? {
+          remaining_usd: ctx.economy.budget_remaining_usd,
+          daily_drip_usd: ctx.economy.daily_drip_usd,
+          runway_days: ctx.economy.runway_days,
+        }
+      : null,
+    woCounts: {
+      ready: woSummary?.ready ?? 0,
+      building: woSummary?.in_progress ?? 0,
+      blocked: 0,
+      done: woSummary?.done ?? 0,
+    },
+    escalations: escalations.map((c) => ({ id: c.id, type: c.type, summary: c.summary })),
+    recentRuns: (ctx.recent_runs ?? []).slice(0, 5).map((r) => ({
+      id: r.id,
+      status: r.status,
+      outcome: r.error ? "Failed" : null,
+    })),
+    activeShift: shift,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -140,10 +189,7 @@ async function fetchWorkOrders(projectId: string): Promise<WorkOrdersResponse> {
 // ---------------------------------------------------------------------------
 
 export function ProjectDetailPanel({ projectId, onClose }: ProjectDetailPanelProps) {
-  const [projectSummary, setProjectSummary] = useState<RepoSummary | null>(null);
-  const [globalProject, setGlobalProject] = useState<GlobalContextProject | null>(null);
-  const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
-  const [fallbackName, setFallbackName] = useState<string | null>(null);
+  const [data, setData] = useState<PanelData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -152,61 +198,15 @@ export function ProjectDetailPanel({ projectId, onClose }: ProjectDetailPanelPro
     setLoading(true);
     setError(null);
 
-    Promise.allSettled([
-      fetchRepoSummary(projectId),
-      fetchGlobalContext(),
-      fetchWorkOrders(projectId),
-    ])
-      .then(([repoResult, globalResult, workOrdersResult]) => {
+    Promise.all([fetchShiftContext(projectId), fetchActiveShift(projectId)])
+      .then(([ctx, shift]) => {
         if (cancelled) return;
-        const errors: string[] = [];
-
-        if (repoResult.status === "fulfilled") {
-          setProjectSummary(repoResult.value);
-        } else {
-          errors.push(
-            repoResult.reason instanceof Error
-              ? repoResult.reason.message
-              : "failed to load project"
-          );
-          setProjectSummary(null);
-        }
-
-        if (globalResult.status === "fulfilled") {
-          const match =
-            globalResult.value.projects.find((item) => item.id === projectId) ?? null;
-          setGlobalProject(match);
-        } else {
-          errors.push(
-            globalResult.reason instanceof Error
-              ? globalResult.reason.message
-              : "failed to load global context"
-          );
-          setGlobalProject(null);
-        }
-
-        if (workOrdersResult.status === "fulfilled") {
-          const list = Array.isArray(workOrdersResult.value.work_orders)
-            ? workOrdersResult.value.work_orders
-            : [];
-          setWorkOrders(list);
-          setFallbackName(workOrdersResult.value.project?.name ?? null);
-        } else {
-          errors.push(
-            workOrdersResult.reason instanceof Error
-              ? workOrdersResult.reason.message
-              : "failed to load work orders"
-          );
-          setWorkOrders([]);
-          setFallbackName(null);
-        }
-
-        setError(errors.length > 0 ? errors.join(" | ") : null);
+        setData(buildPanelData(ctx, shift));
         setLoading(false);
       })
-      .catch(() => {
+      .catch((err) => {
         if (cancelled) return;
-        setError("failed to load project details");
+        setError(err instanceof Error ? err.message : "failed to load project details");
         setLoading(false);
       });
 
@@ -215,29 +215,16 @@ export function ProjectDetailPanel({ projectId, onClose }: ProjectDetailPanelPro
     };
   }, [projectId]);
 
-  const projectName =
-    projectSummary?.name ?? globalProject?.name ?? fallbackName ?? projectId;
-
-  const stageLabel = projectSummary?.stage ? projectSummary.stage : "Unspecified";
-  const priorityLabel = projectSummary?.priority != null ? `P${projectSummary.priority}` : "P?";
-  const statusLabel = projectSummary?.status ?? globalProject?.status ?? null;
-
-  const woCounts = workOrders.reduce(
-    (acc, wo) => {
-      if (wo.status === "ready") acc.ready += 1;
-      else if (wo.status === "blocked") acc.blocked += 1;
-      else if (wo.status === "done") acc.done += 1;
-      else if (BUILDING_WORK_ORDER_STATUSES.has(wo.status)) acc.building += 1;
-      return acc;
-    },
-    { ready: 0, building: 0, blocked: 0, done: 0 }
-  );
-
-  const escalations = globalProject?.escalations ?? [];
-  const budget = globalProject?.budget ?? null;
-  const activeShift = globalProject?.active_shift ?? null;
-  const recentRuns = (globalProject?.recent_runs ?? []).slice(0, 5);
-  const healthStatus = globalProject?.health ?? null;
+  const projectName = data?.name ?? projectId;
+  const stageLabel = data?.stage ?? "Unspecified";
+  const priorityLabel = data?.priority != null ? `P${data.priority}` : "P?";
+  const statusLabel = data?.status ?? null;
+  const woCounts = data?.woCounts ?? { ready: 0, building: 0, blocked: 0, done: 0 };
+  const escalations = data?.escalations ?? [];
+  const budget = data?.budget ?? null;
+  const activeShift = data?.activeShift ?? null;
+  const recentRuns = data?.recentRuns ?? [];
+  const healthStatus = data?.health ?? null;
   const healthColor = healthStatus ? HEALTH_COLORS[healthStatus] ?? "#a9b0c2" : "#a9b0c2";
 
   return (
