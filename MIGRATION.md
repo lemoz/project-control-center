@@ -7,35 +7,47 @@ Split PCC into two repos: open-source core (`project-control-center`) and propri
 - `project-control-center`: local-first UI + local runner, Work Orders, chat, constitution, tech tree, and project management.
 - `pcc-cloud`: hosted services (auth, billing, VM hosting/monitoring, GitHub integrations) plus the public marketing site.
 
-## File/Directory Disposition (STAY vs MOVE)
+## Migration Status
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| Landing page | ✅ Done | Migrated in WO-2026-221 |
+| VM provisioning | ✅ New impl in pcc-cloud | Fly.io-based (`src/vm/`) |
+| Legacy VM code in core | ⏳ Pending removal | See WO-2026-229 |
+| Auth & billing | ✅ In pcc-cloud | `src/auth/`, `src/billing/` |
+| GitHub integration | ✅ In pcc-cloud | `src/github/` |
+| API gateway | ✅ In pcc-cloud | `src/gateway/` |
+
+## File/Directory Disposition (STAY vs REMOVE)
 | Area | Path(s) | Disposition | Notes |
 | --- | --- | --- | --- |
-| Landing page (marketing) | `app/(public)/landing/` | MOVE -> `pcc-cloud` | Explicitly moving the public landing page. |
-| VM hosting/provisioning | `server/vm_manager.ts` | MOVE -> `pcc-cloud` | GCP VM lifecycle and provisioning. |
-| VM remote exec | `server/remote_exec.ts` | MOVE -> `pcc-cloud` | VM command execution lives with cloud infra. |
-| VM API routes | `server/index.ts` (`/repos/:id/vm/*`, `/observability/vm-health`) | MOVE -> `pcc-cloud` | Hosting/monitoring endpoints. |
-| VM health aggregation | `server/observability.ts` (VM health logic) | MOVE -> `pcc-cloud` | Backend health checks/alerts. |
-| Core runner | `server/runner_agent.ts`, `server/runner_worker.ts`, `server/providers/*` | STAY in `project-control-center` | Local runner orchestration + provider abstraction. |
-| Work Orders + Kanban | `work_orders/`, `server/work_orders.ts`, `app/projects/[id]/KanbanBoard.tsx` | STAY in `project-control-center` | Local-first WO management. |
-| Chat system | `server/chat_*`, `app/chat/*`, `app/components/Chat*`, `app/api/chat/*` | STAY in `project-control-center` | Local-first chat + worktree isolation. |
-| Constitution system | `server/constitution*`, `app/components/ConstitutionGenerationWizard.tsx`, `app/api/constitution/*` | STAY in `project-control-center` | Constitution generation + storage. |
-| Tech tree | `app/projects/[id]/TechTreeView.tsx`, `app/projects/[id]/tracks/*`, `server/work_order_dependencies.ts` | STAY in `project-control-center` | Tech tree visualization + dependencies. |
-| Kanban/WO detail UI | `app/projects/[id]/work-orders/*` | STAY in `project-control-center` | Work Order UX. |
+| Landing page (marketing) | `app/(public)/landing/` | ✅ DONE | Moved to pcc-cloud |
+| VM hosting/provisioning | `server/vm_manager.ts` | REMOVE | Legacy GCP code - pcc-cloud has new Fly.io impl |
+| VM remote exec | `server/remote_exec.ts` | REMOVE | Legacy - not needed in local-first core |
+| VM API routes | `app/api/repos/[id]/vm/*` | REMOVE | Cloud-only feature |
+| VM health routes | `app/api/observability/vm-health/*` | REMOVE | Cloud-only feature |
+| VM health UI hooks | `app/observability/hooks/useVMHealth.ts` | REMOVE | Cloud-only feature |
+| VM shift script | `scripts/start-shift-vm.ts` | REMOVE | Cloud-only feature |
+| Core runner | `server/runner_agent.ts`, `server/runner_worker.ts`, `server/providers/*` | STAY | Local runner orchestration |
+| Work Orders + Kanban | `work_orders/`, `server/work_orders.ts`, `app/projects/[id]/KanbanBoard.tsx` | STAY | Local-first WO management |
+| Chat system | `server/chat_*`, `app/chat/*`, `app/components/Chat*`, `app/api/chat/*` | STAY | Local-first chat |
+| Constitution system | `server/constitution*`, `app/components/ConstitutionGenerationWizard.tsx`, `app/api/constitution/*` | STAY | Constitution generation + storage |
+| Tech tree | `app/projects/[id]/TechTreeView.tsx`, `app/projects/[id]/tracks/*`, `server/work_order_dependencies.ts` | STAY | Tech tree visualization |
+| Kanban/WO detail UI | `app/projects/[id]/work-orders/*` | STAY | Work Order UX |
 
 ## Split process (sequencing)
 
-### Builder/Automatable steps (future WO)
-1. Copy/relocate MOVE items into `pcc-cloud` following existing folder structure (`src/auth`, `src/billing`, `src/vm`, `src/api`, `src/db`, `src/github`).
-2. Adjust imports and shared types as needed (extract shared types to a minimal package if required).
-3. Update local API calls in `project-control-center` to target the new `pcc-cloud` service endpoints.
-4. Remove duplicated VM backend code from `project-control-center` after successful cutover.
-5. Update docs and run tests for both repos.
+### Completed
+1. ✅ Created `pcc-cloud` repo with new architecture
+2. ✅ Implemented Fly.io-based VM provisioning in pcc-cloud
+3. ✅ Set up auth, billing, GitHub integration in pcc-cloud
+4. ✅ Migrated landing page to pcc-cloud (WO-2026-221)
 
-### Manual steps (human)
-1. Create the `pcc-cloud` GitHub repo (already exists locally at `~/pcc-cloud`).
-2. Add `pcc-cloud` as a git remote and push the initial split.
-3. Set up secrets/config for cloud services (database, Stripe, auth providers, VM credentials).
-4. Configure deployment/CI for `pcc-cloud` (separate WO).
+### Remaining
+1. ⏳ Remove legacy VM code from PCC core (WO-2026-229)
+2. ⏳ Update files that reference removed VM code
+3. ⏳ Add CloudFeatureCTA components where VM features were
+4. ⏳ Deploy pcc-cloud to production
 
 ## Open questions / ambiguities (RESOLVED)
 
@@ -83,5 +95,7 @@ The open-source core should be genuinely useful standalone, with strategic CTAs 
 
 ## Notes
 - The SQLite database remains the source of truth for runtime state in `project-control-center`.
-- This plan avoids moving files until a follow-up WO is approved.
-- Landing page migration completed in WO-2026-221 (moved to `pcc-cloud`).
+- pcc-cloud uses Postgres for cloud state (accounts, workspaces, billing).
+- Landing page migration completed in WO-2026-221.
+- VM code removal tracked in WO-2026-229.
+- pcc-cloud VM implementation uses Fly.io (not GCP like the legacy code).
