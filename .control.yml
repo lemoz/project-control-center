@@ -7,16 +7,28 @@ priority: 1
 tags:
   - meta
   - bootstrap
+  - open-source
+  - local-first
+description: |
+  Open-source, local-first project management system for autonomous software development.
+  Manages work orders, builder/reviewer loops, and project orchestration without cloud dependency.
+  Integrates with pcc-cloud for optional hosted features (VMs, team collaboration, voice).
 success_criteria: |
-  Able to fully manage 10-100 projects effectively.
-  Projects can self-determine and self-attain their own success.
-  System learns from failures and doesn't repeat mistakes.
+  Fully functional local-first project management for 1-100 projects.
+  Autonomous builder/reviewer loop with 80%+ success rate.
+  Self-improving system that learns from failures and doesn't repeat mistakes.
+  Clean integration path to pcc-cloud for hosted features.
+  Useful standalone for individual developers without requiring cloud.
 success_metrics:
   - name: Active projects managed
     target: 10
-    current: 1
+    current: 3
+    notes: "PCC core, pcc-cloud, and others"
   - name: Run success rate (rolling)
     target: 80%
     current: 63%
     notes: "12/19 recent terminal runs - trending up from 36% historical"
+  - name: WOs completed
+    target: 200
+    current: 140
 
