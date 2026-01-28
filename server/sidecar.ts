@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import YAML from "yaml";
 import { z } from "zod";
+import { PROJECT_LIFECYCLE_STATUSES } from "./db.js";
 
 const successMetricSchema = z
   .object({
@@ -19,6 +20,7 @@ const controlSchema = z
     type: z.enum(["prototype", "long_term"]).optional(),
     stage: z.string().min(1).optional(),
     status: z.enum(["active", "blocked", "parked"]).optional(),
+    lifecycle_status: z.enum(PROJECT_LIFECYCLE_STATUSES).optional(),
     priority: z.number().int().min(1).max(5).optional(),
     tags: z.array(z.string()).optional(),
     starred: z.boolean().optional(),

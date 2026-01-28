@@ -9,6 +9,7 @@ import {
   type ProjectCommunicationScope,
   type ProjectRow,
   type RunRow,
+  type ProjectLifecycleStatus,
 } from "./db.js";
 import { getBudgetUsedTodayOverride } from "./config.js";
 import { getGlobalBudget } from "./budgeting.js";
@@ -21,6 +22,10 @@ import {
   getActiveGlobalAgentSession,
   type GlobalAgentSession,
 } from "./global_agent_sessions.js";
+import {
+  buildProjectLifecycleSummary,
+  type ProjectLifecycleSummary,
+} from "./project_lifecycle.js";
 
 type EscalationInput = {
   key: string;
@@ -70,6 +75,7 @@ export type GlobalProjectSummary = {
   id: string;
   name: string;
   status: ProjectRow["status"];
+  lifecycle: ProjectLifecycleSummary;
   health: HealthStatus;
   health_summary: ProjectHealth;
   budget: {
@@ -167,6 +173,12 @@ const STALLED_RUN_DAYS = 3;
 const FAILURE_STREAK_THRESHOLD = 3;
 const RECENT_RUN_WINDOW = 10;
 const LONG_RUNNING_SHIFT_HOURS = 2;
+const LIFECYCLE_PRIORITY_WEIGHT: Record<ProjectLifecycleStatus, number> = {
+  active: 0,
+  stable: 1,
+  maintenance: 2,
+  archived: 4,
+};
 
 function parseEscalationRecord(raw: string | null): EscalationRecord | null {
   if (!raw) return null;
@@ -464,6 +476,11 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
     const priority = project.priority;
     const runs = getRunsForProject(project.id, 50);
     const runsById = new Map(runs.map((run) => [run.id, run]));
+    const lifecycle = buildProjectLifecycleSummary({
+      project: { path: project.path, lifecycle_status: project.lifecycle_status },
+      runs,
+      now,
+    });
     const activeShift = getActiveShift(project.id);
     const runEscalations = runs
       .map((run) => summarizeRunEscalation(run))
@@ -498,7 +515,10 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
       now,
     });
     const health = healthSummary.status;
-    const attentionNeeded = health !== "healthy" && project.status !== "parked";
+    const attentionNeeded =
+      health !== "healthy" &&
+      project.status !== "parked" &&
+      lifecycle.status !== "archived";
     const isPriority =
       priorityTokens.size > 0 &&
       (priorityTokens.has(context.project.id.toLowerCase()) ||
@@ -508,6 +528,7 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
       id: context.project.id,
       name: context.project.name,
       status: project.status,
+      lifecycle,
       health,
       health_summary: healthSummary,
       budget: {
@@ -545,7 +566,7 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
     projects.push({
       summary: projectSummary,
       attentionNeeded,
-      sortPriority: priority,
+      sortPriority: priority + LIFECYCLE_PRIORITY_WEIGHT[lifecycle.status],
       priorityRank: isPriority ? 0 : 1,
     });
     priorityByProjectId.set(context.project.id, isPriority);

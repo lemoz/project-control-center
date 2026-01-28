@@ -43,6 +43,7 @@ description: Short blurb # optional; shown in UI
 type: prototype|long_term
 stage: idea|planning|building|alpha|beta|shipping|maintenance
 status: active|blocked|parked
+lifecycle_status: active|stable|maintenance|archived
 priority: 1-5
 starred: true|false      # optional; pins to top
 tags:
@@ -65,6 +66,7 @@ On first discovery (no existing SQLite row) the defaults are:
 - `type`: `prototype`
 - `stage`: `idea`
 - `status`: `active`
+- `lifecycle_status`: `active`
 - `priority`: `3`
 - `starred`: `false`
 - `tags`: `[]`

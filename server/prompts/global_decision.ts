@@ -66,7 +66,10 @@ function formatProjectsOverview(params: {
     const budget = project.budget
       ? `budget ${project.budget.status} ${formatUsd(project.budget.remaining_usd)}`
       : "budget n/a";
-    return `- ${project.name} (${project.id}): ${project.health} | ${budget} | ${project.work_orders.ready} ready WOs | ${project.escalations.length} escalations`;
+    const lifecycle = project.lifecycle.suggestion
+      ? `${project.lifecycle.status} -> ${project.lifecycle.suggestion.to}`
+      : project.lifecycle.status;
+    return `- ${project.name} (${project.id}): ${project.health} | ${budget} | lifecycle ${lifecycle} | ${project.work_orders.ready} ready WOs | ${project.escalations.length} escalations`;
   });
   if (params.omitted > 0) {
     lines.push(`- ...and ${params.omitted} more projects`);

@@ -11,9 +11,11 @@ import {
   startShift,
   updateEscalation,
   updateGlobalShift,
+  updateProjectLifecycleStatus,
   type CreateGlobalShiftHandoffInput,
   type GlobalShiftHandoff,
   type GlobalShiftRow,
+  type ProjectLifecycleStatus,
   type ProjectRow,
   type ShiftHandoffDecision,
 } from "./db.js";
@@ -25,6 +27,7 @@ import {
   type GlobalDecisionSessionContext,
   type GlobalAttentionAllocation,
 } from "./prompts/global_decision.js";
+import { applyProjectTemplate, getProjectTemplate } from "./project_templates.js";
 import { syncAndListRepoSummaries, invalidateDiscoveryCache } from "./projects_catalog.js";
 import { provideRunInput } from "./runner_agent.js";
 import { stableRepoId } from "./utils.js";
@@ -56,8 +59,10 @@ export type CreateProjectInput = {
   name?: string;
   id?: string;
   status?: ProjectRow["status"];
+  lifecycle_status?: ProjectLifecycleStatus;
   priority?: number;
   init_git?: boolean;
+  template?: string;
 };
 
 type GlobalAgentActionResult = {
@@ -327,10 +332,12 @@ function createControlFile(params: {
   name: string;
   id: string;
   status?: ProjectRow["status"];
+  lifecycle_status?: ProjectLifecycleStatus;
   priority?: number;
 }): void {
   const lines = [`id: ${params.id}`, `name: "${escapeYamlString(params.name)}"`];
   if (params.status) lines.push(`status: ${params.status}`);
+  if (params.lifecycle_status) lines.push(`lifecycle_status: ${params.lifecycle_status}`);
   if (typeof params.priority === "number") lines.push(`priority: ${params.priority}`);
   fs.writeFileSync(path.join(params.repoPath, ".control.yml"), `${lines.join("\n")}\n`, "utf8");
 }
@@ -340,6 +347,15 @@ export function createProjectFromSpec(spec: CreateProjectInput): {
   projectId: string;
   path: string;
 } | { ok: false; error: string } {
+  const template = spec.template ? getProjectTemplate(spec.template) : null;
+  if (spec.template && !template) {
+    return { ok: false, error: `unknown template "${spec.template}"` };
+  }
+  const templateSettings = template?.default_settings;
+  const resolvedStatus = spec.status ?? templateSettings?.status;
+  const resolvedPriority = spec.priority ?? templateSettings?.priority;
+  const resolvedLifecycleStatus =
+    spec.lifecycle_status ?? templateSettings?.lifecycle_status;
   const validatedPath = validateProjectPath(spec.path);
   if (!validatedPath.ok) return { ok: false, error: validatedPath.error };
   const resolvedPath = validatedPath.resolvedPath;
@@ -372,8 +388,9 @@ export function createProjectFromSpec(spec: CreateProjectInput): {
       repoPath: resolvedPath,
       id,
       name,
-      status: spec.status,
-      priority: spec.priority,
+      status: resolvedStatus,
+      lifecycle_status: resolvedLifecycleStatus,
+      priority: resolvedPriority,
     });
   }
 
@@ -384,6 +401,23 @@ export function createProjectFromSpec(spec: CreateProjectInput): {
     (spec.id ? summaries.find((entry) => entry.id === spec.id) : undefined);
   if (!resolvedSummary) {
     return { ok: false, error: "project not discovered; check scan roots" };
+  }
+  try {
+    if (template) {
+      applyProjectTemplate({
+        projectId: resolvedSummary.id,
+        repoPath: resolvedSummary.path,
+        template,
+      });
+    }
+    if (resolvedLifecycleStatus) {
+      updateProjectLifecycleStatus(resolvedSummary.id, resolvedLifecycleStatus);
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "failed to apply project template",
+    };
   }
   return { ok: true, projectId: resolvedSummary.id, path: resolvedSummary.path };
 }
