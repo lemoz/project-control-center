@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      # Pull the repo so the workflow has access to the codebase.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Match the supported runtime for the Next.js/Node toolchain.
+      - name: Set up Node.js
+        id: setup-node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Cache node_modules so dependency installs reuse previous builds.
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ steps.setup-node.outputs.node-version }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            node-modules-${{ runner.os }}-${{ steps.setup-node.outputs.node-version }}-
+
+      # Install dependencies (lockfile keeps versions consistent).
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # Lint the Next.js app and shared TypeScript.
+      - name: Lint
+        run: npm run lint
+
+      # Run the TypeScript compiler to enforce type safety.
+      - name: Typecheck
+        run: npx tsc -p tsconfig.json
+
+      # Execute the unit test suite for the server.
+      - name: Test
+        run: npm run test:unit
+
+      # Build the Next.js app and the server bundle.
+      - name: Build
+        run: |
+          npm run build
+          npm run server:build
