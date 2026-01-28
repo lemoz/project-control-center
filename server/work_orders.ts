@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import YAML from "yaml";
 import { z } from "zod";
-import { findProjectByPath, getDb } from "./db.js";
+import { findProjectByPath, getDb, syncWorkOrderDeps } from "./db.js";
 import { slugify } from "./utils.js";
 
 export const WORK_ORDER_STATUSES = [
@@ -641,6 +641,7 @@ export function createWorkOrder(
   const project = findProjectByPath(repoPath);
   if (project) {
     syncWorkOrderRows(project.id, [normalized]);
+    syncWorkOrderDeps(project.id, normalized.id, normalized.depends_on);
   }
   return normalized;
 }
@@ -808,6 +809,7 @@ export function patchWorkOrder(
   const project = findProjectByPath(repoPath);
   if (project) {
     syncWorkOrderRows(project.id, [normalized]);
+    syncWorkOrderDeps(project.id, normalized.id, normalized.depends_on);
   }
   return normalized;
 }
@@ -939,6 +941,7 @@ export function overwriteWorkOrderMarkdown(
   const project = findProjectByPath(repoPath);
   if (project) {
     syncWorkOrderRows(project.id, [normalized]);
+    syncWorkOrderDeps(project.id, normalized.id, normalized.depends_on);
   }
   return normalized;
 }
