@@ -25,9 +25,9 @@ tags:
   - ux
   - data
 estimate_hours: 4
-status: ready
+status: you_review
 created_at: 2026-01-07
-updated_at: 2026-01-27
+updated_at: 2026-01-28
 depends_on:
   - WO-2025-003
   - WO-2025-004

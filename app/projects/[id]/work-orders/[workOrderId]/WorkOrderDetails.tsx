@@ -118,6 +118,12 @@ export function WorkOrderDetails({
   const [error, setError] = useState<string | null>(null);
   const [blockedDetails, setBlockedDetails] = useState<BudgetRunBlockedDetails | null>(null);
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
+  const [signalSummary, setSignalSummary] = useState("");
+  const [signalTags, setSignalTags] = useState("");
+  const [signalType, setSignalType] = useState("outcome");
+  const [signalSaving, setSignalSaving] = useState(false);
+  const [signalError, setSignalError] = useState<string | null>(null);
+  const [signalNotice, setSignalNotice] = useState<string | null>(null);
   const router = useRouter();
 
   const load = useCallback(async () => {
@@ -169,6 +175,7 @@ export function WorkOrderDetails({
   const latestRun = useMemo(() => {
     return runs.slice().sort((a, b) => b.created_at.localeCompare(a.created_at))[0] || null;
   }, [runs]);
+  const canSubmitSignal = !!workOrder && !!signalSummary.trim() && !signalSaving;
 
   const [title, setTitle] = useState("");
   const [status, setStatus] = useState<WorkOrderStatus>("backlog");
@@ -293,6 +300,40 @@ export function WorkOrderDetails({
     }
   }, [repoId, router, workOrder, workOrderId]);
 
+  const onAddSignal = useCallback(async () => {
+    if (!workOrder) return;
+    const summary = signalSummary.trim();
+    if (!summary) {
+      setSignalError("Summary is required.");
+      return;
+    }
+    setSignalSaving(true);
+    setSignalError(null);
+    setSignalNotice(null);
+    try {
+      const res = await fetch(`/api/repos/${encodeURIComponent(repoId)}/signals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          work_order_id: workOrderId,
+          type: signalType,
+          summary,
+          tags: stringToTags(signalTags),
+          source: "work_order_details",
+        }),
+      });
+      const json = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok) throw new Error(json?.error || "failed to save signal");
+      setSignalSummary("");
+      setSignalTags("");
+      setSignalNotice("Saved outcome note.");
+    } catch (e) {
+      setSignalError(e instanceof Error ? e.message : "failed to save signal");
+    } finally {
+      setSignalSaving(false);
+    }
+  }, [repoId, signalSummary, signalTags, signalType, workOrder, workOrderId]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <section className="card">
@@ -398,6 +439,68 @@ export function WorkOrderDetails({
               </span>
             )}
           </div>
+        </section>
+      )}
+
+      {!!workOrder && (
+        <section className="card">
+          <div style={{ fontWeight: 800 }}>Add Outcome Note</div>
+          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            Capture outcome and decision signals for planning.
+          </div>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void onAddSignal();
+            }}
+            style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 12 }}
+          >
+            <label className="field">
+              <div className="muted fieldLabel">Type</div>
+              <select
+                className="select"
+                value={signalType}
+                onChange={(event) => {
+                  setSignalType(event.target.value);
+                  setSignalError(null);
+                  setSignalNotice(null);
+                }}
+              >
+                <option value="outcome">outcome</option>
+                <option value="decision">decision</option>
+              </select>
+            </label>
+            <label className="field">
+              <div className="muted fieldLabel">Summary</div>
+              <textarea
+                className="textarea"
+                rows={3}
+                value={signalSummary}
+                onChange={(event) => {
+                  setSignalSummary(event.target.value);
+                  setSignalError(null);
+                  setSignalNotice(null);
+                }}
+              />
+            </label>
+            <label className="field">
+              <div className="muted fieldLabel">Tags (comma-separated)</div>
+              <input
+                className="input"
+                value={signalTags}
+                onChange={(event) => {
+                  setSignalTags(event.target.value);
+                  setSignalError(null);
+                  setSignalNotice(null);
+                }}
+              />
+            </label>
+            {!!signalError && <div className="error">{signalError}</div>}
+            {!!signalNotice && <div className="badge">{signalNotice}</div>}
+            <button className="btn" type="submit" disabled={!canSubmitSignal}>
+              {signalSaving ? "Saving…" : "Save Note"}
+            </button>
+          </form>
         </section>
       )}
 
