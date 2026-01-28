@@ -88,6 +88,14 @@ type ConversationRecord = {
   id: string;
   timestamp: string | null;
   text: string;
+  messages?: ConversationMessage[];
+};
+
+type ConversationMessageRole = "user" | "assistant" | "system" | "summary" | "message" | "unknown";
+
+type ConversationMessage = {
+  role: ConversationMessageRole;
+  content: string;
 };
 
 type SourceLoadResult = {
@@ -110,6 +118,9 @@ const CODEX_HISTORY_PATH = path.join(os.homedir(), ".codex", "history.jsonl");
 const DEFAULT_MAX_CONVERSATIONS = 160;
 const MAX_CONVERSATION_CHARS = 2000;
 const MAX_PROMPT_CHARS = 140_000;
+const TARGETED_CANDIDATES_PER_SOURCE = 12;
+const CONTEXT_WINDOW_RADIUS = 2;
+const FALLBACK_WINDOW_MESSAGES = 4;
 
 const INSIGHT_CATEGORIES = ["decision", "style", "anti", "success", "communication"] as const;
 const INSIGHT_SCOPES = ["global", "project"] as const;
@@ -266,6 +277,28 @@ function extractBulletText(line: string): string | null {
   return text ? text : null;
 }
 
+function normalizeMessageRole(role: string | null): ConversationMessageRole {
+  if (!role) return "unknown";
+  const normalized = role.trim().toLowerCase();
+  if (normalized === "user" || normalized === "assistant" || normalized === "system") {
+    return normalized;
+  }
+  if (normalized === "summary") return "summary";
+  return "message";
+}
+
+function formatConversationMessage(message: ConversationMessage): string {
+  const content = message.content.trim();
+  if (!content) return "";
+  if (message.role === "unknown") return content;
+  return `${message.role}:\n${content}`;
+}
+
+function buildConversationText(messages: ConversationMessage[]): string {
+  const parts = messages.map(formatConversationMessage).filter(Boolean);
+  return parts.join("\n\n").trim();
+}
+
 function collectDraftTokens(content: string): {
   headings: Set<string>;
   bullets: Set<string>;
@@ -345,6 +378,223 @@ function sampleConversations(
   }
   const sorted = [...conversations].sort(compareByTimestampDesc);
   return { selected: sorted.slice(0, maxConversations), sampled: true };
+}
+
+type SignalCue = {
+  id: string;
+  category: ConstitutionInsightCategory;
+  regex: RegExp;
+  roles: Set<ConversationMessageRole>;
+  weight: number;
+};
+
+const USER_SIGNAL_ROLES = new Set<ConversationMessageRole>([
+  "user",
+  "summary",
+  "message",
+  "unknown",
+]);
+
+const SIGNAL_CUES: SignalCue[] = [
+  {
+    id: "decision-core",
+    category: "decision",
+    regex: /\b(decide|decision|choose|go with|opt for|trade-?off|priorit(y|ize|ise))\b/i,
+    roles: USER_SIGNAL_ROLES,
+    weight: 3,
+  },
+  {
+    id: "decision-scope",
+    category: "decision",
+    regex: /\b(scope|sequence|milestone|roadmap|next step|later)\b/i,
+    roles: USER_SIGNAL_ROLES,
+    weight: 2,
+  },
+  {
+    id: "style-format",
+    category: "style",
+    regex: /\b(style|format|lint|naming|typescript|ts|type safety|no any|avoid any)\b/i,
+    roles: USER_SIGNAL_ROLES,
+    weight: 2,
+  },
+  {
+    id: "style-scope",
+    category: "style",
+    regex: /\b(minimal|small|scoped|targeted|simple|over-?engineer)\b/i,
+    roles: USER_SIGNAL_ROLES,
+    weight: 2,
+  },
+  {
+    id: "anti-correction",
+    category: "anti",
+    regex: /\b(don't|do not|avoid|stop|never|shouldn't|not that|instead)\b/i,
+    roles: USER_SIGNAL_ROLES,
+    weight: 3,
+  },
+  {
+    id: "anti-breakage",
+    category: "anti",
+    regex: /\b(wrong|mistake|regression|breaks|fails|bug)\b/i,
+    roles: USER_SIGNAL_ROLES,
+    weight: 2,
+  },
+  {
+    id: "success-approval",
+    category: "success",
+    regex: /\b(looks good|lgtm|approved|ship it|go for it|yes do that|perfect|great|thanks)\b/i,
+    roles: USER_SIGNAL_ROLES,
+    weight: 3,
+  },
+  {
+    id: "success-speed",
+    category: "success",
+    regex: /\b(nice|solid|exactly|nailed it|love it)\b/i,
+    roles: USER_SIGNAL_ROLES,
+    weight: 2,
+  },
+  {
+    id: "communication-direct",
+    category: "communication",
+    regex: /\b(be direct|skip preamble|concise|short|no fluff|show code|code first)\b/i,
+    roles: USER_SIGNAL_ROLES,
+    weight: 3,
+  },
+  {
+    id: "communication-structure",
+    category: "communication",
+    regex: /\b(options|ask before|status update|next steps|bullet|numbered list)\b/i,
+    roles: USER_SIGNAL_ROLES,
+    weight: 2,
+  },
+];
+
+function getConversationMessages(conversation: ConversationRecord): ConversationMessage[] {
+  if (conversation.messages && conversation.messages.length > 0) return conversation.messages;
+  const text = conversation.text.trim();
+  if (!text) return [];
+  return [{ role: "unknown", content: text }];
+}
+
+function buildConversationWindow(
+  conversation: ConversationRecord,
+  hitIndexes: number[]
+): { text: string; messages: ConversationMessage[] } {
+  const messages = getConversationMessages(conversation);
+  if (messages.length === 0) {
+    return { text: conversation.text, messages: [] };
+  }
+
+  const selectedIndexes = new Set<number>();
+  if (hitIndexes.length > 0) {
+    for (const index of hitIndexes) {
+      const start = Math.max(0, index - CONTEXT_WINDOW_RADIUS);
+      const end = Math.min(messages.length - 1, index + CONTEXT_WINDOW_RADIUS);
+      for (let cursor = start; cursor <= end; cursor += 1) {
+        selectedIndexes.add(cursor);
+      }
+    }
+  } else {
+    const start = Math.max(0, messages.length - FALLBACK_WINDOW_MESSAGES);
+    for (let cursor = start; cursor < messages.length; cursor += 1) {
+      selectedIndexes.add(cursor);
+    }
+  }
+
+  const orderedIndexes = [...selectedIndexes].sort((a, b) => a - b);
+  const windowMessages = orderedIndexes
+    .map((index) => messages[index])
+    .filter((entry): entry is ConversationMessage => Boolean(entry));
+  const windowText = buildConversationText(windowMessages);
+  if (!windowText) {
+    return { text: conversation.text, messages: [] };
+  }
+  return { text: truncateText(windowText, MAX_CONVERSATION_CHARS), messages: windowMessages };
+}
+
+function scoreConversation(conversation: ConversationRecord): { score: number; hitIndexes: number[] } {
+  const messages = getConversationMessages(conversation);
+  let score = 0;
+  const hitIndexes = new Set<number>();
+  messages.forEach((message, index) => {
+    const content = message.content.trim();
+    if (!content) return;
+    for (const cue of SIGNAL_CUES) {
+      if (!cue.roles.has(message.role)) continue;
+      if (cue.regex.test(content)) {
+        score += cue.weight;
+        hitIndexes.add(index);
+      }
+    }
+  });
+  return { score, hitIndexes: [...hitIndexes] };
+}
+
+function selectConversationsForSource(params: {
+  source: ConstitutionSourceId;
+  conversations: ConversationRecord[];
+  targetCount: number;
+}): {
+  selected: ConversationRecord[];
+  targetedCount: number;
+  fallbackCount: number;
+  warnings: string[];
+} {
+  const warnings: string[] = [];
+  const scored = params.conversations.map((conversation) => {
+    const scoredConversation = scoreConversation(conversation);
+    return { conversation, ...scoredConversation };
+  });
+  const targeted = scored
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => {
+      if (a.score !== b.score) return b.score - a.score;
+      return compareByTimestampDesc(a.conversation, b.conversation);
+    });
+  const targetedSelected = targeted.slice(0, params.targetCount);
+  const targetedIds = new Set(targetedSelected.map((entry) => entry.conversation.id));
+
+  const fallbackNeeded = Math.max(0, params.targetCount - targetedSelected.length);
+  const fallbackPool = params.conversations
+    .filter((conversation) => !targetedIds.has(conversation.id))
+    .sort(compareByTimestampDesc);
+  const fallbackSelected = fallbackPool.slice(0, fallbackNeeded);
+
+  if (targetedSelected.length === 0 && fallbackSelected.length > 0) {
+    warnings.push(
+      `Targeted retrieval found no ${params.source} candidates; using latest ${fallbackSelected.length} conversations.`
+    );
+  }
+
+  const selected: ConversationRecord[] = [];
+  for (const entry of targetedSelected) {
+    const windowed = buildConversationWindow(entry.conversation, entry.hitIndexes);
+    selected.push({
+      ...entry.conversation,
+      text: windowed.text,
+      messages: windowed.messages,
+    });
+  }
+  for (const conversation of fallbackSelected) {
+    const windowed = buildConversationWindow(conversation, []);
+    selected.push({
+      ...conversation,
+      text: windowed.text,
+      messages: windowed.messages,
+    });
+  }
+
+  selected.sort(compareByTimestampDesc);
+
+  warnings.push(
+    `Targeted retrieval (${params.source}): targeted=${targetedSelected.length}, fallback=${fallbackSelected.length}, target=${params.targetCount}.`
+  );
+
+  return {
+    selected,
+    targetedCount: targetedSelected.length,
+    fallbackCount: fallbackSelected.length,
+    warnings,
+  };
 }
 
 function sanitizeSelection(selection: unknown): ConstitutionSourceSelection {
@@ -476,11 +726,15 @@ function listClaudeConversations(
     }
     available += 1;
     if (conversations.length < maxConversations) {
+      const messages: ConversationMessage[] = [
+        { role: "user", content: convo.text },
+      ];
       conversations.push({
         source: "claude",
         id: `claude-${index}`,
         timestamp: convo.timestamp,
         text: convo.text,
+        messages,
       });
     } else {
       sampled = true;
@@ -811,16 +1065,18 @@ function extractRole(record: Record<string, unknown>): string | null {
   return null;
 }
 
-function parseCodexSessionFile(filePath: string): string {
+function parseCodexSessionFile(
+  filePath: string
+): { text: string; messages: ConversationMessage[] } {
   let raw = "";
   try {
     raw = fs.readFileSync(filePath, "utf8");
   } catch {
-    return "";
+    return { text: "", messages: [] };
   }
 
   const lines = raw.split(/\r?\n/).filter(Boolean);
-  const messages: string[] = [];
+  const messages: ConversationMessage[] = [];
   let totalLength = 0;
   for (const line of lines) {
     let parsed: unknown;
@@ -831,17 +1087,19 @@ function parseCodexSessionFile(filePath: string): string {
     }
     if (!parsed || typeof parsed !== "object") continue;
     const record = parsed as Record<string, unknown>;
-    const role = extractRole(record);
+    const role = normalizeMessageRole(extractRole(record));
     const textPieces = extractTextFromValue(record);
     const combined = textPieces.join("\n").trim();
     if (!combined) continue;
-    const label = role ? `${role}:\n${combined}` : combined;
-    messages.push(label);
+    const message = { role, content: combined };
+    const label = formatConversationMessage(message);
+    if (!label) continue;
+    messages.push(message);
     totalLength += label.length;
     if (totalLength >= MAX_CONVERSATION_CHARS) break;
   }
 
-  return messages.join("\n\n").trim();
+  return { text: buildConversationText(messages), messages };
 }
 
 function listCodexConversations(
@@ -945,13 +1203,15 @@ function listCodexConversations(
       sampled = true;
       break;
     }
-    const text = parseCodexSessionFile(session.path);
+    const parsed = parseCodexSessionFile(session.path);
+    const text = parsed.text;
     if (!text) continue;
     conversations.push({
       source: "codex",
       id: session.path,
       timestamp: session.timestamp,
       text,
+      messages: parsed.messages,
     });
   }
 
@@ -1038,25 +1298,25 @@ function listPccConversations(
          LIMIT ?`
       )
       .all(thread.thread_id, ...messageRange.params, messageLimit) as PccMessageRow[];
-    const parts: string[] = [];
+    const messages: ConversationMessage[] = [];
     if (threadRow?.summary) {
-      parts.push(`summary:\n${threadRow.summary.trim()}`);
+      const summary = threadRow.summary.trim();
+      if (summary) messages.push({ role: "summary", content: summary });
     }
     for (const msg of messageRows) {
       if (!msg.content) continue;
-      const role =
-        msg.role === "assistant" || msg.role === "user" || msg.role === "system"
-          ? msg.role
-          : "message";
-      parts.push(`${role}:\n${msg.content.trim()}`);
+      const content = msg.content.trim();
+      if (!content) continue;
+      messages.push({ role: normalizeMessageRole(msg.role), content });
     }
-    const text = parts.join("\n\n").trim();
+    const text = buildConversationText(messages);
     if (!text) continue;
     conversations.push({
       source: "pcc",
       id: thread.thread_id,
       timestamp: thread.last_message_at,
       text,
+      messages,
     });
   }
 
@@ -1333,18 +1593,33 @@ export async function analyzeConstitutionSources(params: {
   const maxConversations = Math.max(10, Math.min(400, Math.trunc(params.maxConversations ?? DEFAULT_MAX_CONVERSATIONS)));
   const deadlineMs = Date.now() + 60_000;
   const warnings: string[] = [];
+  const enabledSources = [selection.claude, selection.codex, selection.pcc].filter(Boolean)
+    .length;
+  const perSourceTarget = Math.max(
+    1,
+    Math.min(
+      TARGETED_CANDIDATES_PER_SOURCE,
+      Math.floor(maxConversations / Math.max(1, enabledSources))
+    )
+  );
 
   const sourceStats: ConstitutionSourceStats[] = [];
-  const allConversations: ConversationRecord[] = [];
+  const selectedConversations: ConversationRecord[] = [];
 
   if (selection.claude) {
     const claude = listClaudeConversations(range, maxConversations, deadlineMs, projectMatcher);
     warnings.push(...claude.warnings);
-    allConversations.push(...claude.conversations);
+    const selectionResult = selectConversationsForSource({
+      source: "claude",
+      conversations: claude.conversations,
+      targetCount: perSourceTarget,
+    });
+    warnings.push(...selectionResult.warnings);
+    selectedConversations.push(...selectionResult.selected);
     sourceStats.push({
       source: "claude",
       available: claude.available,
-      analyzed: claude.conversations.length,
+      analyzed: selectionResult.selected.length,
       sampled: claude.sampled,
       error: claude.error,
     });
@@ -1355,11 +1630,17 @@ export async function analyzeConstitutionSources(params: {
   if (selection.codex) {
     const codex = listCodexConversations(range, maxConversations, deadlineMs, projectMatcher);
     warnings.push(...codex.warnings);
-    allConversations.push(...codex.conversations);
+    const selectionResult = selectConversationsForSource({
+      source: "codex",
+      conversations: codex.conversations,
+      targetCount: perSourceTarget,
+    });
+    warnings.push(...selectionResult.warnings);
+    selectedConversations.push(...selectionResult.selected);
     sourceStats.push({
       source: "codex",
       available: codex.available,
-      analyzed: codex.conversations.length,
+      analyzed: selectionResult.selected.length,
       sampled: codex.sampled,
       error: codex.error,
     });
@@ -1370,11 +1651,17 @@ export async function analyzeConstitutionSources(params: {
   if (selection.pcc) {
     const pcc = listPccConversations(range, maxConversations, deadlineMs, params.projectId);
     warnings.push(...pcc.warnings);
-    allConversations.push(...pcc.conversations);
+    const selectionResult = selectConversationsForSource({
+      source: "pcc",
+      conversations: pcc.conversations,
+      targetCount: perSourceTarget,
+    });
+    warnings.push(...selectionResult.warnings);
+    selectedConversations.push(...selectionResult.selected);
     sourceStats.push({
       source: "pcc",
       available: pcc.available,
-      analyzed: pcc.conversations.length,
+      analyzed: selectionResult.selected.length,
       sampled: pcc.sampled,
       error: pcc.error,
     });
@@ -1382,30 +1669,18 @@ export async function analyzeConstitutionSources(params: {
     sourceStats.push({ source: "pcc", available: 0, analyzed: 0, sampled: false });
   }
 
-  const { selected, sampled } = sampleConversations(allConversations, maxConversations);
-  if (sampled) warnings.push("Conversation sample truncated to keep analysis fast.");
-
-  const selectedBySource = new Map<ConstitutionSourceId, number>();
-  for (const convo of selected) {
-    selectedBySource.set(convo.source, (selectedBySource.get(convo.source) ?? 0) + 1);
-  }
-  const nextSourceStats = sourceStats.map((stat) => ({
-    ...stat,
-    analyzed: selectedBySource.get(stat.source) ?? 0,
-  }));
-
   const conversationsAvailable = sourceStats.reduce((sum, stat) => sum + stat.available, 0);
-  const conversationsAnalyzed = selected.length;
+  const conversationsAnalyzed = selectedConversations.length;
   const statsBase = conversationStats([]);
   statsBase.conversations_available = conversationsAvailable;
   statsBase.conversations_analyzed = conversationsAnalyzed;
 
-  if (selected.length === 0) {
+  if (selectedConversations.length === 0) {
     warnings.push("No conversations found in the selected range.");
     return {
       insights: [],
       stats: statsBase,
-      sources: nextSourceStats,
+      sources: sourceStats,
       warnings,
       fallback: true,
     };
@@ -1419,7 +1694,7 @@ export async function analyzeConstitutionSources(params: {
     return {
       insights: [],
       stats: statsBase,
-      sources: nextSourceStats,
+      sources: sourceStats,
       warnings,
       fallback: true,
     };
@@ -1433,7 +1708,7 @@ export async function analyzeConstitutionSources(params: {
   const outputPath = path.join(runDir, "analysis.json");
   const logPath = path.join(runDir, "codex.jsonl");
 
-  const prompt = buildConversationPrompt(selected);
+  const prompt = buildConversationPrompt(selectedConversations);
   let parsedInsights: ConstitutionInsight[] = [];
   let fallback = false;
 
@@ -1482,7 +1757,7 @@ export async function analyzeConstitutionSources(params: {
   return {
     insights: parsedInsights,
     stats,
-    sources: nextSourceStats,
+    sources: sourceStats,
     warnings,
     fallback,
   };
