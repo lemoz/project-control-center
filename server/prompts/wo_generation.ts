@@ -61,6 +61,7 @@ export function buildWorkOrderGenerationPrompt(
       "title",
       "goal",
       "context",
+      "documentation",
       "acceptance_criteria",
       "non_goals",
       "stop_conditions",
@@ -75,6 +76,9 @@ export function buildWorkOrderGenerationPrompt(
   lines.push("Guidance:");
   lines.push("- Use concise, testable acceptance criteria.");
   lines.push("- Use stop conditions that explicitly say when to pause for clarification.");
+  lines.push(
+    "- documentation is optional; include relevant external docs or excerpts so sandboxed builders can work without internet access (use an empty string or omit when not needed)."
+  );
   lines.push("- depends_on MUST only include IDs from the references below.");
   lines.push("- Prefer tags from the known tags list.");
   lines.push("- suggestions should list any missing details you need.");
