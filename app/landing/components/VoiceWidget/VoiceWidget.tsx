@@ -8,6 +8,7 @@ import { useCanvasVoiceState, type CanvasVoiceState, type CanvasVoiceNode } from
 
 const MAX_CONTEXT_ITEMS = 8;
 const CONTEXT_THROTTLE_MS = 600;
+const MAX_GLOBAL_CONTEXT_ITEMS = 6;
 
 function formatNodeLabel(node: CanvasVoiceNode): string {
   if (node.type === "work_order" && node.title) {
@@ -26,6 +27,45 @@ function formatNodeList(label: string, nodes: CanvasVoiceNode[]): string {
   return `${label}: ${listed}${overflow}.`;
 }
 
+function formatGlobalSession(state: CanvasVoiceState): string {
+  const sessionState = state.globalSessionState;
+  if (!sessionState) return "Global session: none.";
+  const pausedLabel = state.globalSessionPaused ? " (paused)" : "";
+  return `Global session: ${sessionState}${pausedLabel}.`;
+}
+
+function formatActiveShifts(state: CanvasVoiceState): string {
+  const shifts = state.activeShiftProjects ?? [];
+  if (!shifts.length) return "Active shifts: none.";
+  const listed = shifts
+    .slice(0, MAX_GLOBAL_CONTEXT_ITEMS)
+    .map((shift) => shift.projectName)
+    .join(", ");
+  const overflow =
+    shifts.length > MAX_GLOBAL_CONTEXT_ITEMS
+      ? ` (+${shifts.length - MAX_GLOBAL_CONTEXT_ITEMS} more)`
+      : "";
+  return `Active shifts: ${listed}${overflow}.`;
+}
+
+function formatEscalations(state: CanvasVoiceState): string {
+  const escalations = state.escalationSummaries ?? [];
+  if (!escalations.length) return "Escalations: none.";
+  const listed = escalations
+    .slice(0, MAX_GLOBAL_CONTEXT_ITEMS)
+    .map((entry) => {
+      const countLabel = entry.count > 1 ? ` (${entry.count})` : "";
+      const summaryLabel = entry.summary ? ` - ${entry.summary}` : "";
+      return `${entry.projectName}${countLabel}${summaryLabel}`;
+    })
+    .join("; ");
+  const overflow =
+    escalations.length > MAX_GLOBAL_CONTEXT_ITEMS
+      ? ` (+${escalations.length - MAX_GLOBAL_CONTEXT_ITEMS} more)`
+      : "";
+  return `Escalations: ${listed}${overflow}.`;
+}
+
 function buildCanvasSummary(state: CanvasVoiceState): string {
   const contextLabel = state.contextLabel ?? "Canvas";
   const focusLabel = state.focusedNode ? formatNodeLabel(state.focusedNode) : "none";
@@ -33,13 +73,23 @@ function buildCanvasSummary(state: CanvasVoiceState): string {
   const detailPanel = state.detailPanelOpen ? "open" : "closed";
   const visibleProjects = formatNodeList("Visible projects", state.visibleProjects);
   const visibleWorkOrders = formatNodeList("Visible work orders", state.visibleWorkOrders);
+  const globalSession = formatGlobalSession(state);
+  const activeShifts = formatActiveShifts(state);
+  const escalations = formatEscalations(state);
 
-  return (
-    `${contextLabel} context update. Focused: ${focusLabel}. ` +
-    `Selected: ${selectedLabel}. ` +
-    `Detail panel: ${detailPanel}. ` +
-    `${visibleProjects} ${visibleWorkOrders}`
-  );
+  return [
+    `${contextLabel} context update.`,
+    `Focused: ${focusLabel}.`,
+    `Selected: ${selectedLabel}.`,
+    `Detail panel: ${detailPanel}.`,
+    visibleProjects,
+    visibleWorkOrders,
+    globalSession,
+    activeShifts,
+    escalations,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function statusLabel(

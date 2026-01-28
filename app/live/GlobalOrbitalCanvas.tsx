@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type PointerEventHandler,
@@ -17,6 +18,13 @@ import type {
   ProjectHealthStatus,
   VisualizationNode,
 } from "../playground/canvas/types";
+import {
+  setCanvasVoiceState,
+  subscribeCanvasCommands,
+  type CanvasVoiceEscalation,
+  type CanvasVoiceNode,
+  type CanvasVoiceShift,
+} from "../landing/components/VoiceWidget/voiceClientTools";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -108,6 +116,40 @@ function pulseColor(action?: string): string {
   return PULSE_COLORS[action] ?? PULSE_COLORS.DELEGATE;
 }
 
+const GLOBAL_SESSION_STATES = new Set([
+  "onboarding",
+  "briefing",
+  "autonomous",
+  "debrief",
+  "ended",
+]);
+
+type GlobalSessionState =
+  | "onboarding"
+  | "briefing"
+  | "autonomous"
+  | "debrief"
+  | "ended";
+
+type GlobalSessionSummary = {
+  id: string;
+  state: GlobalSessionState;
+  paused_at: string | null;
+};
+
+function parseSessionSummary(raw: unknown): GlobalSessionSummary | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const id = typeof record.id === "string" ? record.id : null;
+  const state =
+    typeof record.state === "string" && GLOBAL_SESSION_STATES.has(record.state)
+      ? (record.state as GlobalSessionState)
+      : null;
+  const pausedAt = typeof record.paused_at === "string" ? record.paused_at : null;
+  if (!id || !state) return null;
+  return { id, state, paused_at: pausedAt };
+}
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -116,6 +158,17 @@ type GlobalOrbitalCanvasProps = {
   onSelectProject?: (projectId: string) => void;
   selectedProjectId?: string | null;
 };
+
+const MAX_VOICE_CONTEXT_ITEMS = 12;
+
+function toVoiceNode(node: ProjectNode): CanvasVoiceNode {
+  return {
+    id: node.id,
+    type: "project",
+    label: node.name,
+    projectId: node.id,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -131,19 +184,56 @@ export function GlobalOrbitalCanvas({
   const pulseEventsRef = useRef<PulseEvent[]>([]);
   const projectLookupRef = useRef<Map<string, ProjectNode>>(new Map());
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0, dpr: 1 });
+  const [highlightedProjectId, setHighlightedProjectId] = useState<string | null>(null);
+  const [globalSession, setGlobalSession] = useState<GlobalSessionSummary | null>(null);
   const lastFrame = useRef<number | null>(null);
   const selectedRef = useRef<VisualizationNode | null>(null);
   const hoveredRef = useRef<VisualizationNode | null>(null);
+  const highlightedRef = useRef<ProjectNode | null>(null);
   const transformRef = useRef({ offsetX: 0, offsetY: 0, scale: 1 });
   const sizeRef = useRef(canvasSize);
   const selectedProjectRef = useRef<string | null>(selectedProjectId ?? null);
 
   // Data hook — fetches all projects, work orders, runs, global context, etc.
-  const { data, loading, error } = useProjectsVisualization();
+  const { data, loading, error, globalContext } = useProjectsVisualization();
   const initialDataRef = useRef(data);
 
   // The project nodes for interaction hit-testing come straight from data.nodes
   const projectNodes: ProjectNode[] = data.nodes;
+  const highlightedNode = useMemo(
+    () => projectNodes.find((node) => node.id === highlightedProjectId) ?? null,
+    [projectNodes, highlightedProjectId]
+  );
+  const voiceVisibleProjects = useMemo<CanvasVoiceNode[]>(
+    () => projectNodes.slice(0, MAX_VOICE_CONTEXT_ITEMS).map(toVoiceNode),
+    [projectNodes]
+  );
+  const activeShiftProjects = useMemo<CanvasVoiceShift[]>(() => {
+    const projects = globalContext?.projects ?? [];
+    return projects
+      .filter((project) => project.active_shift)
+      .map((project) => ({
+        projectId: project.id,
+        projectName: project.name,
+        startedAt: project.active_shift?.started_at ?? null,
+      }))
+      .sort((a, b) => a.projectName.localeCompare(b.projectName));
+  }, [globalContext]);
+  const escalationSummaries = useMemo<CanvasVoiceEscalation[]>(() => {
+    const projects = globalContext?.projects ?? [];
+    const items = projects
+      .filter((project) => project.escalations?.length)
+      .map((project) => ({
+        projectId: project.id,
+        projectName: project.name,
+        count: project.escalations.length,
+        summary: project.escalations[0]?.summary ?? null,
+      }));
+    return items.sort((a, b) => {
+      if (a.count !== b.count) return b.count - a.count;
+      return a.projectName.localeCompare(b.projectName);
+    });
+  }, [globalContext]);
 
   useEffect(() => {
     projectLookupRef.current = new Map(projectNodes.map((node) => [node.id, node]));
@@ -153,6 +243,7 @@ export function GlobalOrbitalCanvas({
   const {
     transform,
     setTransform,
+    selectNode,
     selectedNode,
     hoveredNode,
     tooltipPosition,
@@ -164,6 +255,14 @@ export function GlobalOrbitalCanvas({
     canvasRef,
     nodes: projectNodes,
   });
+  const selectedProjectNode =
+    selectedNode && selectedNode.type === "project" ? selectedNode : null;
+  const voiceSelectedNode = useMemo<CanvasVoiceNode | null>(
+    () => (selectedProjectNode ? toVoiceNode(selectedProjectNode) : null),
+    [selectedProjectNode]
+  );
+  const globalSessionState = globalSession?.state ?? null;
+  const globalSessionPaused = Boolean(globalSession?.paused_at);
 
   // -----------------------------------------------------------------------
   // Propagate selected project to parent
@@ -187,6 +286,37 @@ export function GlobalOrbitalCanvas({
     if (selectedNode?.id === selectedProjectId) return;
     selectNode(selectedProjectId);
   }, [clearSelection, selectNode, selectedProjectId, selectedNode]);
+
+  // -----------------------------------------------------------------------
+  // Global session polling for voice context
+  // -----------------------------------------------------------------------
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSession = async () => {
+      try {
+        const res = await fetch("/api/global/sessions/active", { cache: "no-store" });
+        const json = (await res.json().catch(() => null)) as unknown;
+        if (!res.ok) return;
+        if (!json || typeof json !== "object" || !("session" in json)) {
+          if (!cancelled) setGlobalSession(null);
+          return;
+        }
+        const record = json as { session?: unknown };
+        const parsed = parseSessionSummary(record.session ?? null);
+        if (!cancelled) setGlobalSession(parsed);
+      } catch {
+        if (!cancelled) setGlobalSession(null);
+      }
+    };
+
+    void loadSession();
+    const interval = window.setInterval(loadSession, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
 
   // -----------------------------------------------------------------------
   // Viz initialization
@@ -279,8 +409,34 @@ export function GlobalOrbitalCanvas({
   }, [hoveredNode]);
 
   useEffect(() => {
+    highlightedRef.current = highlightedNode;
+  }, [highlightedNode]);
+
+  useEffect(() => {
     sizeRef.current = canvasSize;
   }, [canvasSize]);
+
+  useEffect(() => {
+    setCanvasVoiceState({
+      contextLabel: "Portfolio canvas",
+      focusedNode: voiceSelectedNode,
+      selectedNode: voiceSelectedNode,
+      visibleProjects: voiceVisibleProjects,
+      detailPanelOpen: Boolean(selectedProjectId),
+      globalSessionState,
+      globalSessionPaused,
+      activeShiftProjects,
+      escalationSummaries,
+    });
+  }, [
+    activeShiftProjects,
+    escalationSummaries,
+    globalSessionPaused,
+    globalSessionState,
+    selectedProjectId,
+    voiceSelectedNode,
+    voiceVisibleProjects,
+  ]);
 
   // -----------------------------------------------------------------------
   // RAF render loop
@@ -348,6 +504,17 @@ export function GlobalOrbitalCanvas({
           ctx.lineWidth = 2;
           ctx.beginPath();
           ctx.arc(selected.x, selected.y, radius, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        // Highlighted node ring
+        const highlighted = highlightedRef.current;
+        if (highlighted && highlighted.x !== undefined && highlighted.y !== undefined) {
+          const radius = (highlighted.radius ?? 16) + 10;
+          ctx.strokeStyle = "rgba(251, 191, 36, 0.9)";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(highlighted.x, highlighted.y, radius, 0, Math.PI * 2);
           ctx.stroke();
         }
 
@@ -424,6 +591,53 @@ export function GlobalOrbitalCanvas({
       offsetY: sizeRef.current.height / 2,
     }));
   }, [setTransform]);
+
+  const focusProjectNode = useCallback(
+    (projectId: string) => {
+      const target = projectNodes.find((node) => node.id === projectId);
+      if (!target || target.x === undefined || target.y === undefined) return false;
+      const scale = transformRef.current.scale;
+      const width = sizeRef.current.width || canvasSize.width;
+      const height = sizeRef.current.height || canvasSize.height;
+      setTransform((prev) => ({
+        ...prev,
+        offsetX: width / 2 - target.x * scale,
+        offsetY: height / 2 - target.y * scale,
+      }));
+      return true;
+    },
+    [canvasSize.height, canvasSize.width, projectNodes, setTransform]
+  );
+
+  const openProjectDetail = useCallback(
+    (projectId: string) => {
+      const target = projectNodes.find((node) => node.id === projectId);
+      if (!target) return false;
+      if (selectedProjectNode?.id === target.id) {
+        onSelectProject?.(target.id);
+      } else {
+        selectNode(target.id);
+      }
+      return true;
+    },
+    [onSelectProject, projectNodes, selectNode, selectedProjectNode]
+  );
+
+  useEffect(() => {
+    return subscribeCanvasCommands((command) => {
+      if (command.type === "focusProject") {
+        focusProjectNode(command.projectId);
+        return;
+      }
+      if (command.type === "highlightProject") {
+        setHighlightedProjectId(command.projectId);
+        return;
+      }
+      if (command.type === "openProjectDetail") {
+        openProjectDetail(command.projectId);
+      }
+    });
+  }, [focusProjectNode, openProjectDetail]);
 
   // -----------------------------------------------------------------------
   // Derive the hovered project node for the tooltip
