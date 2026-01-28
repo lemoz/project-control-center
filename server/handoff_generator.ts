@@ -721,13 +721,30 @@ export async function generateAndStoreHandoff(params: {
     });
 
     if (activeShift) {
-      const updated = updateShift(activeShift.id, {
-        status: "auto_completed",
-        completed_at: new Date().toISOString(),
-        handoff_id: handoff.id,
-      });
-      if (!updated) {
-        log(`handoff: failed to update shift ${activeShift.id}`);
+      // Only auto-complete if the shift has expired
+      // If still within timeout, let the shift agent continue working
+      const now = new Date();
+      const expiresAt = activeShift.expires_at ? new Date(activeShift.expires_at) : null;
+      const isExpired = expiresAt && now >= expiresAt;
+
+      if (isExpired) {
+        const updated = updateShift(activeShift.id, {
+          status: "auto_completed",
+          completed_at: now.toISOString(),
+          handoff_id: handoff.id,
+        });
+        if (!updated) {
+          log(`handoff: failed to update shift ${activeShift.id}`);
+        }
+        log(`handoff: auto-completed expired shift ${activeShift.id}`);
+      } else {
+        // Shift still active - just attach the handoff without completing
+        const updated = updateShift(activeShift.id, {
+          handoff_id: handoff.id,
+        });
+        if (updated) {
+          log(`handoff: attached to active shift ${activeShift.id} (not auto-completing)`);
+        }
       }
     }
   } catch (err) {
