@@ -22,9 +22,9 @@ tags:
   - retrieval
   - v2
 estimate_hours: 5
-status: ready
+status: you_review
 created_at: 2026-01-27
-updated_at: 2026-01-27
+updated_at: 2026-01-28
 depends_on:
   - WO-2026-047
   - WO-2026-025
