@@ -249,7 +249,6 @@ export function GlobalOrbitalCanvas({
     tooltipPosition,
     isPanning,
     clearSelection,
-    selectNode,
     handlers,
   } = useCanvasInteraction({
     canvasRef,
