@@ -57,6 +57,37 @@ The shift-context endpoint returns everything you need:
 
 ---
 
+## Documentation Research Protocol
+
+Builders/reviewers are sandboxed and **cannot fetch docs**. If a WO depends on external documentation, you must research it and embed the relevant info in the WO before creating/updating it.
+
+**When to research docs:**
+- New libraries, SDKs, or CLIs not already used in the repo
+- External APIs/services (auth flows, endpoints, webhooks)
+- Unfamiliar patterns, configs, or version-specific behavior
+
+**Workflow (mandatory):** research docs -> extract patterns -> embed in WO context
+
+**What to include in the WO:**
+- Install/upgrade commands (with versions)
+- API signatures or config shapes
+- Minimal code examples showing intended usage
+
+**Example: PATCH documentation into a WO**
+```bash
+curl -s -X PATCH "{base_url}/repos/{project_id}/work-orders/WO-2026-123" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "context": [
+      "Docs (Acme SDK v1.2.3): install: npm i acme-sdk@1.2.3",
+      "API: createClient({ apiKey, baseUrl }) -> client.request(path, { method, body })",
+      "Example: const client = createClient({ apiKey: process.env.ACME_KEY, baseUrl: \"https://api.acme.com\" });"
+    ]
+  }'
+```
+
+---
+
 ## Decision Framework
 
 **Priority order:**
