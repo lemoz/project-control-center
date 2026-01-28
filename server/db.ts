@@ -757,6 +757,12 @@ export type InitiativeMilestone = {
   status: InitiativeMilestoneStatus;
 };
 
+export type InitiativeSuggestionSent = {
+  project_id: string;
+  suggested_title: string;
+  sent_at: string;
+};
+
 export type Initiative = {
   id: string;
   name: string;
@@ -765,6 +771,7 @@ export type Initiative = {
   status: InitiativeStatus;
   projects: string[];
   milestones: InitiativeMilestone[];
+  suggestions_sent: InitiativeSuggestionSent[];
   created_at: string;
   updated_at: string;
 };
@@ -777,12 +784,16 @@ type InitiativeRow = {
   status: InitiativeStatus;
   projects: string;
   milestones: string;
+  suggestions_sent: string;
   created_at: string;
   updated_at: string;
 };
 
 export type InitiativePatch = Partial<
-  Pick<Initiative, "name" | "description" | "target_date" | "status" | "projects" | "milestones">
+  Pick<
+    Initiative,
+    "name" | "description" | "target_date" | "status" | "projects" | "milestones" | "suggestions_sent"
+  >
 >;
 
 let db: Database.Database | null = null;
@@ -881,6 +892,7 @@ function initSchema(database: Database.Database) {
       status TEXT NOT NULL,
       projects TEXT NOT NULL DEFAULT '[]',
       milestones TEXT NOT NULL DEFAULT '[]',
+      suggestions_sent TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -1593,6 +1605,18 @@ function initSchema(database: Database.Database) {
   }
   if (!hasVmTotalHours) {
     database.exec("ALTER TABLE project_vms ADD COLUMN total_hours_used REAL NOT NULL DEFAULT 0;");
+  }
+
+  const initiativeColumns = database
+    .prepare("PRAGMA table_info(initiatives)")
+    .all() as Array<{ name: string }>;
+  const hasInitiativeSuggestionsSent = initiativeColumns.some(
+    (c) => c.name === "suggestions_sent"
+  );
+  if (!hasInitiativeSuggestionsSent) {
+    database.exec(
+      "ALTER TABLE initiatives ADD COLUMN suggestions_sent TEXT NOT NULL DEFAULT '[]';"
+    );
   }
 
   const trackTableExists = database
@@ -4538,6 +4562,30 @@ function normalizeInitiativeMilestones(value: unknown): InitiativeMilestone[] {
   return milestones;
 }
 
+function normalizeInitiativeSuggestionSent(
+  raw: unknown
+): InitiativeSuggestionSent | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const projectId =
+    typeof record.project_id === "string" ? record.project_id.trim() : "";
+  const title =
+    typeof record.suggested_title === "string" ? record.suggested_title.trim() : "";
+  const sentAt = typeof record.sent_at === "string" ? record.sent_at.trim() : "";
+  if (!projectId || !title || !sentAt) return null;
+  return { project_id: projectId, suggested_title: title, sent_at: sentAt };
+}
+
+function normalizeInitiativeSuggestionsSent(value: unknown): InitiativeSuggestionSent[] {
+  if (!Array.isArray(value)) return [];
+  const items: InitiativeSuggestionSent[] = [];
+  for (const entry of value) {
+    const normalized = normalizeInitiativeSuggestionSent(entry);
+    if (normalized) items.push(normalized);
+  }
+  return items;
+}
+
 function parseInitiativeProjects(raw: string | null): string[] {
   if (!raw) return [];
   try {
@@ -4556,6 +4604,15 @@ function parseInitiativeMilestones(raw: string | null): InitiativeMilestone[] {
   }
 }
 
+function parseInitiativeSuggestionsSent(raw: string | null): InitiativeSuggestionSent[] {
+  if (!raw) return [];
+  try {
+    return normalizeInitiativeSuggestionsSent(JSON.parse(raw) as unknown);
+  } catch {
+    return [];
+  }
+}
+
 function toInitiative(row: InitiativeRow): Initiative {
   return {
     id: row.id,
@@ -4565,6 +4622,7 @@ function toInitiative(row: InitiativeRow): Initiative {
     status: normalizeInitiativeStatus(row.status),
     projects: parseInitiativeProjects(row.projects),
     milestones: parseInitiativeMilestones(row.milestones),
+    suggestions_sent: parseInitiativeSuggestionsSent(row.suggestions_sent),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -4577,6 +4635,7 @@ export function createInitiative(input: {
   status?: InitiativeStatus;
   projects?: string[];
   milestones?: InitiativeMilestone[];
+  suggestions_sent?: InitiativeSuggestionSent[];
   created_at?: string;
 }): Initiative {
   const database = getDb();
@@ -4589,15 +4648,18 @@ export function createInitiative(input: {
     status: normalizeInitiativeStatus(input.status),
     projects: JSON.stringify(normalizeInitiativeProjects(input.projects ?? [])),
     milestones: JSON.stringify(normalizeInitiativeMilestones(input.milestones ?? [])),
+    suggestions_sent: JSON.stringify(
+      normalizeInitiativeSuggestionsSent(input.suggestions_sent ?? [])
+    ),
     created_at: now,
     updated_at: now,
   };
   database
     .prepare(
       `INSERT INTO initiatives
-        (id, name, description, target_date, status, projects, milestones, created_at, updated_at)
+        (id, name, description, target_date, status, projects, milestones, suggestions_sent, created_at, updated_at)
        VALUES
-        (@id, @name, @description, @target_date, @status, @projects, @milestones, @created_at, @updated_at)`
+        (@id, @name, @description, @target_date, @status, @projects, @milestones, @suggestions_sent, @created_at, @updated_at)`
     )
     .run(row);
   return toInitiative(row);
@@ -4649,6 +4711,12 @@ export function updateInitiative(id: string, patch: InitiativePatch): Initiative
     sets.push("milestones = @milestones");
     params.milestones = JSON.stringify(normalizeInitiativeMilestones(patch.milestones));
   }
+  if (patch.suggestions_sent !== undefined) {
+    sets.push("suggestions_sent = @suggestions_sent");
+    params.suggestions_sent = JSON.stringify(
+      normalizeInitiativeSuggestionsSent(patch.suggestions_sent)
+    );
+  }
   if (!sets.length) return getInitiativeById(id);
   params.updated_at = new Date().toISOString();
   database
@@ -4659,6 +4727,12 @@ export function updateInitiative(id: string, patch: InitiativePatch): Initiative
     )
     .run(params);
   return getInitiativeById(id);
+}
+
+export function deleteInitiative(id: string): boolean {
+  const database = getDb();
+  const result = database.prepare("DELETE FROM initiatives WHERE id = ?").run(id);
+  return result.changes > 0;
 }
 
 export function syncWorkOrderDeps(
