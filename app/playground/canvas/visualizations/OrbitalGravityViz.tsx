@@ -61,6 +61,20 @@ type WorkOrderRunPhase = "waiting" | "testing" | "ai_review" | "you_review" | "b
 
 type WorkOrderRing = "inner" | "middle" | "outer" | "archive";
 
+export type GlobalSessionIndicator = {
+  state: "onboarding" | "briefing" | "autonomous" | "debrief" | "ended";
+  paused_at: string | null;
+};
+
+type SunState = "idle" | "onboarding" | "briefing" | "autonomous" | "paused" | "debrief" | "ended";
+
+type SunPalette = {
+  core: string;
+  glow: string;
+  label: string;
+  prompt?: string;
+};
+
 const PROJECT_ZONES: Zone[] = [
   { name: "focus", minR: 0, maxR: 80, color: "#fef3c7", label: "Focus" },
   { name: "active", minR: 80, maxR: 180, color: "#fef9c3", label: "Active" },
@@ -91,6 +105,21 @@ const WORK_ORDER_ZONES: Zone[] = [
     label: "Backlog",
   },
 ];
+
+const SUN_STATE_PALETTES: Record<SunState, SunPalette> = {
+  idle: { core: "#e2e8f0", glow: "#94a3b8", label: "Idle", prompt: "Start session" },
+  onboarding: { core: "#bae6fd", glow: "#38bdf8", label: "Onboarding" },
+  briefing: { core: "#a7f3d0", glow: "#34d399", label: "Briefing" },
+  autonomous: { core: "#bbf7d0", glow: "#22c55e", label: "Autonomous" },
+  paused: { core: "#fde68a", glow: "#facc15", label: "Paused" },
+  debrief: { core: "#fecdd3", glow: "#fb7185", label: "Debrief" },
+  ended: {
+    core: "#e2e8f0",
+    glow: "#64748b",
+    label: "Session ended",
+    prompt: "Start new session",
+  },
+};
 
 const BASE_OUTER_RADIUS = 400;
 const ARCHIVE_EXTENSION = 80;
@@ -167,6 +196,32 @@ const TERMINAL_RUN_STATUSES = new Set<RunSummary["status"]>([
 
 const MAX_BACKLOG_NODES = 20;
 const MAX_ARCHIVE_NODES = 20;
+
+function resolveSunState(session: GlobalSessionIndicator | null): SunPalette & { key: SunState } {
+  if (!session) {
+    return { key: "idle", ...SUN_STATE_PALETTES.idle };
+  }
+  if (session.state === "ended") {
+    return { key: "ended", ...SUN_STATE_PALETTES.ended };
+  }
+  if (session.state === "debrief") {
+    return { key: "debrief", ...SUN_STATE_PALETTES.debrief };
+  }
+  if (session.paused_at) {
+    return { key: "paused", ...SUN_STATE_PALETTES.paused };
+  }
+  if (session.state === "onboarding") {
+    return { key: "onboarding", ...SUN_STATE_PALETTES.onboarding };
+  }
+  if (session.state === "briefing") {
+    return { key: "briefing", ...SUN_STATE_PALETTES.briefing };
+  }
+  return { key: "autonomous", ...SUN_STATE_PALETTES.autonomous };
+}
+
+function isAutonomousActive(session: GlobalSessionIndicator | null): boolean {
+  return Boolean(session && session.state === "autonomous" && !session.paused_at);
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -505,6 +560,7 @@ export class OrbitalGravityVisualization implements Visualization {
   private workOrderFilter: WorkOrderFilter;
   private pinnedWorkOrderIds: Set<string>;
   private visibleNodes: OrbitalNode[] = [];
+  private globalSessionState: GlobalSessionIndicator | null = null;
 
   constructor(options: OrbitalGravityOptions = {}) {
     this.mode = options.mode ?? "projects";
@@ -542,6 +598,10 @@ export class OrbitalGravityVisualization implements Visualization {
     this.update(this.data);
   }
 
+  setGlobalSessionState(session: GlobalSessionIndicator | null): void {
+    this.globalSessionState = session;
+  }
+
   init(canvas: HTMLCanvasElement, data: VisualizationData): void {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
@@ -552,6 +612,7 @@ export class OrbitalGravityVisualization implements Visualization {
   update(data: VisualizationData): void {
     this.data = data;
     const layout = this.getLayout();
+    const globalAutonomous = isAutonomousActive(this.globalSessionState);
     const seen = new Set<string>();
     const nodes = this.resolveNodes(data);
     this.visibleNodes = nodes;
@@ -578,9 +639,13 @@ export class OrbitalGravityVisualization implements Visualization {
       const runPhase = isWorkOrderNode(node)
         ? this.runPhaseByNode.get(node.id) ?? null
         : null;
-      const targetHeat = isProjectNode(node)
+      const baseTargetHeat = isProjectNode(node)
         ? targetHeatForProject(node)
         : targetHeatForWorkOrder(node, runPhase);
+      const targetHeat =
+        isProjectNode(node) && globalAutonomous
+          ? Math.max(baseTargetHeat, 0.65)
+          : baseTargetHeat;
       const radialOffset = (seededFloat(`${node.id}-radius`) - 0.5) * RADIAL_JITTER * 2;
       const initialRadius =
         (isProjectNode(node)
@@ -662,6 +727,7 @@ export class OrbitalGravityVisualization implements Visualization {
     }
 
     const layout = this.getLayout();
+    const globalAutonomous = isAutonomousActive(this.globalSessionState);
     this.drawZones(ctx, layout);
     this.drawSun(ctx, layout);
 
@@ -680,9 +746,13 @@ export class OrbitalGravityVisualization implements Visualization {
       const runPhase = isWorkOrderNode(node)
         ? this.runPhaseByNode.get(node.id) ?? null
         : null;
-      const targetHeat = isProjectNode(node)
+      const baseTargetHeat = isProjectNode(node)
         ? targetHeatForProject(node)
         : targetHeatForWorkOrder(node, runPhase);
+      const targetHeat =
+        isProjectNode(node) && globalAutonomous
+          ? Math.max(baseTargetHeat, 0.65)
+          : baseTargetHeat;
       const heatRate = targetHeat > state.heat ? HEAT_GAIN_RATE : HEAT_DECAY_RATE;
       state.heat = lerp(state.heat, targetHeat, smoothFactor(delta, heatRate));
 
@@ -700,15 +770,24 @@ export class OrbitalGravityVisualization implements Visualization {
       state.targetRadius = desiredRadius;
       state.radius = lerp(state.radius, state.targetRadius, smoothFactor(delta, RADIUS_SMOOTH_RATE));
 
-      // Only orbit if agent is actively working, not waiting on human
-      const isAgentWorking = runPhase === "building" || runPhase === "testing" || runPhase === "ai_review";
-      if (isAgentWorking) {
+      const shouldOrbit = isWorkOrderNode(node)
+        ? runPhase === "building" || runPhase === "testing" || runPhase === "ai_review"
+        : globalAutonomous;
+      if (shouldOrbit) {
         const speedFactor = layout.outerRadius / Math.max(state.radius, layout.focusRadius);
         const focusSpeedDamp = lerp(1, 0.4, focusBlend);
-        const speedDamp = isWorkOrderNode(node) ? workOrderSpeedDamp(node.status) : 1;
+        const baseSpeed = isWorkOrderNode(node)
+          ? BASE_ORBIT_SPEED
+          : BASE_ORBIT_SPEED * 0.6;
+        const minSpeed = isWorkOrderNode(node)
+          ? MIN_ORBIT_SPEED
+          : MIN_ORBIT_SPEED * 0.6;
+        const speedDamp = isWorkOrderNode(node)
+          ? workOrderSpeedDamp(node.status)
+          : 0.7;
         state.angularVelocity = clamp(
-          BASE_ORBIT_SPEED * speedFactor * focusSpeedDamp * speedDamp,
-          MIN_ORBIT_SPEED * speedDamp,
+          baseSpeed * speedFactor * focusSpeedDamp * speedDamp,
+          minSpeed * speedDamp,
           MAX_ORBIT_SPEED
         );
         state.angle += state.angularVelocity * delta;
@@ -940,31 +1019,55 @@ export class OrbitalGravityVisualization implements Visualization {
   }
 
   private drawSun(ctx: CanvasRenderingContext2D, layout: Layout): void {
+    const sunState = resolveSunState(this.globalSessionState);
+    const pulseActive = sunState.key === "autonomous";
+    const pulse = pulseActive ? 0.5 + 0.5 * Math.sin(performance.now() / 320) : 0;
+    const pulseScale = 1 + pulse * 0.08;
+    const glowScale = 1 + pulse * 0.15;
+
     const gradient = ctx.createRadialGradient(
       0,
       0,
       0,
       0,
       0,
-      layout.sunRadius * 2.6
+      layout.sunRadius * (2.6 + pulse * 0.4)
     );
-    gradient.addColorStop(0, "rgba(255, 247, 214, 0.95)");
-    gradient.addColorStop(0.6, "rgba(254, 215, 140, 0.4)");
-    gradient.addColorStop(1, "rgba(254, 215, 140, 0.05)");
+    gradient.addColorStop(0, withAlpha(sunState.core, 0.95));
+    gradient.addColorStop(0.6, withAlpha(sunState.glow, 0.4 + pulse * 0.2));
+    gradient.addColorStop(1, withAlpha(sunState.glow, 0.05));
 
     ctx.save();
-    ctx.shadowBlur = layout.sunRadius * 2.4;
-    ctx.shadowColor = "rgba(254, 215, 140, 0.5)";
+    ctx.shadowBlur = layout.sunRadius * 2.2 * glowScale;
+    ctx.shadowColor = withAlpha(sunState.glow, 0.45 + pulse * 0.2);
     ctx.fillStyle = gradient;
     ctx.beginPath();
-    ctx.arc(0, 0, layout.sunRadius * 1.4, 0, Math.PI * 2);
+    ctx.arc(0, 0, layout.sunRadius * 1.4 * pulseScale, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
 
-    ctx.fillStyle = "rgba(255, 245, 220, 0.85)";
+    if (pulseActive) {
+      const ringRadius = layout.sunRadius * (1.8 + pulse * 0.2);
+      ctx.save();
+      ctx.strokeStyle = withAlpha(sunState.glow, 0.6 + pulse * 0.2);
+      ctx.lineWidth = 1.6 + pulse * 0.6;
+      ctx.beginPath();
+      ctx.arc(0, 0, ringRadius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.fillStyle = "rgba(226, 232, 240, 0.9)";
     ctx.font = "12px system-ui";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("attention", 0, layout.sunRadius + 16);
+    ctx.fillText("Global Agent", 0, layout.sunRadius + 14);
+
+    const statusLabel = sunState.prompt
+      ? `${sunState.label} · ${sunState.prompt}`
+      : sunState.label;
+    ctx.fillStyle = "rgba(148, 163, 184, 0.85)";
+    ctx.font = "11px system-ui";
+    ctx.fillText(statusLabel, 0, layout.sunRadius + 28);
   }
 }

@@ -15,6 +15,7 @@ import type {
   ProjectNode,
   VisualizationNode,
 } from "../playground/canvas/types";
+import type { GlobalAgentSession } from "./globalSessionTypes";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,6 +47,7 @@ function healthColor(value: number): string {
 type GlobalOrbitalCanvasProps = {
   onSelectProject?: (projectId: string) => void;
   selectedProjectId?: string | null;
+  globalSession?: GlobalAgentSession | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -55,6 +57,7 @@ type GlobalOrbitalCanvasProps = {
 export function GlobalOrbitalCanvas({
   onSelectProject,
   selectedProjectId = null,
+  globalSession = null,
 }: GlobalOrbitalCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -122,6 +125,14 @@ export function GlobalOrbitalCanvas({
   useEffect(() => {
     vizRef.current?.update(data);
   }, [data]);
+
+  useEffect(() => {
+    vizRef.current?.setGlobalSessionState(
+      globalSession
+        ? { state: globalSession.state, paused_at: globalSession.paused_at }
+        : null
+    );
+  }, [globalSession]);
 
   // -----------------------------------------------------------------------
   // Notify viz of hover/click state
