@@ -2072,6 +2072,12 @@ function buildBuilderPrompt(params: {
       "```\n\n" +
       "Please analyze the failure and fix the issues.\n\n"
     : "";
+  const executionEnvironmentBlock =
+    `## Execution Environment\n\n` +
+    `- You are running in a sandboxed workspace with limited filesystem access.\n` +
+    `- No internet access: you cannot fetch URLs, external documentation, or call external APIs.\n` +
+    `- All required context must come from the Work Order and repo contents.\n` +
+    `- If critical documentation is missing from the Work Order, request escalation rather than guessing.\n\n`;
   const resourcefulPostureBlock =
     `## Completing Tasks (Resourceful Posture)\n\n` +
     `Your default stance is: "I can do this."\n\n` +
@@ -2172,6 +2178,7 @@ function buildBuilderPrompt(params: {
     `Only use blocking_fix for genuine blockers, not nice-to-have improvements.\n` +
     `\n` +
     `- At the end, output a JSON object matching the required schema.\n\n` +
+    executionEnvironmentBlock +
     resourcefulPostureBlock +
     escalationRuntimeBlock +
     escalationFormatBlock +
@@ -2254,6 +2261,11 @@ function buildReviewerPrompt(params: {
     `\`\`\`bash\n` +
     `curl -s "http://localhost:4010/repos" | jq '.[].id'\n` +
     `\`\`\`\n\n`;
+  const executionEnvironmentBlock =
+    `## Execution Environment\n\n` +
+    `- You are running in a sandboxed, read-only environment for the repo snapshot at ./repo/.\n` +
+    `- No internet access: you cannot fetch URLs, external documentation, or call external APIs.\n` +
+    `- All required context must come from the Work Order; use the diff and repo snapshot only to verify changes.\n\n`;
   return (
     `You are a fresh Reviewer agent.\n\n` +
     constitutionBlock +
@@ -2268,6 +2280,7 @@ function buildReviewerPrompt(params: {
     `- If changes are needed, return status=changes_requested with actionable notes.\n` +
     `- Otherwise return status=approved.\n` +
     `- Output JSON matching the required schema.\n\n` +
+    executionEnvironmentBlock +
     builderChangesBlock +
     vmTestsBlock +
     `## Evaluating Blocking Fixes\n` +
