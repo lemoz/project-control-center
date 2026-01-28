@@ -45,7 +45,7 @@ type RunsResponse = {
   error?: string;
 };
 
-type GlobalContextProject = {
+export type GlobalContextProject = {
   id: string;
   name: string;
   status: "active" | "blocked" | "parked";
@@ -64,7 +64,7 @@ type GlobalContextProject = {
   last_activity: string | null;
 };
 
-type GlobalEconomySummary = {
+export type GlobalEconomySummary = {
   monthly_budget_usd: number;
   total_allocated_usd: number;
   total_spent_usd: number;
@@ -77,7 +77,7 @@ type GlobalEconomySummary = {
   portfolio_runway_days: number;
 };
 
-type GlobalContextResponse = {
+export type GlobalContextResponse = {
   projects: GlobalContextProject[];
   economy: GlobalEconomySummary;
   assembled_at: string;
@@ -448,6 +448,7 @@ export function useProjectsVisualization(): {
   error: string | null;
   refresh: () => void;
   lastUpdated: Date | null;
+  globalContext: GlobalContextResponse | null;
 } {
   const [projects, setProjects] = useState<RepoSummary[]>([]);
   const [workOrdersByProject, setWorkOrdersByProject] = useState<Record<string, WorkOrder[]>>({});
@@ -769,5 +770,6 @@ export function useProjectsVisualization(): {
     error,
     refresh: () => void load(),
     lastUpdated,
+    globalContext,
   };
 }
