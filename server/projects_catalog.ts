@@ -22,6 +22,7 @@ export type RepoSummary = {
   type: "prototype" | "long_term";
   stage: string;
   status: "active" | "blocked" | "parked";
+  lifecycle_status: ProjectRow["lifecycle_status"];
   priority: number;
   starred: boolean;
   hidden: boolean;
@@ -204,6 +205,8 @@ export function syncAndListRepoSummaries(params?: { forceRescan?: boolean }): Re
     const type = meta?.type || existingFallback?.type || ("prototype" as const);
     const stage = meta?.stage || existingFallback?.stage || "idea";
     const status = meta?.status || existingFallback?.status || ("active" as const);
+    const lifecycle_status =
+      meta?.lifecycle_status || existingFallback?.lifecycle_status || "active";
     const priority = meta?.priority ?? existingFallback?.priority ?? 3;
     const tags = JSON.stringify(meta?.tags ?? safeParseStringArrayJson(existingFallback?.tags));
     const success_criteria =
@@ -242,6 +245,7 @@ export function syncAndListRepoSummaries(params?: { forceRescan?: boolean }): Re
       type,
       stage,
       status,
+      lifecycle_status,
       priority,
       starred,
       hidden,
@@ -278,6 +282,7 @@ export function syncAndListRepoSummaries(params?: { forceRescan?: boolean }): Re
     type: p.type,
     stage: p.stage,
     status: p.status,
+    lifecycle_status: p.lifecycle_status,
     priority: p.priority,
     starred: Boolean(p.starred),
     hidden: Boolean(p.hidden),

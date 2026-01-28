@@ -9,6 +9,7 @@ type RepoSummary = {
   type: "prototype" | "long_term";
   stage: string;
   status: "active" | "blocked" | "parked";
+  lifecycle_status?: "active" | "stable" | "maintenance" | "archived";
   priority: number;
   starred: boolean;
   hidden: boolean;

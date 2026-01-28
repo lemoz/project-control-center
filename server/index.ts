@@ -82,6 +82,7 @@ import {
   updateInitiative,
   updateEscalation,
   updateProjectCommunication,
+  updateProjectLifecycleStatus,
   updateShift,
   updateGlobalShift,
   updateTrack,
@@ -92,6 +93,7 @@ import {
   deleteTrack,
   getTrackById,
   listBudgetEnforcementLog,
+  PROJECT_LIFECYCLE_STATUSES,
   type CreateGlobalShiftHandoffInput,
   type CreateShiftHandoffInput,
   type EscalationStatus,
@@ -209,6 +211,8 @@ import {
 import { buildShiftContext } from "./shift_context.js";
 import { buildGlobalContextResponse } from "./global_context.js";
 import { createProjectFromSpec, type CreateProjectInput } from "./global_agent.js";
+import { listProjectTemplates } from "./project_templates.js";
+import { buildProjectLifecycleSummary } from "./project_lifecycle.js";
 import {
   buildInitiativeProgress,
   coerceInitiativePlanInput,
@@ -1741,6 +1745,7 @@ function parseAbandonShiftInput(
 }
 
 const PROJECT_STATUS_SET = new Set<ProjectRow["status"]>(["active", "blocked", "parked"]);
+const PROJECT_LIFECYCLE_STATUS_SET = new Set(PROJECT_LIFECYCLE_STATUSES);
 
 function parseCreateProjectInput(
   payload: unknown
@@ -1754,8 +1759,18 @@ function parseCreateProjectInput(
   const name = typeof record.name === "string" ? record.name.trim() : "";
   const id = typeof record.id === "string" ? record.id.trim() : "";
   const statusRaw = typeof record.status === "string" ? record.status.trim() : "";
+  const lifecycleRaw =
+    typeof record.lifecycle_status === "string" ? record.lifecycle_status.trim() : "";
+  const template =
+    typeof record.template === "string" ? record.template.trim().toLowerCase() : "";
   if (statusRaw && !PROJECT_STATUS_SET.has(statusRaw as ProjectRow["status"])) {
     return { ok: false, error: "`status` must be active, blocked, or parked" };
+  }
+  if (lifecycleRaw && !PROJECT_LIFECYCLE_STATUS_SET.has(lifecycleRaw)) {
+    return {
+      ok: false,
+      error: "`lifecycle_status` must be active, stable, maintenance, or archived",
+    };
   }
   const priorityRaw = typeof record.priority === "number" ? record.priority : NaN;
   if (Number.isFinite(priorityRaw) && priorityRaw <= 0) {
@@ -1771,8 +1786,10 @@ function parseCreateProjectInput(
       name: name || undefined,
       id: id || undefined,
       status: statusRaw ? (statusRaw as ProjectRow["status"]) : undefined,
+      lifecycle_status: lifecycleRaw ? (lifecycleRaw as ProjectRow["lifecycle_status"]) : undefined,
       priority: Number.isFinite(priorityRaw) ? Math.trunc(priorityRaw) : undefined,
       init_git: initGit,
+      template: template || undefined,
     },
   };
 }
@@ -2711,6 +2728,10 @@ app.post("/global/patterns", (req, res) => {
   }
 });
 
+app.get("/projects/templates", (_req, res) => {
+  return res.json({ templates: listProjectTemplates() });
+});
+
 app.post("/projects", (req, res) => {
   const parsed = parseCreateProjectInput(req.body);
   if (!parsed.ok) return res.status(400).json({ error: parsed.error });
@@ -2720,6 +2741,41 @@ app.post("/projects", (req, res) => {
   return res.status(201).json({
     project: project ?? { id: created.projectId, path: created.path },
   });
+});
+
+app.get("/projects/:id/lifecycle", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const runs = getRunsForProject(project.id, 200);
+  const lifecycle = buildProjectLifecycleSummary({ project, runs });
+  return res.json({ project_id: project.id, lifecycle });
+});
+
+app.patch("/projects/:id/lifecycle", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const record = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+  const statusRaw =
+    typeof record.lifecycle_status === "string"
+      ? record.lifecycle_status.trim().toLowerCase()
+      : typeof record.status === "string"
+        ? record.status.trim().toLowerCase()
+        : "";
+  if (!statusRaw) {
+    return res.status(400).json({ error: "`lifecycle_status` is required" });
+  }
+  if (!PROJECT_LIFECYCLE_STATUS_SET.has(statusRaw)) {
+    return res.status(400).json({
+      error: "`lifecycle_status` must be active, stable, maintenance, or archived",
+    });
+  }
+  const updated = updateProjectLifecycleStatus(
+    project.id,
+    statusRaw as ProjectRow["lifecycle_status"]
+  );
+  return res.json({ project: updated ?? project });
 });
 
 app.post("/global/shifts", (req, res) => {

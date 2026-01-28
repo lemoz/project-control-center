@@ -20,6 +20,7 @@ import { resolveRunnerSettingsForRepo } from "./settings.js";
 import { readControlMetadata, type ControlSuccessMetric } from "./sidecar.js";
 import type { TrackContext } from "./types.js";
 import { listWorkOrders, type WorkOrder, type WorkOrderStatus } from "./work_orders.js";
+import { buildProjectLifecycleSummary, type ProjectLifecycleSummary } from "./project_lifecycle.js";
 import {
   getEnvironmentVariableNames,
   getPathEnv,
@@ -104,6 +105,7 @@ export type ShiftContext = {
     stage: string;
     status: string;
   };
+  lifecycle: ProjectLifecycleSummary;
   goals: {
     success_criteria: string;
     success_metrics: SuccessMetric[];
@@ -234,6 +236,11 @@ export function buildShiftContext(
       started_at: run.started_at ?? run.created_at,
       status: run.status,
     }));
+  const lifecycle = buildProjectLifecycleSummary({
+    project: { path: project.path, lifecycle_status: project.lifecycle_status },
+    runs,
+    now,
+  });
 
   const communicationsInbox = listProjectCommunications({
     toScope: "project",
@@ -280,6 +287,7 @@ export function buildShiftContext(
       stage: project.stage,
       status: project.status,
     },
+    lifecycle,
     goals: {
       success_criteria: successCriteria,
       success_metrics: normalizeSuccessMetrics(successMetrics),

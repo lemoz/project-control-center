@@ -35,6 +35,7 @@ upsertProject({
   type: "long_term",
   stage: "build",
   status: "active",
+  lifecycle_status: "active",
   priority: 1,
   starred: 0,
   hidden: 0,
