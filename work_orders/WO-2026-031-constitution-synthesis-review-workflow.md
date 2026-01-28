@@ -24,7 +24,7 @@ tags:
   - ai
   - governance
 estimate_hours: 6
-status: ready
+status: you_review
 created_at: 2026-01-07
 updated_at: 2026-01-28
 depends_on:

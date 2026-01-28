@@ -50,6 +50,48 @@ type SignalsResponse = {
   error?: string;
 };
 
+type InsightCategory = "decision" | "style" | "anti" | "success" | "communication";
+
+type SuggestionStatus = "pending" | "accepted" | "rejected";
+
+type SuggestionEvidence = {
+  id: string;
+  type: string;
+  summary: string;
+  created_at: string;
+};
+
+type ConstitutionSuggestion = {
+  id: string;
+  project_id: string;
+  scope: "global" | "project";
+  category: InsightCategory;
+  text: string;
+  evidence: SuggestionEvidence[];
+  status: SuggestionStatus;
+  created_at: string;
+  accepted_at: string | null;
+  accepted_by: string | null;
+  rejected_at: string | null;
+  rejected_by: string | null;
+};
+
+type SuggestionsResponse = {
+  suggestions: ConstitutionSuggestion[];
+  warnings?: string[];
+  error?: string;
+  retry_after_seconds?: number;
+  next_allowed_at?: string;
+};
+
+const SUGGESTION_CATEGORY_LABELS: Record<InsightCategory, string> = {
+  decision: "Decision Heuristics",
+  style: "Style & Taste",
+  anti: "Anti-Patterns",
+  success: "Success Patterns",
+  communication: "Communication",
+};
+
 export function ConstitutionPanel({ repoId }: { repoId: string }) {
   const [saved, setSaved] = useState("");
   const [draft, setDraft] = useState("");
@@ -67,6 +109,12 @@ export function ConstitutionPanel({ repoId }: { repoId: string }) {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [signalsError, setSignalsError] = useState<string | null>(null);
   const [loadingSignals, setLoadingSignals] = useState(false);
+  const [suggestions, setSuggestions] = useState<ConstitutionSuggestion[]>([]);
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
+  const [suggestionsNotice, setSuggestionsNotice] = useState<string | null>(null);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [generatingSuggestions, setGeneratingSuggestions] = useState(false);
+  const [decidingSuggestionId, setDecidingSuggestionId] = useState<string | null>(null);
 
   const dirty = useMemo(() => draft !== saved, [draft, saved]);
 
@@ -106,6 +154,24 @@ export function ConstitutionPanel({ repoId }: { repoId: string }) {
     }
   }, [repoId]);
 
+  const loadSuggestions = useCallback(async () => {
+    setLoadingSuggestions(true);
+    setSuggestionsError(null);
+    try {
+      const res = await fetch(
+        `/api/repos/${encodeURIComponent(repoId)}/constitution/suggestions?limit=30`,
+        { cache: "no-store" }
+      );
+      const json = (await res.json().catch(() => null)) as SuggestionsResponse | null;
+      if (!res.ok) throw new Error(json?.error || "failed to load suggestions");
+      setSuggestions(Array.isArray(json?.suggestions) ? json.suggestions : []);
+    } catch (e) {
+      setSuggestionsError(e instanceof Error ? e.message : "failed to load suggestions");
+    } finally {
+      setLoadingSuggestions(false);
+    }
+  }, [repoId]);
+
   const load = useCallback(async (options?: { preserveNotice?: boolean }) => {
     setLoading(true);
     setError(null);
@@ -124,12 +190,13 @@ export function ConstitutionPanel({ repoId }: { repoId: string }) {
       setMerged(json?.merged ?? "");
       void loadVersions();
       void loadSignals();
+      void loadSuggestions();
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed to load constitution");
     } finally {
       setLoading(false);
     }
-  }, [loadSignals, loadVersions, repoId]);
+  }, [loadSignals, loadSuggestions, loadVersions, repoId]);
 
   useEffect(() => {
     void load();
@@ -162,6 +229,74 @@ export function ConstitutionPanel({ repoId }: { repoId: string }) {
   const applyTemplate = useCallback(() => {
     setDraft(CONSTITUTION_TEMPLATE);
   }, []);
+
+  const onGenerateSuggestions = useCallback(async () => {
+    setGeneratingSuggestions(true);
+    setSuggestionsError(null);
+    setSuggestionsNotice(null);
+    try {
+      const res = await fetch(
+        `/api/repos/${encodeURIComponent(repoId)}/constitution/suggestions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }
+      );
+      const json = (await res.json().catch(() => null)) as SuggestionsResponse | null;
+      if (!res.ok) {
+        if (res.status === 429 && json?.next_allowed_at) {
+          const when = new Date(json.next_allowed_at).toLocaleString();
+          throw new Error(`Rate limited. Try again after ${when}.`);
+        }
+        throw new Error(json?.error || "failed to generate suggestions");
+      }
+      const created = Array.isArray(json?.suggestions) ? json.suggestions.length : 0;
+      const warningText =
+        Array.isArray(json?.warnings) && json.warnings.length > 0
+          ? ` ${json.warnings.join(" ")}`
+          : "";
+      setSuggestionsNotice(`Generated ${created} suggestions.${warningText}`);
+      void loadSuggestions();
+    } catch (e) {
+      setSuggestionsError(e instanceof Error ? e.message : "failed to generate suggestions");
+    } finally {
+      setGeneratingSuggestions(false);
+    }
+  }, [loadSuggestions, repoId]);
+
+  const decideSuggestion = useCallback(
+    async (suggestionId: string, action: "accept" | "reject") => {
+      setDecidingSuggestionId(suggestionId);
+      setSuggestionsError(null);
+      setSuggestionsNotice(null);
+      try {
+        const res = await fetch(
+          `/api/repos/${encodeURIComponent(repoId)}/constitution/suggestions/${encodeURIComponent(
+            suggestionId
+          )}/${action}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ actor: "user" }),
+          }
+        );
+        const json = (await res.json().catch(() => null)) as { error?: string } | null;
+        if (!res.ok) throw new Error(json?.error || `failed to ${action} suggestion`);
+        setSuggestionsNotice(action === "accept" ? "Suggestion accepted." : "Suggestion rejected.");
+        if (action === "accept") {
+          void load({ preserveNotice: true });
+        } else {
+          void loadSuggestions();
+        }
+      } catch (e) {
+        setSuggestionsError(e instanceof Error ? e.message : `failed to ${action} suggestion`);
+      } finally {
+        setDecidingSuggestionId(null);
+      }
+    },
+    [load, loadSuggestions, repoId]
+  );
 
   return (
     <>
@@ -277,7 +412,7 @@ export function ConstitutionPanel({ repoId }: { repoId: string }) {
             No signals yet.
           </div>
         )}
-        {!loadingSignals && signals.length > 0 && (
+      {!loadingSignals && signals.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {signals.map((signal) => (
               <div
@@ -328,6 +463,129 @@ export function ConstitutionPanel({ repoId }: { repoId: string }) {
                 )}
               </div>
             ))}
+          </div>
+        )}
+      </section>
+
+      <section className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+          <div>
+            <h2 style={{ margin: 0 }}>Constitution Suggestions</h2>
+            <div className="muted" style={{ fontSize: 13 }}>
+              Review and accept suggestions generated from recent signals.
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              className="btnSecondary"
+              onClick={() => void loadSuggestions()}
+              disabled={loadingSuggestions || generatingSuggestions}
+            >
+              Refresh
+            </button>
+            <button
+              className="btn"
+              onClick={() => void onGenerateSuggestions()}
+              disabled={loadingSuggestions || generatingSuggestions}
+            >
+              {generatingSuggestions ? "Generating…" : "Generate Suggestions"}
+            </button>
+          </div>
+        </div>
+
+        {!!suggestionsError && <div className="error">{suggestionsError}</div>}
+        {!!suggestionsNotice && <div className="badge">{suggestionsNotice}</div>}
+        {loadingSuggestions && <div className="muted">Loading…</div>}
+        {!loadingSuggestions && suggestions.length === 0 && (
+          <div className="muted" style={{ fontSize: 12 }}>
+            No suggestions yet.
+          </div>
+        )}
+        {!loadingSuggestions && suggestions.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {suggestions.map((suggestion) => {
+              const decidedAt =
+                suggestion.status === "accepted"
+                  ? suggestion.accepted_at
+                  : suggestion.status === "rejected"
+                    ? suggestion.rejected_at
+                    : null;
+              const decidedBy =
+                suggestion.status === "accepted"
+                  ? suggestion.accepted_by
+                  : suggestion.status === "rejected"
+                    ? suggestion.rejected_by
+                    : null;
+              const isDeciding = decidingSuggestionId === suggestion.id;
+              return (
+                <div
+                  key={suggestion.id}
+                  style={{
+                    border: "1px solid #22293a",
+                    borderRadius: 12,
+                    padding: 12,
+                    background: "#0f1320",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <span className="badge">{suggestion.status}</span>
+                    <span className="badge">{SUGGESTION_CATEGORY_LABELS[suggestion.category]}</span>
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      {suggestion.created_at}
+                    </span>
+                    {decidedAt && (
+                      <span className="muted" style={{ fontSize: 12 }}>
+                        {suggestion.status === "accepted" ? "Accepted" : "Rejected"}
+                        {decidedBy ? ` by ${decidedBy}` : ""} · {decidedAt}
+                      </span>
+                    )}
+                  </div>
+                  <div>{suggestion.text}</div>
+                  {suggestion.evidence.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <div className="muted" style={{ fontSize: 12 }}>
+                        Evidence
+                      </div>
+                      {suggestion.evidence.map((evidence) => (
+                        <div
+                          key={evidence.id}
+                          style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}
+                        >
+                          {evidence.type && <span className="badge">{evidence.type}</span>}
+                          <span>{evidence.summary}</span>
+                          {evidence.created_at && (
+                            <span className="muted" style={{ fontSize: 12 }}>
+                              {evidence.created_at}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {suggestion.status === "pending" && (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        className="btn"
+                        onClick={() => void decideSuggestion(suggestion.id, "accept")}
+                        disabled={Boolean(decidingSuggestionId)}
+                      >
+                        {isDeciding ? "Saving…" : "Accept"}
+                      </button>
+                      <button
+                        className="btnSecondary"
+                        onClick={() => void decideSuggestion(suggestion.id, "reject")}
+                        disabled={Boolean(decidingSuggestionId)}
+                      >
+                        {isDeciding ? "Saving…" : "Reject"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </section>

@@ -78,6 +78,17 @@ export type ConstitutionSourcesResult = {
   warnings: string[];
 };
 
+export type ConstitutionSuggestionInput = {
+  category: ConstitutionInsightCategory;
+  text: string;
+  evidence_ids: string[];
+};
+
+export type ConstitutionSuggestionResult = {
+  suggestions: ConstitutionSuggestionInput[];
+  warnings: string[];
+};
+
 type DateRangeNormalized = {
   startMs: number | null;
   endMs: number | null;
@@ -121,6 +132,9 @@ const MAX_PROMPT_CHARS = 140_000;
 const TARGETED_CANDIDATES_PER_SOURCE = 12;
 const CONTEXT_WINDOW_RADIUS = 2;
 const FALLBACK_WINDOW_MESSAGES = 4;
+const DEFAULT_MAX_SIGNALS = 24;
+const MAX_SIGNAL_SUMMARY_CHARS = 500;
+const DEFAULT_MAX_SUGGESTIONS = 6;
 
 const INSIGHT_CATEGORIES = ["decision", "style", "anti", "success", "communication"] as const;
 const INSIGHT_SCOPES = ["global", "project"] as const;
@@ -144,6 +158,20 @@ const AnalysisResponseSchema = z
 const DraftResponseSchema = z
   .object({
     markdown: z.string().min(1),
+  })
+  .strict();
+
+const SuggestionResponseSchema = z
+  .object({
+    suggestions: z.array(
+      z
+        .object({
+          category: z.enum(INSIGHT_CATEGORIES),
+          text: z.string().min(1),
+          evidence_ids: z.array(z.string().min(1)).min(1),
+        })
+        .strict()
+    ),
   })
   .strict();
 
@@ -179,6 +207,29 @@ function draftJsonSchema() {
     required: ["markdown"],
     properties: {
       markdown: { type: "string" },
+    },
+  };
+}
+
+function suggestionJsonSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["suggestions"],
+    properties: {
+      suggestions: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["category", "text", "evidence_ids"],
+          properties: {
+            category: { type: "string", enum: INSIGHT_CATEGORIES },
+            text: { type: "string" },
+            evidence_ids: { type: "array", items: { type: "string" }, minItems: 1 },
+          },
+        },
+      },
     },
   };
 }
@@ -637,6 +688,66 @@ function buildConversationPrompt(conversations: ConversationRecord[]): string {
   }
 
   const combined = `${header}\n\n${bodies.join("\n\n")}`.trim();
+  if (combined.length <= MAX_PROMPT_CHARS) return combined;
+  return truncateText(combined, MAX_PROMPT_CHARS);
+}
+
+type SignalSummary = {
+  id: string;
+  type: string;
+  summary: string;
+  created_at: string;
+};
+
+function buildSignalPrompt(params: {
+  constitution: string;
+  signals: SignalSummary[];
+  maxSuggestions: number;
+  projectName?: string | null;
+}): string {
+  const header = [
+    "Generate constitution update suggestions from the signals below.",
+    `Return at most ${params.maxSuggestions} suggestions.`,
+    "",
+    "Each suggestion must:",
+    "- Be a single sentence statement suitable for a bullet.",
+    "- Use category: decision, style, anti, success, or communication.",
+    "- Include evidence_ids referencing the signal IDs provided.",
+    "- Avoid duplicating existing constitution statements.",
+    "",
+    "Format output as JSON matching the schema.",
+  ].join("\n");
+
+  const constitutionContent = params.constitution.trim()
+    ? `<constitution>\n${truncateText(params.constitution.trim(), 12_000)}\n</constitution>`
+    : "No constitution available.";
+
+  const projectLine =
+    params.projectName && params.projectName.trim()
+      ? `Project: ${params.projectName.trim()}`
+      : null;
+
+  const signalLines = params.signals.map((signal) => {
+    const summary = truncateText(
+      signal.summary.replace(/\s+/g, " ").trim(),
+      MAX_SIGNAL_SUMMARY_CHARS
+    );
+    const type = signal.type ? signal.type.trim() : "unknown";
+    const stamp = signal.created_at ? `, ${signal.created_at}` : "";
+    return `- [${signal.id}] (${type}${stamp}) ${summary}`;
+  });
+
+  const combined = [
+    header,
+    projectLine,
+    "Current constitution:",
+    constitutionContent,
+    "Signals:",
+    signalLines.join("\n"),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
   if (combined.length <= MAX_PROMPT_CHARS) return combined;
   return truncateText(combined, MAX_PROMPT_CHARS);
 }
@@ -1462,6 +1573,18 @@ function ensureConstitutionSchemas(): { analysisSchemaPath: string; draftSchemaP
   return { analysisSchemaPath, draftSchemaPath };
 }
 
+function ensureConstitutionSuggestionSchema(): string {
+  const baseDir = path.join(process.cwd(), ".system", "constitution");
+  ensureDir(baseDir);
+  const suggestionSchemaPath = path.join(baseDir, "constitution_suggestions.schema.json");
+  fs.writeFileSync(
+    suggestionSchemaPath,
+    `${JSON.stringify(suggestionJsonSchema(), null, 2)}\n`,
+    "utf8"
+  );
+  return suggestionSchemaPath;
+}
+
 function conversationStats(insights: ConstitutionInsight[]): ConstitutionAnalysisStats {
   const patterns_found = insights.length;
   const preferences_found = insights.filter(
@@ -1883,6 +2006,105 @@ export async function generateConstitutionDraft(params: {
     warnings.push("Falling back to local draft merge.");
     return { draft: merged, warnings, used_ai: false };
   }
+}
+
+export async function generateConstitutionSuggestions(params: {
+  constitution: string;
+  signals: SignalSummary[];
+  projectName?: string | null;
+  cwd?: string | null;
+  maxSuggestions?: number;
+}): Promise<ConstitutionSuggestionResult> {
+  const warnings: string[] = [];
+  const signals = params.signals
+    .slice(0, DEFAULT_MAX_SIGNALS)
+    .map((signal) => ({
+      id: signal.id.trim(),
+      type: signal.type.trim(),
+      summary: signal.summary.trim(),
+      created_at: signal.created_at.trim(),
+    }))
+    .filter((signal) => signal.id && signal.summary);
+
+  if (signals.length === 0) {
+    return { suggestions: [], warnings: ["No signals available for suggestion generation."] };
+  }
+
+  const settings = resolveChatSettings().effective;
+  if (settings.provider !== "codex") {
+    throw new Error(
+      "Only Codex CLI is supported for constitution suggestions right now. Update Chat Settings to use Codex."
+    );
+  }
+
+  const cwd = params.cwd ?? ensurePortfolioWorkspace();
+  const schemaPath = ensureConstitutionSuggestionSchema();
+  const runId = crypto.randomUUID();
+  const runDir = path.join(process.cwd(), ".system", "constitution", "suggestions", runId);
+  ensureDir(runDir);
+  const outputPath = path.join(runDir, "suggestions.json");
+  const logPath = path.join(runDir, "codex.jsonl");
+  const maxSuggestions = Math.max(
+    1,
+    Math.min(20, params.maxSuggestions ?? DEFAULT_MAX_SUGGESTIONS)
+  );
+
+  const prompt = buildSignalPrompt({
+    constitution: params.constitution,
+    signals,
+    maxSuggestions,
+    projectName: params.projectName,
+  });
+
+  await runCodexExecJson({
+    cwd,
+    prompt,
+    schemaPath,
+    outputPath,
+    logPath,
+    sandbox: "read-only",
+    model: settings.model,
+    cliPath: settings.cliPath,
+    skipGitRepoCheck: true,
+  });
+
+  const raw = JSON.parse(fs.readFileSync(outputPath, "utf8")) as unknown;
+  const parsed = SuggestionResponseSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error("suggestion response did not match schema");
+  }
+
+  const allowedIds = new Set(signals.map((signal) => signal.id));
+  const seen = new Set<string>();
+  const suggestions: ConstitutionSuggestionInput[] = [];
+
+  for (const entry of parsed.data.suggestions) {
+    const text = entry.text.trim();
+    if (!text) continue;
+    const evidence_ids = Array.from(
+      new Set(
+        entry.evidence_ids
+          .map((id) => id.trim())
+          .filter((id) => id && allowedIds.has(id))
+      )
+    );
+    if (evidence_ids.length === 0) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    suggestions.push({
+      category: entry.category,
+      text,
+      evidence_ids,
+    });
+    if (suggestions.length >= maxSuggestions) break;
+  }
+
+  if (suggestions.length === 0) {
+    warnings.push("AI returned no usable suggestions.");
+  }
+
+  return { suggestions, warnings };
 }
 
 export function markConstitutionGenerationComplete(params: {
