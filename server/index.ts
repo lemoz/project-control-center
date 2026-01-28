@@ -33,6 +33,7 @@ import {
   createGlobalPattern,
   createGlobalShiftHandoff,
   createShiftHandoff,
+  createSignal,
   createInitiative,
   expireStaleGlobalShifts,
   expireStaleShifts,
@@ -57,6 +58,7 @@ import {
   listSecurityIncidents,
   listProjectCommunications,
   listGlobalShifts,
+  listSignals,
   searchGlobalPatternsByTags,
   listTracks,
   listEstimationContextRuns,
@@ -4421,6 +4423,83 @@ app.get("/repos/:id/runs", (req, res) => {
   const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : 50;
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(200, Math.trunc(limitRaw)) : 50;
   return res.json({ runs: getRunsForProject(project.id, limit) });
+});
+
+app.get("/repos/:id/signals", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const workOrderId =
+    typeof req.query.work_order_id === "string" ? req.query.work_order_id.trim() : "";
+  const runId = typeof req.query.run_id === "string" ? req.query.run_id.trim() : "";
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit =
+    Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(200, Math.trunc(limitRaw)) : 50;
+  const signals = listSignals({
+    project_id: project.id,
+    work_order_id: workOrderId || null,
+    run_id: runId || null,
+    limit,
+  });
+  return res.json({ signals });
+});
+
+app.post("/repos/:id/signals", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const body = req.body as Record<string, unknown> | null;
+  if (!body || typeof body !== "object") {
+    return res.status(400).json({ error: "request body required" });
+  }
+
+  const type = typeof body.type === "string" ? body.type.trim() : "";
+  const summary = typeof body.summary === "string" ? body.summary.trim() : "";
+  const source = typeof body.source === "string" ? body.source.trim() : "user";
+  const workOrderId =
+    typeof body.work_order_id === "string" ? body.work_order_id.trim() : "";
+  const runId = typeof body.run_id === "string" ? body.run_id.trim() : "";
+
+  const tagsInput = body.tags;
+  const tags =
+    Array.isArray(tagsInput)
+      ? tagsInput.filter((tag): tag is string => typeof tag === "string").map((tag) => tag.trim()).filter(Boolean)
+      : typeof tagsInput === "string"
+        ? tagsInput
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean)
+        : [];
+
+  if (!type) return res.status(400).json({ error: "`type` is required" });
+  if (!summary) return res.status(400).json({ error: "`summary` is required" });
+  if (!source) return res.status(400).json({ error: "`source` is required" });
+
+  if (runId) {
+    const run = getRunById(runId);
+    if (!run) return res.status(400).json({ error: "run not found" });
+    if (run.project_id !== project.id) {
+      return res.status(400).json({ error: "run does not belong to project" });
+    }
+  }
+
+  try {
+    const signal = createSignal({
+      project_id: project.id,
+      work_order_id: workOrderId || null,
+      run_id: runId || null,
+      type,
+      summary,
+      tags,
+      source,
+    });
+    return res.status(201).json(signal);
+  } catch (err) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : "failed to create signal",
+    });
+  }
 });
 
 app.get("/repos/:id/run-metrics/summary", (req, res) => {

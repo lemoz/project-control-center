@@ -122,6 +122,38 @@ export type RunRow = {
   escalation: string | null;
 };
 
+export type SignalRow = {
+  id: string;
+  project_id: string;
+  work_order_id: string | null;
+  run_id: string | null;
+  type: string;
+  summary: string;
+  tags: string;
+  source: string;
+  created_at: string;
+};
+
+export type Signal = Omit<SignalRow, "tags"> & { tags: string[] };
+
+export type CreateSignalInput = {
+  project_id: string;
+  work_order_id?: string | null;
+  run_id?: string | null;
+  type: string;
+  summary: string;
+  tags?: string[] | null;
+  source: string;
+  created_at?: string;
+};
+
+export type SignalQuery = {
+  project_id: string;
+  work_order_id?: string | null;
+  run_id?: string | null;
+  limit?: number;
+};
+
 export type AutopilotPolicyRow = {
   project_id: string;
   enabled: 0 | 1;
@@ -867,6 +899,26 @@ function initSchema(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_runs_project_id_created_at ON runs(project_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_runs_status_created_at ON runs(status, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS signals (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      work_order_id TEXT,
+      run_id TEXT,
+      type TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      tags TEXT NOT NULL DEFAULT '[]',
+      source TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_signals_project_created
+      ON signals(project_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_signals_work_order_created
+      ON signals(project_id, work_order_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_signals_run_created
+      ON signals(run_id, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS security_incidents (
       id TEXT PRIMARY KEY,
@@ -2347,6 +2399,97 @@ export function createCostRecord(record: CostRecord): void {
         (@id, @project_id, @run_id, @category, @input_tokens, @output_tokens, @is_actual, @model, @input_cost_per_1k, @output_cost_per_1k, @total_cost_usd, @description, @created_at)`
     )
     .run(record);
+}
+
+function normalizeSignalTags(tags: string[]): string[] {
+  const cleaned = tags.map((tag) => tag.trim()).filter(Boolean);
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const tag of cleaned) {
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(tag);
+  }
+  return deduped;
+}
+
+function toSignal(row: SignalRow): Signal {
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    work_order_id: row.work_order_id ?? null,
+    run_id: row.run_id ?? null,
+    type: row.type,
+    summary: row.summary,
+    tags: normalizeSignalTags(parseJsonStringArray(row.tags)),
+    source: row.source,
+    created_at: row.created_at,
+  };
+}
+
+export function createSignal(input: CreateSignalInput): Signal {
+  const database = getDb();
+  const createdAt =
+    typeof input.created_at === "string" && input.created_at.trim()
+      ? input.created_at.trim()
+      : new Date().toISOString();
+  const tags = normalizeSignalTags(input.tags ?? []);
+  const row: SignalRow = {
+    id: crypto.randomUUID(),
+    project_id: input.project_id,
+    work_order_id: normalizeOptionalString(input.work_order_id) ?? null,
+    run_id: normalizeOptionalString(input.run_id) ?? null,
+    type: input.type.trim(),
+    summary: input.summary.trim(),
+    tags: JSON.stringify(tags),
+    source: input.source.trim(),
+    created_at: createdAt,
+  };
+
+  database
+    .prepare(
+      `INSERT INTO signals
+        (id, project_id, work_order_id, run_id, type, summary, tags, source, created_at)
+       VALUES
+        (@id, @project_id, @work_order_id, @run_id, @type, @summary, @tags, @source, @created_at)`
+    )
+    .run(row);
+
+  return toSignal(row);
+}
+
+export function listSignals(query: SignalQuery): Signal[] {
+  const database = getDb();
+  const clauses = ["project_id = ?"];
+  const params: Array<string> = [query.project_id];
+
+  if (query.work_order_id) {
+    clauses.push("work_order_id = ?");
+    params.push(query.work_order_id);
+  }
+  if (query.run_id) {
+    clauses.push("run_id = ?");
+    params.push(query.run_id);
+  }
+
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const limit =
+    typeof query.limit === "number" && Number.isFinite(query.limit)
+      ? Math.max(1, Math.min(200, Math.trunc(query.limit)))
+      : 50;
+
+  const rows = database
+    .prepare(
+      `SELECT *
+       FROM signals
+       ${where}
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .all(...params, limit) as SignalRow[];
+
+  return rows.map((row) => toSignal(row));
 }
 
 const INCIDENT_ARCHIVE_DAYS = 90;

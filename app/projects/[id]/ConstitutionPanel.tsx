@@ -33,6 +33,23 @@ type VersionsResponse = {
   error?: string;
 };
 
+type Signal = {
+  id: string;
+  project_id: string;
+  work_order_id: string | null;
+  run_id: string | null;
+  type: string;
+  summary: string;
+  tags: string[];
+  source: string;
+  created_at: string;
+};
+
+type SignalsResponse = {
+  signals: Signal[];
+  error?: string;
+};
+
 export function ConstitutionPanel({ repoId }: { repoId: string }) {
   const [saved, setSaved] = useState("");
   const [draft, setDraft] = useState("");
@@ -47,6 +64,9 @@ export function ConstitutionPanel({ repoId }: { repoId: string }) {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showGenerator, setShowGenerator] = useState(false);
+  const [signals, setSignals] = useState<Signal[]>([]);
+  const [signalsError, setSignalsError] = useState<string | null>(null);
+  const [loadingSignals, setLoadingSignals] = useState(false);
 
   const dirty = useMemo(() => draft !== saved, [draft, saved]);
 
@@ -68,6 +88,24 @@ export function ConstitutionPanel({ repoId }: { repoId: string }) {
     }
   }, [repoId]);
 
+  const loadSignals = useCallback(async () => {
+    setLoadingSignals(true);
+    setSignalsError(null);
+    try {
+      const res = await fetch(
+        `/api/repos/${encodeURIComponent(repoId)}/signals?limit=10`,
+        { cache: "no-store" }
+      );
+      const json = (await res.json().catch(() => null)) as SignalsResponse | null;
+      if (!res.ok) throw new Error(json?.error || "failed to load signals");
+      setSignals(Array.isArray(json?.signals) ? json.signals : []);
+    } catch (e) {
+      setSignalsError(e instanceof Error ? e.message : "failed to load signals");
+    } finally {
+      setLoadingSignals(false);
+    }
+  }, [repoId]);
+
   const load = useCallback(async (options?: { preserveNotice?: boolean }) => {
     setLoading(true);
     setError(null);
@@ -85,12 +123,13 @@ export function ConstitutionPanel({ repoId }: { repoId: string }) {
       setGlobalContent(json?.global ?? "");
       setMerged(json?.merged ?? "");
       void loadVersions();
+      void loadSignals();
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed to load constitution");
     } finally {
       setLoading(false);
     }
-  }, [loadVersions, repoId]);
+  }, [loadSignals, loadVersions, repoId]);
 
   useEffect(() => {
     void load();
@@ -215,6 +254,81 @@ export function ConstitutionPanel({ repoId }: { repoId: string }) {
                 })}
             </div>
           </>
+        )}
+      </section>
+
+      <section className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+          <div>
+            <h2 style={{ margin: 0 }}>Signals</h2>
+            <div className="muted" style={{ fontSize: 13 }}>
+              Recent outcome and decision notes for this project.
+            </div>
+          </div>
+          <button className="btnSecondary" onClick={() => void loadSignals()} disabled={loadingSignals}>
+            Refresh
+          </button>
+        </div>
+
+        {!!signalsError && <div className="error">{signalsError}</div>}
+        {loadingSignals && <div className="muted">Loading…</div>}
+        {!loadingSignals && signals.length === 0 && (
+          <div className="muted" style={{ fontSize: 12 }}>
+            No signals yet.
+          </div>
+        )}
+        {!loadingSignals && signals.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {signals.map((signal) => (
+              <div
+                key={signal.id}
+                style={{
+                  border: "1px solid #22293a",
+                  borderRadius: 12,
+                  padding: 12,
+                  background: "#0f1320",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                }}
+              >
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <span className="badge">{signal.type}</span>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {signal.created_at}
+                  </span>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    source: {signal.source}
+                  </span>
+                </div>
+                <div>{signal.summary}</div>
+                {signal.tags.length > 0 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {signal.tags.map((tag) => (
+                      <span key={tag} className="badge">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {(signal.work_order_id || signal.run_id) && (
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    {signal.work_order_id ? (
+                      <>
+                        WO: <code>{signal.work_order_id}</code>
+                      </>
+                    ) : null}
+                    {signal.run_id ? (
+                      <>
+                        {signal.work_order_id ? " · " : ""}
+                        Run: <code>{signal.run_id}</code>
+                      </>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         )}
       </section>
 
