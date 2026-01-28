@@ -7,6 +7,7 @@ import { ChatAttentionBell } from "./ChatAttentionBell";
 
 const NAV_LINKS = [
   { href: "/", label: "Home" },
+  { href: "/portfolio", label: "Portfolio" },
   { href: "/observability", label: "Observability" },
   { href: "/chat", label: "Chat" },
   { href: "/settings", label: "Settings" },
