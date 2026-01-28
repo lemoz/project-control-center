@@ -154,6 +154,49 @@ export type SignalQuery = {
   limit?: number;
 };
 
+export type ConstitutionSuggestionStatus = "pending" | "accepted" | "rejected";
+
+export type ConstitutionSuggestionEvidence = {
+  id: string;
+  type: string;
+  summary: string;
+  created_at: string;
+};
+
+export type ConstitutionSuggestionRow = {
+  id: string;
+  project_id: string;
+  scope: "global" | "project";
+  category: string;
+  text: string;
+  evidence: string;
+  status: ConstitutionSuggestionStatus;
+  created_at: string;
+  accepted_at: string | null;
+  accepted_by: string | null;
+  rejected_at: string | null;
+  rejected_by: string | null;
+};
+
+export type ConstitutionSuggestion = Omit<ConstitutionSuggestionRow, "evidence"> & {
+  evidence: ConstitutionSuggestionEvidence[];
+};
+
+export type CreateConstitutionSuggestionInput = {
+  project_id: string;
+  scope: "global" | "project";
+  category: string;
+  text: string;
+  evidence: ConstitutionSuggestionEvidence[];
+  created_at?: string;
+};
+
+export type ConstitutionSuggestionQuery = {
+  project_id: string;
+  status?: ConstitutionSuggestionStatus | null;
+  limit?: number;
+};
+
 export type AutopilotPolicyRow = {
   project_id: string;
   enabled: 0 | 1;
@@ -1099,6 +1142,27 @@ function initSchema(database: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_constitution_versions_project_active
       ON constitution_versions(project_id, scope, active, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS constitution_suggestions (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      category TEXT NOT NULL,
+      text TEXT NOT NULL,
+      evidence TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL,
+      accepted_at TEXT,
+      accepted_by TEXT,
+      rejected_at TEXT,
+      rejected_by TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_constitution_suggestions_project_created
+      ON constitution_suggestions(project_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_constitution_suggestions_status
+      ON constitution_suggestions(project_id, status, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS user_interactions (
       id TEXT PRIMARY KEY,
       action_type TEXT NOT NULL,
@@ -1550,6 +1614,34 @@ function initSchema(database: Database.Database) {
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
       );
       CREATE INDEX idx_tracks_project_id ON tracks(project_id);
+    `);
+  }
+
+  const constitutionSuggestionTableExists = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='constitution_suggestions'")
+    .get();
+  if (!constitutionSuggestionTableExists) {
+    database.exec(`
+      CREATE TABLE constitution_suggestions (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        category TEXT NOT NULL,
+        text TEXT NOT NULL,
+        evidence TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL,
+        accepted_at TEXT,
+        accepted_by TEXT,
+        rejected_at TEXT,
+        rejected_by TEXT,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX idx_constitution_suggestions_project_created
+        ON constitution_suggestions(project_id, created_at DESC);
+      CREATE INDEX idx_constitution_suggestions_status
+        ON constitution_suggestions(project_id, status, created_at DESC);
     `);
   }
 
@@ -2490,6 +2582,203 @@ export function listSignals(query: SignalQuery): Signal[] {
     .all(...params, limit) as SignalRow[];
 
   return rows.map((row) => toSignal(row));
+}
+
+function normalizeSuggestionEvidenceInput(
+  value: unknown
+): ConstitutionSuggestionEvidence[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const evidence: ConstitutionSuggestionEvidence[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const id = typeof record.id === "string" ? record.id.trim() : "";
+    const summary = typeof record.summary === "string" ? record.summary.trim() : "";
+    if (!id || !summary) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    evidence.push({
+      id,
+      summary,
+      type: typeof record.type === "string" ? record.type.trim() : "",
+      created_at:
+        typeof record.created_at === "string" ? record.created_at.trim() : "",
+    });
+  }
+  return evidence;
+}
+
+function parseJsonSuggestionEvidence(
+  value: string | null
+): ConstitutionSuggestionEvidence[] {
+  if (!value) return [];
+  try {
+    return normalizeSuggestionEvidenceInput(JSON.parse(value));
+  } catch {
+    return [];
+  }
+}
+
+function toConstitutionSuggestion(
+  row: ConstitutionSuggestionRow
+): ConstitutionSuggestion {
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    scope: row.scope,
+    category: row.category,
+    text: row.text,
+    evidence: parseJsonSuggestionEvidence(row.evidence),
+    status: row.status,
+    created_at: row.created_at,
+    accepted_at: row.accepted_at,
+    accepted_by: row.accepted_by,
+    rejected_at: row.rejected_at,
+    rejected_by: row.rejected_by,
+  };
+}
+
+export function getConstitutionSuggestionById(
+  id: string
+): ConstitutionSuggestion | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM constitution_suggestions WHERE id = ?")
+    .get(id) as ConstitutionSuggestionRow | undefined;
+  return row ? toConstitutionSuggestion(row) : null;
+}
+
+export function getLatestConstitutionSuggestionCreatedAt(
+  projectId: string
+): string | null {
+  const database = getDb();
+  const row = database
+    .prepare(
+      `SELECT created_at
+       FROM constitution_suggestions
+       WHERE project_id = ?
+       ORDER BY created_at DESC
+       LIMIT 1`
+    )
+    .get(projectId) as { created_at: string } | undefined;
+  return row?.created_at ?? null;
+}
+
+export function createConstitutionSuggestions(
+  inputs: CreateConstitutionSuggestionInput[]
+): ConstitutionSuggestion[] {
+  if (inputs.length === 0) return [];
+  const database = getDb();
+  const now = new Date().toISOString();
+  const rows: ConstitutionSuggestionRow[] = inputs.map((input) => {
+    const createdAt =
+      typeof input.created_at === "string" && input.created_at.trim()
+        ? input.created_at.trim()
+        : now;
+    const evidence = normalizeSuggestionEvidenceInput(input.evidence);
+    return {
+      id: crypto.randomUUID(),
+      project_id: input.project_id,
+      scope: input.scope,
+      category: input.category.trim(),
+      text: input.text.trim(),
+      evidence: JSON.stringify(evidence),
+      status: "pending",
+      created_at: createdAt,
+      accepted_at: null,
+      accepted_by: null,
+      rejected_at: null,
+      rejected_by: null,
+    };
+  });
+
+  const insert = database.transaction(() => {
+    const stmt = database.prepare(
+      `INSERT INTO constitution_suggestions
+        (id, project_id, scope, category, text, evidence, status, created_at, accepted_at, accepted_by, rejected_at, rejected_by)
+       VALUES
+        (@id, @project_id, @scope, @category, @text, @evidence, @status, @created_at, @accepted_at, @accepted_by, @rejected_at, @rejected_by)`
+    );
+    for (const row of rows) {
+      stmt.run(row);
+    }
+  });
+  insert();
+
+  return rows.map((row) => toConstitutionSuggestion(row));
+}
+
+export function listConstitutionSuggestions(
+  query: ConstitutionSuggestionQuery
+): ConstitutionSuggestion[] {
+  const database = getDb();
+  const clauses = ["project_id = ?"];
+  const params: Array<string> = [query.project_id];
+  if (query.status) {
+    clauses.push("status = ?");
+    params.push(query.status);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const limit =
+    typeof query.limit === "number" && Number.isFinite(query.limit)
+      ? Math.max(1, Math.min(200, Math.trunc(query.limit)))
+      : 50;
+
+  const rows = database
+    .prepare(
+      `SELECT *
+       FROM constitution_suggestions
+       ${where}
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .all(...params, limit) as ConstitutionSuggestionRow[];
+
+  return rows.map((row) => toConstitutionSuggestion(row));
+}
+
+export function decideConstitutionSuggestion(params: {
+  id: string;
+  status: "accepted" | "rejected";
+  actor: string;
+  decided_at?: string;
+}): ConstitutionSuggestion | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM constitution_suggestions WHERE id = ?")
+    .get(params.id) as ConstitutionSuggestionRow | undefined;
+  if (!row) return null;
+  if (row.status !== "pending") return toConstitutionSuggestion(row);
+
+  const decidedAt =
+    typeof params.decided_at === "string" && params.decided_at.trim()
+      ? params.decided_at.trim()
+      : new Date().toISOString();
+  const actor = params.actor.trim() || "user";
+
+  if (params.status === "accepted") {
+    database
+      .prepare(
+        `UPDATE constitution_suggestions
+         SET status = 'accepted', accepted_at = ?, accepted_by = ?
+         WHERE id = ?`
+      )
+      .run(decidedAt, actor, params.id);
+  } else {
+    database
+      .prepare(
+        `UPDATE constitution_suggestions
+         SET status = 'rejected', rejected_at = ?, rejected_by = ?
+         WHERE id = ?`
+      )
+      .run(decidedAt, actor, params.id);
+  }
+
+  const updated = database
+    .prepare("SELECT * FROM constitution_suggestions WHERE id = ?")
+    .get(params.id) as ConstitutionSuggestionRow | undefined;
+  return updated ? toConstitutionSuggestion(updated) : null;
 }
 
 const INCIDENT_ARCHIVE_DAYS = 90;

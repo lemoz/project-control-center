@@ -34,11 +34,14 @@ import {
   createGlobalShiftHandoff,
   createShiftHandoff,
   createSignal,
+  createConstitutionSuggestions,
   createInitiative,
   expireStaleGlobalShifts,
   expireStaleShifts,
+  decideConstitutionSuggestion,
   findProjectById,
   findGlobalPatternById,
+  getConstitutionSuggestionById,
   getInitiativeById,
   getActiveShift,
   getActiveGlobalShift,
@@ -48,6 +51,7 @@ import {
   getProjectCommunicationById,
   getProjectVm,
   getRunById,
+  getLatestConstitutionSuggestionCreatedAt,
   getEstimationContextSummary,
   getRunPhaseMetricsSummary,
   updateRun,
@@ -58,6 +62,7 @@ import {
   listSecurityIncidents,
   listProjectCommunications,
   listGlobalShifts,
+  listConstitutionSuggestions,
   listSignals,
   searchGlobalPatternsByTags,
   listTracks,
@@ -165,6 +170,7 @@ import {
   type ConstitutionInsightScope,
   listGlobalConstitutionVersions,
   listProjectConstitutionVersions,
+  mergeConstitutionWithInsights,
   mergeConstitutions,
   readGlobalConstitution,
   readProjectConstitution,
@@ -174,6 +180,7 @@ import {
 import {
   analyzeConstitutionSources,
   generateConstitutionDraft,
+  generateConstitutionSuggestions,
   listConstitutionGenerationSources,
   markConstitutionGenerationComplete,
 } from "./constitution_generation.js";
@@ -3498,6 +3505,215 @@ app.put("/repos/:id/constitution", (req, res) => {
     source,
   });
   return res.json({ ok: true, version: result.version });
+});
+
+const CONSTITUTION_SUGGESTION_COOLDOWN_MS = 60 * 60 * 1000;
+const CONSTITUTION_SUGGESTION_MAX_SIGNALS = 24;
+const CONSTITUTION_SUGGESTION_MAX_SUGGESTIONS = 6;
+
+app.get("/repos/:id/constitution/suggestions", (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const status = typeof req.query.status === "string" ? req.query.status.trim() : "";
+  if (status && status !== "pending" && status !== "accepted" && status !== "rejected") {
+    return res.status(400).json({ error: "`status` must be pending, accepted, or rejected" });
+  }
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit =
+    Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(200, Math.trunc(limitRaw)) : 50;
+  const suggestions = listConstitutionSuggestions({
+    project_id: project.id,
+    status: (status as "pending" | "accepted" | "rejected") || null,
+    limit,
+  });
+  return res.json({ suggestions });
+});
+
+app.post("/repos/:id/constitution/suggestions", async (req, res) => {
+  const { id } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+
+  const lastCreatedAt = getLatestConstitutionSuggestionCreatedAt(project.id);
+  if (lastCreatedAt) {
+    const lastMs = Date.parse(lastCreatedAt);
+    if (Number.isFinite(lastMs)) {
+      const elapsed = Date.now() - lastMs;
+      if (elapsed < CONSTITUTION_SUGGESTION_COOLDOWN_MS) {
+        const retryAfterSeconds = Math.max(
+          1,
+          Math.ceil((CONSTITUTION_SUGGESTION_COOLDOWN_MS - elapsed) / 1000)
+        );
+        return res.status(429).json({
+          error: "rate limited",
+          retry_after_seconds: retryAfterSeconds,
+          next_allowed_at: new Date(lastMs + CONSTITUTION_SUGGESTION_COOLDOWN_MS).toISOString(),
+        });
+      }
+    }
+  }
+
+  const maxSignals =
+    typeof req.body?.maxSignals === "number" && Number.isFinite(req.body.maxSignals)
+      ? Math.max(1, Math.min(200, Math.trunc(req.body.maxSignals)))
+      : CONSTITUTION_SUGGESTION_MAX_SIGNALS;
+  const maxSuggestions =
+    typeof req.body?.maxSuggestions === "number" && Number.isFinite(req.body.maxSuggestions)
+      ? Math.max(1, Math.min(20, Math.trunc(req.body.maxSuggestions)))
+      : CONSTITUTION_SUGGESTION_MAX_SUGGESTIONS;
+
+  const signals = listSignals({ project_id: project.id, limit: maxSignals });
+  if (signals.length === 0) {
+    return res.status(400).json({ error: "no signals available" });
+  }
+
+  const constitution = mergeConstitutions(
+    readGlobalConstitution(),
+    readProjectConstitution(project.path)
+  );
+
+  try {
+    const result = await generateConstitutionSuggestions({
+      constitution,
+      signals: signals.map((signal) => ({
+        id: signal.id,
+        type: signal.type,
+        summary: signal.summary,
+        created_at: signal.created_at,
+      })),
+      projectName: project.name,
+      cwd: project.path,
+      maxSuggestions,
+    });
+
+    const signalMap = new Map(signals.map((signal) => [signal.id, signal]));
+    const suggestionsInput = result.suggestions
+      .map((suggestion) => {
+        const evidence = suggestion.evidence_ids
+          .map((signalId) => {
+            const signal = signalMap.get(signalId);
+            if (!signal) return null;
+            return {
+              id: signal.id,
+              type: signal.type,
+              summary: signal.summary,
+              created_at: signal.created_at,
+            };
+          })
+          .filter(Boolean);
+        if (!isInsightCategory(suggestion.category) || evidence.length === 0) return null;
+        return {
+          project_id: project.id,
+          scope: "project" as const,
+          category: suggestion.category,
+          text: suggestion.text,
+          evidence,
+        };
+      })
+      .filter((entry) => entry !== null) as Array<{
+      project_id: string;
+      scope: "project";
+      category: ConstitutionInsightCategory;
+      text: string;
+      evidence: {
+        id: string;
+        type: string;
+        summary: string;
+        created_at: string;
+      }[];
+    }>;
+
+    if (suggestionsInput.length === 0) {
+      return res.status(422).json({
+        error: "no usable suggestions generated",
+        warnings: result.warnings,
+      });
+    }
+
+    const suggestions = createConstitutionSuggestions(suggestionsInput);
+    return res.status(201).json({ suggestions, warnings: result.warnings });
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "failed to generate suggestions",
+    });
+  }
+});
+
+app.post("/repos/:id/constitution/suggestions/:suggestionId/accept", (req, res) => {
+  const { id, suggestionId } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const suggestion = getConstitutionSuggestionById(suggestionId);
+  if (!suggestion || suggestion.project_id !== project.id) {
+    return res.status(404).json({ error: "suggestion not found" });
+  }
+  if (suggestion.status !== "pending") {
+    return res.status(409).json({ error: "suggestion already decided", status: suggestion.status });
+  }
+  if (!isInsightCategory(suggestion.category)) {
+    return res.status(400).json({ error: "suggestion category invalid" });
+  }
+
+  const actor =
+    typeof req.body?.actor === "string" && req.body.actor.trim()
+      ? req.body.actor.trim()
+      : "user";
+  const base =
+    suggestion.scope === "global"
+      ? readGlobalConstitution()
+      : readProjectConstitution(project.path) ?? "";
+  const updated = mergeConstitutionWithInsights({
+    base,
+    insights: [
+      {
+        category: suggestion.category,
+        text: suggestion.text,
+        scope: suggestion.scope,
+      },
+    ],
+  });
+
+  try {
+    const source = `suggestion:${suggestion.id}`;
+    const version =
+      suggestion.scope === "global"
+        ? writeGlobalConstitution(updated, { source }).version
+        : writeProjectConstitution(project.path, updated, { source }).version;
+    const decided = decideConstitutionSuggestion({
+      id: suggestion.id,
+      status: "accepted",
+      actor,
+    });
+    return res.json({ ok: true, suggestion: decided, version });
+  } catch (err) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : "failed to apply suggestion",
+    });
+  }
+});
+
+app.post("/repos/:id/constitution/suggestions/:suggestionId/reject", (req, res) => {
+  const { id, suggestionId } = req.params;
+  const project = findProjectById(id);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const suggestion = getConstitutionSuggestionById(suggestionId);
+  if (!suggestion || suggestion.project_id !== project.id) {
+    return res.status(404).json({ error: "suggestion not found" });
+  }
+  if (suggestion.status !== "pending") {
+    return res.status(409).json({ error: "suggestion already decided", status: suggestion.status });
+  }
+  const actor =
+    typeof req.body?.actor === "string" && req.body.actor.trim()
+      ? req.body.actor.trim()
+      : "user";
+  const decided = decideConstitutionSuggestion({
+    id: suggestion.id,
+    status: "rejected",
+    actor,
+  });
+  return res.json({ ok: true, suggestion: decided });
 });
 
 const VM_ISOLATION_MODES = new Set(["local", "vm", "vm+container"]);
