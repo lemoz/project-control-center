@@ -4397,6 +4397,7 @@ app.get("/repos/:id/tech-tree", (req, res) => {
     status: string;
     priority: number;
     era: string | null;
+    updatedAt: string | null;
     dependsOn: string[];
     dependents: string[];
     trackId: string | null;
@@ -4428,6 +4429,7 @@ app.get("/repos/:id/tech-tree", (req, res) => {
         status: depWorkOrder?.status ?? "blocked",
         priority: depWorkOrder?.priority ?? 3,
         era: depWorkOrder?.era ?? null,
+        updatedAt: depWorkOrder?.updated_at ?? null,
         dependsOn: [],
         dependents: [],
         trackId: null,
@@ -4475,6 +4477,7 @@ app.get("/repos/:id/tech-tree", (req, res) => {
     status: wo.status,
     priority: wo.priority,
     era: wo.era,
+    updatedAt: wo.updated_at,
     dependsOn: normalizedDependsOn.get(wo.id) ?? [],
     dependents: dependentsMap.get(wo.id) ?? [],
     trackId: wo.trackId,

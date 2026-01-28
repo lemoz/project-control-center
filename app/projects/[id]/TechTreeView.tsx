@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent, WheelEvent } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { TechTreeFilters, type TechTreeTrackOption } from "./TechTreeFilters";
+import { TechTreeLegend } from "./TechTreeLegend";
+import { TechTreeSwimlanes, type TechTreeLaneLayout } from "./TechTreeSwimlanes";
 
 type WorkOrderStatus =
   | "backlog"
@@ -21,6 +24,7 @@ type DependencyNode = {
   status: WorkOrderStatus;
   priority: number;
   era: string | null;
+  updatedAt: string | null;
   dependsOn: string[];
   dependents: string[];
   trackId: string | null;
@@ -96,21 +100,46 @@ const FIT_PADDING = 0.94;
 const MINIMAP_WIDTH = 220;
 const MINIMAP_HEIGHT = 160;
 const HIDDEN_EDGE_STUB = 40;
+const DEFAULT_TRACK_COLOR = "#334155";
+const BASE_NODE_FILL = "#2d2d44";
 
 const resolveTrackId = (node: DependencyNode): string => {
   return node.track?.id ?? node.trackId ?? UNASSIGNED_LANE_ID;
 };
 
-type LaneLayout = {
-  id: string;
-  name: string;
-  color: string | null;
-  nodes: DependencyNode[];
-  isUnassigned: boolean;
-  top: number;
-  height: number;
-  isCollapsed: boolean;
+const parseHexColor = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("#")) return null;
+  const hex = trimmed.slice(1);
+  if (hex.length !== 3 && hex.length !== 6) return null;
+  const expanded =
+    hex.length === 3
+      ? hex
+          .split("")
+          .map((ch) => ch + ch)
+          .join("")
+      : hex;
+  const int = Number.parseInt(expanded, 16);
+  if (Number.isNaN(int)) return null;
+  return {
+    r: (int >> 16) & 255,
+    g: (int >> 8) & 255,
+    b: int & 255,
+  };
 };
+
+const applyAlpha = (color: string, alpha: number) => {
+  const parsed = parseHexColor(color);
+  if (!parsed) return color;
+  return `rgba(${parsed.r}, ${parsed.g}, ${parsed.b}, ${alpha})`;
+};
+
+const trackTint = (color: string | null) => {
+  if (!color) return BASE_NODE_FILL;
+  return applyAlpha(color, 0.18);
+};
+
+type LaneLayout = TechTreeLaneLayout;
 
 type EraLaneLayout = {
   id: string;
@@ -129,12 +158,10 @@ type Viewport = {
 
 type ViewMode = "era" | "depth";
 
-type TrackFilterItem = {
-  id: string;
-  name: string;
-  color: string | null;
+type SwimlaneSortMode = "manual" | "activity" | "count" | "alpha";
+
+type TrackFilterItem = TechTreeTrackOption & {
   sortOrder: number | null;
-  isUnassigned: boolean;
 };
 
 export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: () => void }) {
@@ -146,6 +173,8 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
   const [collapsedLanes, setCollapsedLanes] = useState<Record<string, boolean>>({});
   const [scale, setScale] = useState(1);
   const [viewMode, setViewMode] = useState<ViewMode>("depth");
+  const [swimlanesEnabled, setSwimlanesEnabled] = useState(false);
+  const [swimlaneSort, setSwimlaneSort] = useState<SwimlaneSortMode>("manual");
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, width: 0, height: 0 });
   const [isScaleReady, setIsScaleReady] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -293,6 +322,26 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
 
   const tracksParam = searchParams.get("tracks");
 
+  const trackStats = useMemo(() => {
+    const counts = new Map<string, number>();
+    const latestActivity = new Map<string, number>();
+    if (!data) return { counts, latestActivity };
+
+    for (const node of data.nodes) {
+      const trackId = resolveTrackId(node);
+      counts.set(trackId, (counts.get(trackId) ?? 0) + 1);
+      if (node.updatedAt) {
+        const timestamp = Date.parse(node.updatedAt);
+        if (!Number.isNaN(timestamp)) {
+          const current = latestActivity.get(trackId) ?? 0;
+          if (timestamp > current) latestActivity.set(trackId, timestamp);
+        }
+      }
+    }
+
+    return { counts, latestActivity };
+  }, [data]);
+
   const trackOptions = useMemo<TrackFilterItem[]>(() => {
     if (!data) return [];
     const byId = new Map<string, TrackFilterItem>();
@@ -304,6 +353,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
         color: track.color ?? null,
         sortOrder: track.sortOrder ?? null,
         isUnassigned: false,
+        count: trackStats.counts.get(track.id) ?? 0,
       });
     }
 
@@ -320,6 +370,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
         if (!existing.color && nodeColor) {
           existing.color = nodeColor;
         }
+        existing.count = trackStats.counts.get(trackId) ?? existing.count;
       } else {
         byId.set(trackId, {
           id: trackId,
@@ -327,6 +378,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
           color: nodeColor,
           sortOrder: null,
           isUnassigned: false,
+          count: trackStats.counts.get(trackId) ?? 0,
         });
       }
     }
@@ -336,9 +388,10 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       byId.set(UNASSIGNED_LANE_ID, {
         id: UNASSIGNED_LANE_ID,
         name: "Unassigned",
-        color: "#334155",
+        color: DEFAULT_TRACK_COLOR,
         sortOrder: Number.MAX_SAFE_INTEGER,
         isUnassigned: true,
+        count: trackStats.counts.get(UNASSIGNED_LANE_ID) ?? 0,
       });
     }
 
@@ -351,7 +404,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       return a.name.localeCompare(b.name);
     });
     return list;
-  }, [data]);
+  }, [data, trackStats]);
 
   const parsedTracks = useMemo(() => {
     if (tracksParam === null) return null;
@@ -380,6 +433,14 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
     [visibleTrackIds],
   );
 
+  const isLaneVisible = useCallback(
+    (laneId: string) => {
+      if (!swimlanesEnabled) return true;
+      return isTrackVisible(laneId);
+    },
+    [isTrackVisible, swimlanesEnabled],
+  );
+
   const nodeTrackIds = useMemo(() => {
     const map = new Map<string, string>();
     if (!data) return map;
@@ -388,6 +449,14 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
     }
     return map;
   }, [data]);
+
+  const trackColorById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const track of trackOptions) {
+      if (track.color) map.set(track.id, track.color);
+    }
+    return map;
+  }, [trackOptions]);
 
   const visibleNodeIds = useMemo(() => {
     if (!data) return new Set<string>();
@@ -443,8 +512,6 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
     },
     [trackOptions, updateTracksParam, visibleTrackIds],
   );
-
-  const activeTrackCount = visibleTrackIds ? visibleTrackIds.size : trackOptions.length;
 
   useEffect(() => {
     if (selectedId && !visibleNodeIds.has(selectedId)) {
@@ -536,37 +603,98 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       }
     }
 
-    const lanesById = new Map<string, { id: string; name: string; color: string | null; nodes: DependencyNode[]; isUnassigned: boolean }>();
+    const trackById = new Map<string, TrackFilterItem>();
+    trackOptions.forEach((track, index) => {
+      trackById.set(track.id, { ...track, sortOrder: track.sortOrder ?? index });
+    });
 
-    for (const node of visibleNodes) {
-      const trackId = node.track?.id ?? node.trackId ?? null;
-      const isUnassigned = !trackId;
-      const laneId = trackId ?? UNASSIGNED_LANE_ID;
-      const laneName = isUnassigned ? "Unassigned" : node.track?.name ?? trackId ?? "Unknown track";
-      const laneColor = isUnassigned ? "#334155" : node.track?.color ?? "#334155";
+    type LaneSeed = {
+      id: string;
+      name: string;
+      color: string | null;
+      nodes: DependencyNode[];
+      isUnassigned: boolean;
+      sortOrder: number | null;
+    };
 
-      const existing = lanesById.get(laneId);
-      if (existing) {
-        if (!existing.isUnassigned) {
-          if (node.track?.name) existing.name = node.track.name;
-          if (node.track?.color) existing.color = node.track.color;
+    const lanesById = new Map<string, LaneSeed>();
+
+    if (swimlanesEnabled) {
+      for (const node of visibleNodes) {
+        const laneId = resolveTrackId(node);
+        const trackMeta = trackById.get(laneId);
+        const isUnassigned = trackMeta?.isUnassigned ?? laneId === UNASSIGNED_LANE_ID;
+        const laneName =
+          trackMeta?.name ?? node.track?.name ?? laneId ?? (isUnassigned ? "Unassigned" : "Unknown track");
+        const laneColor = trackMeta?.color ?? node.track?.color ?? DEFAULT_TRACK_COLOR;
+        const laneOrder = trackMeta?.sortOrder ?? null;
+
+        const existing = lanesById.get(laneId);
+        if (existing) {
+          existing.nodes.push(node);
+        } else {
+          lanesById.set(laneId, {
+            id: laneId,
+            name: laneName,
+            color: laneColor,
+            nodes: [node],
+            isUnassigned,
+            sortOrder: laneOrder,
+          });
         }
-        existing.nodes.push(node);
-      } else {
-        lanesById.set(laneId, {
-          id: laneId,
-          name: laneName,
-          color: laneColor,
-          nodes: [node],
-          isUnassigned,
-        });
       }
+    } else if (visibleNodes.length > 0) {
+      lanesById.set("all", {
+        id: "all",
+        name: "All Work Orders",
+        color: null,
+        nodes: [...visibleNodes],
+        isUnassigned: false,
+        sortOrder: null,
+      });
     }
 
-    const laneList = Array.from(lanesById.values()).sort((a, b) => {
+    let laneList = Array.from(lanesById.values());
+
+    const compareManual = (a: LaneSeed, b: LaneSeed) => {
       if (a.isUnassigned !== b.isUnassigned) return a.isUnassigned ? 1 : -1;
+      const orderA = a.sortOrder ?? Number.MAX_SAFE_INTEGER;
+      const orderB = b.sortOrder ?? Number.MAX_SAFE_INTEGER;
+      if (orderA !== orderB) return orderA - orderB;
       return a.name.localeCompare(b.name);
-    });
+    };
+
+    if (swimlanesEnabled) {
+      const compareActivity = (a: LaneSeed, b: LaneSeed) => {
+        if (a.isUnassigned !== b.isUnassigned) return a.isUnassigned ? 1 : -1;
+        const activityA = trackStats.latestActivity.get(a.id) ?? 0;
+        const activityB = trackStats.latestActivity.get(b.id) ?? 0;
+        if (activityA !== activityB) return activityB - activityA;
+        return compareManual(a, b);
+      };
+
+      const compareCount = (a: LaneSeed, b: LaneSeed) => {
+        if (a.isUnassigned !== b.isUnassigned) return a.isUnassigned ? 1 : -1;
+        if (a.nodes.length !== b.nodes.length) return b.nodes.length - a.nodes.length;
+        return compareManual(a, b);
+      };
+
+      const compareAlpha = (a: LaneSeed, b: LaneSeed) => {
+        if (a.isUnassigned !== b.isUnassigned) return a.isUnassigned ? 1 : -1;
+        return a.name.localeCompare(b.name);
+      };
+
+      const compareFn =
+        swimlaneSort === "activity"
+          ? compareActivity
+          : swimlaneSort === "count"
+            ? compareCount
+            : swimlaneSort === "alpha"
+              ? compareAlpha
+              : compareManual;
+
+      laneList.sort(compareFn);
+    }
 
     for (const lane of laneList) {
       lane.nodes.sort((a, b) => {
@@ -580,20 +708,25 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
 
     let yOffset = TOP_PADDING;
     const laneLayouts: LaneLayout[] = [];
+    const laneHeaderHeight = swimlanesEnabled ? LANE_HEADER_HEIGHT : 0;
 
     for (const lane of laneList) {
-      const isCollapsed = collapsedLanes[lane.id] ?? false;
+      const isCollapsed = swimlanesEnabled ? (collapsedLanes[lane.id] ?? false) : false;
       const laneNodes = isCollapsed ? [] : lane.nodes;
       const nodeCount = laneNodes.length;
       const nodesHeight =
         nodeCount === 0 ? 0 : nodeCount * NODE_HEIGHT + (nodeCount - 1) * VERTICAL_GAP;
       const laneHeight = isCollapsed
-        ? LANE_HEADER_HEIGHT + LANE_PADDING_Y
-        : LANE_HEADER_HEIGHT + LANE_PADDING_Y + nodesHeight + LANE_PADDING_Y;
+        ? laneHeaderHeight + LANE_PADDING_Y
+        : laneHeaderHeight + LANE_PADDING_Y + nodesHeight + LANE_PADDING_Y;
       const laneTop = yOffset;
 
       laneLayouts.push({
-        ...lane,
+        id: lane.id,
+        name: lane.name,
+        color: lane.color,
+        nodes: lane.nodes,
+        isUnassigned: lane.isUnassigned,
         top: laneTop,
         height: laneHeight,
         isCollapsed,
@@ -603,7 +736,7 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
         const xPos = xPositions.get(node.id) ?? LEFT_PADDING;
         positions.set(node.id, {
           x: xPos,
-          y: laneTop + LANE_HEADER_HEIGHT + LANE_PADDING_Y + idx * (NODE_HEIGHT + VERTICAL_GAP),
+          y: laneTop + laneHeaderHeight + LANE_PADDING_Y + idx * (NODE_HEIGHT + VERTICAL_GAP),
         });
       });
 
@@ -629,7 +762,16 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
       eraColumns: eraLayouts,
       maxDepth: computedMaxDepth,
     };
-  }, [collapsedLanes, data, viewMode, visibleNodeIds]);
+  }, [
+    collapsedLanes,
+    data,
+    swimlaneSort,
+    swimlanesEnabled,
+    trackOptions,
+    trackStats,
+    viewMode,
+    visibleNodeIds,
+  ]);
 
   const fitToScreen = useCallback(() => {
     const container = containerRef.current;
@@ -816,7 +958,17 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
             </div>
           )}
         </div>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center", pointerEvents: "auto" }}>
+        <div
+          style={{
+            marginLeft: "auto",
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            pointerEvents: "auto",
+            flexWrap: "wrap",
+            justifyContent: "flex-end",
+          }}
+        >
           {/* View mode toggle */}
           <div style={{ display: "flex", alignItems: "center", gap: 4, marginRight: 8 }}>
             <button
@@ -833,6 +985,40 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
             >
               Era
             </button>
+          </div>
+          {trackOptions.length > 0 && (
+            <TechTreeFilters
+              tracks={trackOptions}
+              selectedTrackIds={visibleTrackIds}
+              onToggleTrack={toggleTrackVisibility}
+              onSelectAll={showAllTracks}
+              onClear={hideAllTracks}
+            />
+          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button
+              className={swimlanesEnabled ? "btn" : "btnSecondary"}
+              onClick={() => setSwimlanesEnabled((prev) => !prev)}
+              style={{ padding: "4px 10px", fontSize: 11 }}
+            >
+              Swimlanes {swimlanesEnabled ? "On" : "Off"}
+            </button>
+            {swimlanesEnabled && (
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#9ca3af" }}>
+                Sort
+                <select
+                  className="select"
+                  value={swimlaneSort}
+                  onChange={(event) => setSwimlaneSort(event.target.value as SwimlaneSortMode)}
+                  style={{ fontSize: 11, padding: "4px 8px" }}
+                >
+                  <option value="manual">Manual order</option>
+                  <option value="activity">Most recent activity</option>
+                  <option value="count">Most WOs</option>
+                  <option value="alpha">Alphabetical</option>
+                </select>
+              </label>
+            )}
           </div>
           {/* Legend */}
           {Object.entries(STATUS_COLORS).map(([status, color]) => (
@@ -869,7 +1055,6 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
           </button>
         </div>
       </div>
-
       {trackOptions.length > 0 && (
         <div
           style={{
@@ -880,70 +1065,12 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
             pointerEvents: "auto",
           }}
         >
-          <div
-            className="card"
-            style={{
-              padding: 12,
-              width: 240,
-              maxHeight: "calc(100vh - 160px)",
-              overflow: "auto",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-              <div style={{ fontWeight: 600, fontSize: 13, color: "#e5e7eb" }}>Tracks</div>
-              <div style={{ fontSize: 11, color: "#9ca3af" }}>
-                {activeTrackCount}/{trackOptions.length}
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-              <button
-                className="btnSecondary"
-                onClick={showAllTracks}
-                style={{ padding: "4px 8px", fontSize: 11 }}
-              >
-                Show all
-              </button>
-              <button
-                className="btnSecondary"
-                onClick={hideAllTracks}
-                style={{ padding: "4px 8px", fontSize: 11 }}
-              >
-                Hide all
-              </button>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {trackOptions.map((track) => {
-                const trackColor = track.color ?? "#334155";
-                return (
-                  <label
-                    key={track.id}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      fontSize: 12,
-                      color: "#e5e7eb",
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isTrackVisible(track.id)}
-                      onChange={() => toggleTrackVisibility(track.id)}
-                    />
-                    <span
-                      style={{
-                        width: 10,
-                        height: 10,
-                        backgroundColor: trackColor,
-                        borderRadius: 2,
-                        opacity: track.isUnassigned ? 0.5 : 0.85,
-                      }}
-                    />
-                    <span style={{ flex: 1 }}>{track.name}</span>
-                  </label>
-                );
-              })}
-            </div>
+          <div className="card" style={{ padding: "8px 10px", maxWidth: 360 }}>
+            <TechTreeLegend
+              tracks={trackOptions}
+              selectedTrackIds={visibleTrackIds}
+              onToggleTrack={toggleTrackVisibility}
+            />
           </div>
         </div>
       )}
@@ -1016,21 +1143,14 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
               </text>
             ))}
 
-            {/* Lane backgrounds */}
-            {lanes.filter((lane) => isTrackVisible(lane.id)).map((lane) => {
-              const laneColor = lane.color ?? "#334155";
-              return (
-                <rect
-                  key={`lane-bg-${lane.id}`}
-                  x={0}
-                  y={lane.top}
-                  width={svgWidth}
-                  height={lane.height}
-                  fill={laneColor}
-                  opacity={0.08}
-                />
-              );
-            })}
+            <TechTreeSwimlanes
+              lanes={lanes}
+              svgWidth={svgWidth}
+              isTrackVisible={isLaneVisible}
+              onToggleLane={swimlanesEnabled ? toggleLane : undefined}
+              showBackgrounds={swimlanesEnabled}
+              showHeaders={false}
+            />
 
             {/* Edges */}
             {data.nodes.map((node) => {
@@ -1123,6 +1243,16 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
               const showProjectName = node.isExternal && (isHovered || isSelected);
 
               const statusColor = STATUS_COLORS[node.status];
+              const trackId = nodeTrackIds.get(node.id) ?? UNASSIGNED_LANE_ID;
+              const trackColor = node.track?.color ?? trackColorById.get(trackId) ?? DEFAULT_TRACK_COLOR;
+              const nodeFill = trackTint(trackColor);
+              const strokeColor = inCycle
+                ? "#ef4444"
+                : isSelected
+                  ? "#fff"
+                  : isHovered
+                    ? "#888"
+                    : trackColor || "#444";
 
               return (
                 <g
@@ -1141,8 +1271,8 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
                     width={NODE_WIDTH}
                     height={NODE_HEIGHT}
                     rx={6}
-                    fill="#2d2d44"
-                    stroke={inCycle ? "#ef4444" : isSelected ? "#fff" : isHovered ? "#888" : "#444"}
+                    fill={nodeFill}
+                    stroke={strokeColor}
                     strokeWidth={inCycle ? 3 : isSelected ? 2 : 1}
                   />
 
@@ -1202,41 +1332,14 @@ export function TechTreeView({ repoId, onClose }: { repoId: string; onClose?: ()
               );
             })}
 
-            {/* Lane headers */}
-            {lanes.filter((lane) => isTrackVisible(lane.id)).map((lane) => {
-              const laneColor = lane.color ?? "#334155";
-              const nodeCount = lane.nodes.length;
-              const indicator = lane.isCollapsed ? ">" : "v";
-              return (
-                <g
-                  key={`lane-header-${lane.id}`}
-                  onClick={() => toggleLane(lane.id)}
-                  style={{ cursor: "pointer" }}
-                >
-                  <rect
-                    x={0}
-                    y={lane.top}
-                    width={svgWidth}
-                    height={LANE_HEADER_HEIGHT}
-                    fill="#111827"
-                    opacity={0.9}
-                  />
-                  <rect x={16} y={lane.top + 9} width={10} height={10} rx={2} fill={laneColor} />
-                  <text x={32} y={lane.top + 20} fill="#e5e7eb" fontSize={12} fontWeight={600}>
-                    {lane.name} - {nodeCount} {nodeCount === 1 ? "node" : "nodes"}
-                  </text>
-                  <text
-                    x={svgWidth - 16}
-                    y={lane.top + 20}
-                    textAnchor="end"
-                    fill="#9ca3af"
-                    fontSize={12}
-                  >
-                    {indicator}
-                  </text>
-                </g>
-              );
-            })}
+            <TechTreeSwimlanes
+              lanes={lanes}
+              svgWidth={svgWidth}
+              isTrackVisible={isLaneVisible}
+              onToggleLane={swimlanesEnabled ? toggleLane : undefined}
+              showBackgrounds={false}
+              showHeaders={swimlanesEnabled}
+            />
           </svg>
         </div>
       </div>
