@@ -14,6 +14,7 @@ import { useProjectsVisualization } from "../playground/canvas/useProjectsVisual
 import { GlobalAgentActivityFeed } from "./GlobalAgentActivityFeed";
 import type {
   ProjectNode,
+  ProjectHealthStatus,
   VisualizationNode,
 } from "../playground/canvas/types";
 
@@ -26,18 +27,40 @@ function formatActivity(value: Date | null): string {
   return value.toLocaleString();
 }
 
-function formatHealth(value: number): string {
-  if (value >= 0.8) return "Healthy";
-  if (value >= 0.5) return "Attention needed";
-  if (value >= 0.3) return "Stalled";
-  return "Failing";
+const HEALTH_LABELS: Record<ProjectHealthStatus, string> = {
+  healthy: "Healthy",
+  attention_needed: "Attention needed",
+  stalled: "Stalled",
+  failing: "Failing",
+  blocked: "Blocked",
+};
+
+const HEALTH_COLORS: Record<ProjectHealthStatus, string> = {
+  healthy: "#22c55e",
+  attention_needed: "#fbbf24",
+  stalled: "#f59e0b",
+  failing: "#ef4444",
+  blocked: "#f97316",
+};
+
+function resolveHealthStatus(
+  status: ProjectHealthStatus | undefined,
+  score: number
+): ProjectHealthStatus {
+  if (status) return status;
+  if (score >= 0.8) return "healthy";
+  if (score >= 0.55) return "stalled";
+  if (score >= 0.45) return "attention_needed";
+  if (score >= 0.3) return "failing";
+  return "blocked";
 }
 
-function healthColor(value: number): string {
-  if (value >= 0.8) return "#22c55e";
-  if (value >= 0.5) return "#fbbf24";
-  if (value >= 0.3) return "#f97316";
-  return "#f87171";
+function formatHealth(status: ProjectHealthStatus): string {
+  return HEALTH_LABELS[status];
+}
+
+function healthColor(status: ProjectHealthStatus): string {
+  return HEALTH_COLORS[status];
 }
 
 type PulseEvent = {
@@ -113,6 +136,7 @@ export function GlobalOrbitalCanvas({
   const hoveredRef = useRef<VisualizationNode | null>(null);
   const transformRef = useRef({ offsetX: 0, offsetY: 0, scale: 1 });
   const sizeRef = useRef(canvasSize);
+  const selectedProjectRef = useRef<string | null>(selectedProjectId ?? null);
 
   // Data hook — fetches all projects, work orders, runs, global context, etc.
   const { data, loading, error } = useProjectsVisualization();
@@ -133,6 +157,8 @@ export function GlobalOrbitalCanvas({
     hoveredNode,
     tooltipPosition,
     isPanning,
+    clearSelection,
+    selectNode,
     handlers,
   } = useCanvasInteraction({
     canvasRef,
@@ -147,6 +173,20 @@ export function GlobalOrbitalCanvas({
       onSelectProject(selectedNode.id);
     }
   }, [selectedNode, onSelectProject]);
+
+  useEffect(() => {
+    const previous = selectedProjectRef.current;
+    selectedProjectRef.current = selectedProjectId ?? null;
+
+    if (!selectedProjectId) {
+      if (previous) {
+        clearSelection();
+      }
+      return;
+    }
+    if (selectedNode?.id === selectedProjectId) return;
+    selectNode(selectedProjectId);
+  }, [clearSelection, selectNode, selectedProjectId, selectedNode]);
 
   // -----------------------------------------------------------------------
   // Viz initialization
@@ -390,6 +430,9 @@ export function GlobalOrbitalCanvas({
   // -----------------------------------------------------------------------
   const hoveredProject: ProjectNode | null =
     hoveredNode?.type === "project" ? (hoveredNode as ProjectNode) : null;
+  const hoveredHealthStatus = hoveredProject
+    ? resolveHealthStatus(hoveredProject.healthStatus, hoveredProject.health)
+    : null;
 
   // -----------------------------------------------------------------------
   // Overlay content for loading / error states
@@ -418,9 +461,9 @@ export function GlobalOrbitalCanvas({
     if (!loading && projectNodes.length === 0) {
       return (
         <div className={styles.overlayCard}>
-          <div style={{ fontWeight: 600 }}>No projects found</div>
+          <div style={{ fontWeight: 600 }}>No projects yet</div>
           <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-            Add a project to see it appear on the orbital canvas.
+            Add a repo to see it appear on the orbital canvas.
           </div>
         </div>
       );
@@ -469,10 +512,12 @@ export function GlobalOrbitalCanvas({
                 width: 8,
                 height: 8,
                 borderRadius: "50%",
-                background: healthColor(hoveredProject.health),
+                background: hoveredHealthStatus ? healthColor(hoveredHealthStatus) : "#94a3b8",
               }}
             />
-            <span className="muted">{formatHealth(hoveredProject.health)}</span>
+            <span className="muted">
+              {hoveredHealthStatus ? formatHealth(hoveredHealthStatus) : "Unknown"}
+            </span>
           </div>
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
             Active WOs: {hoveredProject.workOrders.building + hoveredProject.workOrders.ready}
