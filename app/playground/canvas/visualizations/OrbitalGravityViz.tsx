@@ -79,9 +79,9 @@ type SunPalette = {
 };
 
 const PROJECT_ZONES: Zone[] = [
-  { name: "inner", minR: 40, maxR: 140, color: "#fde68a", label: "Shifts" },
-  { name: "middle", minR: 140, maxR: 260, color: "#dcfce7", label: "Healthy" },
-  { name: "outer", minR: 260, maxR: 400, color: "#e2e8f0", label: "Paused" },
+  { name: "inner", minR: 100, maxR: 200, color: "#fde68a", label: "Shifts" },
+  { name: "middle", minR: 200, maxR: 320, color: "#dcfce7", label: "Healthy" },
+  { name: "outer", minR: 320, maxR: 400, color: "#e2e8f0", label: "Paused" },
 ];
 
 const WORK_ORDER_ZONES: Zone[] = [
@@ -129,8 +129,8 @@ const BASE_FOCUS_RADIUS = 34;
 const BASE_SUN_RADIUS = 18;
 const LABEL_OFFSET = 12;
 const RADIAL_JITTER = 12;
-const COLLISION_PADDING = 4;
-const COLLISION_ITERATIONS = 3;
+const COLLISION_PADDING = 6;
+const COLLISION_ITERATIONS = 5;
 
 const BASE_ORBIT_SPEED = 0.016;
 const MIN_ORBIT_SPEED = 0.005;
@@ -298,12 +298,12 @@ function projectBaseRadius(node: ProjectNode): number {
   const totalWorkOrders =
     node.workOrders.ready + node.workOrders.building + node.workOrders.blocked + node.workOrders.done;
   const priority = clamp(node.priority ?? 3, 1, 5);
-  const priorityBoost = (6 - priority) * 1.2;
+  const priorityBoost = (6 - priority) * 0.8;
   if (totalWorkOrders > 0) {
     const scaled = Math.sqrt(totalWorkOrders);
-    return clamp(12 + scaled * 3 + priorityBoost, 12, 36);
+    return clamp(16 + scaled * 2 + priorityBoost, 16, 28);
   }
-  return clamp(12 + priorityBoost * 1.4, 12, 32);
+  return clamp(16 + priorityBoost, 16, 26);
 }
 
 function workOrderBaseRadius(node: WorkOrderNode): number {
@@ -822,7 +822,7 @@ export class OrbitalGravityVisualization implements Visualization {
       const focusBoostSize = focusBlend > 0 ? 0.18 : 0;
       const sizeScale = isWorkOrderNode(node) ? workOrderSizeScale(node.status) : 1;
       const size =
-        state.baseRadius * sizeScale * (1 + state.heat * 0.25 + hoverBoost + focusBoostSize);
+        state.baseRadius * sizeScale * (1 + state.heat * 0.10 + hoverBoost + focusBoostSize);
 
       node.x = Math.cos(state.angle) * state.radius;
       node.y = Math.sin(state.angle) * state.radius;
@@ -857,6 +857,19 @@ export class OrbitalGravityVisualization implements Visualization {
             } else {
               a.state.angle += pushAngle * 0.5;
               b.state.angle -= pushAngle * 0.5;
+            }
+
+            // Radial push: when nodes are at similar radii, nudge one out and one in
+            const radialDiff = Math.abs(a.state.radius - b.state.radius);
+            if (radialDiff < minDist * 0.6) {
+              const radialPush = overlap * 0.35;
+              if (a.state.radius <= b.state.radius) {
+                a.state.radius = Math.max(a.state.radius - radialPush, 0);
+                b.state.radius += radialPush;
+              } else {
+                a.state.radius += radialPush;
+                b.state.radius = Math.max(b.state.radius - radialPush, 0);
+              }
             }
 
             // Recalculate positions
