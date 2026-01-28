@@ -1,7 +1,7 @@
 ---
 id: WO-2026-180
 title: Set up CI for project-control-center
-status: ready
+status: you_review
 priority: 2
 tags:
   - foundation
@@ -12,7 +12,7 @@ depends_on:
   - WO-2026-177
   - WO-2026-178
 era: v2
-updated_at: 2026-01-27
+updated_at: 2026-01-28
 goal: Create GitHub Actions CI workflow for project-control-center (the OSS core repo).
 context:
   - project-control-center needs CI for tests and builds on PRs
