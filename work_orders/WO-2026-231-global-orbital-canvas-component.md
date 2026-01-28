@@ -1,9 +1,13 @@
 ---
 id: WO-2026-231
 title: Global Orbital Canvas Component
-status: ready
+status: you_review
 priority: 1
-tags: [ui, canvas, visualization, global]
+tags:
+  - ui
+  - canvas
+  - visualization
+  - global
 estimate_hours: 6
 created_at: 2026-01-28
 updated_at: 2026-01-28
