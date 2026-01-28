@@ -17,6 +17,10 @@ import { syncAndListRepoSummaries } from "./projects_catalog.js";
 import { getRunsForProject } from "./runner_agent.js";
 import { buildShiftContext, type ShiftContext } from "./shift_context.js";
 import { getUserPreferences, type UserPreferences } from "./user_preferences.js";
+import {
+  getActiveGlobalAgentSession,
+  type GlobalAgentSession,
+} from "./global_agent_sessions.js";
 
 type EscalationInput = {
   key: string;
@@ -103,6 +107,11 @@ export type CommunicationQueueGroup = {
   total: number;
 };
 
+export type GlobalAgentSessionSummary = Pick<
+  GlobalAgentSession,
+  "id" | "state" | "paused_at" | "autonomous_started_at" | "updated_at"
+>;
+
 export type EscalationQueueItem = {
   project_id: string;
   escalation_id: string;
@@ -115,6 +124,7 @@ export type GlobalContextResponse = {
   projects: GlobalProjectSummary[];
   communications_queue: CommunicationQueueGroup[];
   escalation_queue: EscalationQueueItem[];
+  global_session: GlobalAgentSessionSummary | null;
   resources: {
     budget_used_today: number;
   };
@@ -402,6 +412,7 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
     preferences.priority_projects.map((value) => value.trim().toLowerCase()).filter(Boolean)
   );
   const globalBudget = getGlobalBudget();
+  const activeSession = getActiveGlobalAgentSession();
   const summaries = syncAndListRepoSummaries();
   const globalCommunications = listProjectCommunications({
     toScope: "global",
@@ -648,6 +659,15 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
     projects: projects.map((entry) => entry.summary),
     communications_queue: communicationsQueue,
     escalation_queue: escalationQueue,
+    global_session: activeSession
+      ? {
+          id: activeSession.id,
+          state: activeSession.state,
+          paused_at: activeSession.paused_at,
+          autonomous_started_at: activeSession.autonomous_started_at,
+          updated_at: activeSession.updated_at,
+        }
+      : null,
     resources: {
       budget_used_today: parseBudgetUsedToday(),
     },
