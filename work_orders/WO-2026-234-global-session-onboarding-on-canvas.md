@@ -1,7 +1,7 @@
 ---
 id: WO-2026-234
 title: Global Session Onboarding on Canvas
-status: you_review
+status: done
 priority: 1
 tags:
   - ui
