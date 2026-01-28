@@ -219,6 +219,7 @@ type GlobalContextResponse = {
     id: string;
     name: string;
     escalations: Array<{ id: string; type: string; summary: string }>;
+    active_shift?: { started_at?: string | null } | null;
   }>;
 };
 
@@ -402,7 +403,27 @@ export function VoiceWidget() {
           });
         }
       }
-      setCanvasVoiceState({ escalations });
+      const escalationSummaries = json.projects
+        .filter((project) => (project.escalations ?? []).length)
+        .map((project) => ({
+          projectId: project.id,
+          projectName: project.name,
+          count: project.escalations.length,
+          summary: project.escalations[0]?.summary ?? null,
+        }))
+        .sort((a, b) => {
+          if (a.count !== b.count) return b.count - a.count;
+          return a.projectName.localeCompare(b.projectName);
+        });
+      const activeShiftProjects = json.projects
+        .filter((project) => project.active_shift)
+        .map((project) => ({
+          projectId: project.id,
+          projectName: project.name,
+          startedAt: project.active_shift?.started_at ?? null,
+        }))
+        .sort((a, b) => a.projectName.localeCompare(b.projectName));
+      setCanvasVoiceState({ escalations, escalationSummaries, activeShiftProjects });
 
       const nextIds = new Set(escalations.map((entry) => entry.id));
       const previous = lastEscalationIdsRef.current;
