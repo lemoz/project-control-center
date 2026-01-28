@@ -53,31 +53,6 @@ function resolveReposPath(): string | null {
   return path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
 }
 
-function resolveVmRepoRoot(): string {
-  const raw = (process.env.CONTROL_CENTER_VM_REPO_ROOT || "").trim();
-  if (raw) {
-    return path.posix.normalize(raw.replace(/\\/g, "/"));
-  }
-  const sshUser = getVmSshUser() || "project";
-  return path.posix.join("/home", sshUser || "project", "repo");
-}
-
-function resolveVmCodexAuthPath(): string {
-  const raw = (process.env.CONTROL_CENTER_VM_CODEX_AUTH_PATH || "").trim();
-  if (raw) {
-    return path.posix.normalize(raw.replace(/\\/g, "/"));
-  }
-  const repoRoot = resolveVmRepoRoot().replace(/\/+$/g, "") || "/";
-  const parent = path.posix.dirname(repoRoot);
-  return path.posix.join(parent === "/" ? repoRoot : parent, ".codex");
-}
-
-function resolveVmCleanupCronPath(): string {
-  const raw = (process.env.CONTROL_CENTER_VM_CLEANUP_CRON_PATH || "").trim();
-  if (raw) return raw;
-  return "/etc/cron.hourly/pcc-cleanup-workspaces";
-}
-
 function resolveVersion(): string {
   const npmVersion = (process.env.npm_package_version || "").trim();
   if (npmVersion) return npmVersion;
@@ -103,18 +78,6 @@ export function getDatabasePath(): string {
 
 export function getReposPath(): string | null {
   return resolveReposPath();
-}
-
-export function getVmRepoRoot(): string {
-  return resolveVmRepoRoot();
-}
-
-export function getVmCodexAuthPath(): string {
-  return resolveVmCodexAuthPath();
-}
-
-export function getVmCleanupCronPath(): string {
-  return resolveVmCleanupCronPath();
 }
 
 export function getAppVersion(): string {
@@ -275,80 +238,6 @@ export function getHomeDir(): string {
   return raw || process.cwd();
 }
 
-export function getSshCommandPath(): string {
-  const raw = (process.env.CONTROL_CENTER_SSH_PATH || "").trim();
-  return raw || "ssh";
-}
-
-export function getRsyncCommandPath(): string {
-  const raw = (process.env.CONTROL_CENTER_RSYNC_PATH || "").trim();
-  return raw || "rsync";
-}
-
-export function getGcloudCommandPath(): string {
-  const raw = (process.env.CONTROL_CENTER_GCLOUD_PATH || "").trim();
-  return raw || "gcloud";
-}
-
-export function getVmSshTimeoutSeconds(): number {
-  return parseNumberEnv(process.env.CONTROL_CENTER_VM_SSH_TIMEOUT_SEC, 180);
-}
-
-export function getVmRsyncTimeoutSeconds(): number {
-  return parseNumberEnv(process.env.CONTROL_CENTER_VM_RSYNC_TIMEOUT_SEC, 300);
-}
-
-export function getVmSshRetryMs(): number {
-  return parseNumberEnv(process.env.CONTROL_CENTER_VM_SSH_RETRY_MS, 2500);
-}
-
-export function getVmSshUser(): string | null {
-  const raw = process.env.CONTROL_CENTER_GCP_SSH_USER;
-  if (!raw) return null;
-  const trimmed = raw.trim();
-  return trimmed || null;
-}
-
-export function getVmSshKeyPath(): string | null {
-  const raw = process.env.CONTROL_CENTER_GCP_SSH_KEY_PATH;
-  if (!raw) return null;
-  const trimmed = raw.trim();
-  return trimmed || null;
-}
-
-export function getVmSshSkipHostKeyChecking(): boolean {
-  return isTruthyEnv(process.env.CONTROL_CENTER_SSH_SKIP_HOST_KEY_CHECKING);
-}
-
-export function getGcpImageFamily(): string {
-  return (process.env.CONTROL_CENTER_GCP_IMAGE_FAMILY || "ubuntu-2204-lts").trim();
-}
-
-export function getGcpImageProjectOverride(): string {
-  return (process.env.CONTROL_CENTER_GCP_IMAGE_PROJECT || "").trim();
-}
-
-export function getGcpProject(): string | null {
-  const raw = process.env.CONTROL_CENTER_GCP_PROJECT;
-  if (!raw) return null;
-  const trimmed = raw.trim();
-  return trimmed || null;
-}
-
-export function getGcpZone(): string | null {
-  const raw = process.env.CONTROL_CENTER_GCP_ZONE;
-  if (!raw) return null;
-  const trimmed = raw.trim();
-  return trimmed || null;
-}
-
-export function getGcpImage(): string | null {
-  const raw = process.env.CONTROL_CENTER_GCP_IMAGE;
-  if (!raw) return null;
-  const trimmed = raw.trim();
-  return trimmed || null;
-}
-
 export function getProcessEnv(): NodeJS.ProcessEnv {
   return process.env;
 }
@@ -369,10 +258,6 @@ export function getScanTtlMs(): number {
   const raw = process.env.CONTROL_CENTER_SCAN_TTL_MS;
   if (raw === undefined || raw === "") return 60_000;
   return Number(raw);
-}
-
-export function getVmHealthLocal(): boolean {
-  return process.env.CONTROL_CENTER_VM_HEALTH_LOCAL === "1";
 }
 
 export function getControlCenterApiUrl(): string | null {

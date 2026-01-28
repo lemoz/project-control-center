@@ -1,5 +1,5 @@
 import { execFile } from "child_process";
-import { promisify } from "util";
+import type { ExecFileOptions } from "child_process";
 import { getClaudeCliPath } from "./config.js";
 import {
   getEstimationContextSummary,
@@ -7,8 +7,6 @@ import {
   type EstimationContextRunRow,
 } from "./db.js";
 import { resolveUtilitySettings } from "./settings.js";
-
-const execFileAsync = promisify(execFile);
 
 const CLAUDE_ESTIMATE_MODEL = "claude-3-haiku-20240307";
 const CLAUDE_TIMEOUT_MS = 45_000;
@@ -23,6 +21,41 @@ const DEFAULT_ETA_PHASE_SECONDS = {
   reviewer: 8 * 60,
   merge: 60,
 };
+
+type ExecFileResult = {
+  stdout: string;
+  stderr: string;
+};
+
+function execFileWithInput(
+  command: string,
+  args: string[],
+  options: ExecFileOptions,
+  input: string
+): Promise<ExecFileResult> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(command, args, options, (error, stdout, stderr) => {
+      if (error) {
+        const wrapped = error as NodeJS.ErrnoException & {
+          stdout?: string;
+          stderr?: string;
+        };
+        wrapped.stdout = typeof stdout === "string" ? stdout : stdout?.toString();
+        wrapped.stderr = typeof stderr === "string" ? stderr : stderr?.toString();
+        reject(wrapped);
+        return;
+      }
+      resolve({
+        stdout: typeof stdout === "string" ? stdout : stdout?.toString() ?? "",
+        stderr: typeof stderr === "string" ? stderr : stderr?.toString() ?? "",
+      });
+    });
+    if (child.stdin) {
+      child.stdin.write(input);
+      child.stdin.end();
+    }
+  });
+}
 
 export type RunEstimateConfidence = "high" | "medium" | "low";
 
@@ -413,14 +446,15 @@ function buildFallbackEstimate(context: EstimationContext, note: string): RunEst
 
 async function runClaudePrompt(params: { prompt: string; model: string; cliPath?: string }) {
   const command = claudeCommand(params.cliPath);
-  const result = await execFileAsync(
+  const result = await execFileWithInput(
     command,
     ["-p", "-", "--model", params.model, "--output-format", "json"],
     {
       timeout: CLAUDE_TIMEOUT_MS,
       maxBuffer: 5 * 1024 * 1024,
-      input: params.prompt,
-    }
+      encoding: "utf8",
+    },
+    params.prompt
   );
   const stdout = typeof result.stdout === "string" ? result.stdout.trim() : "";
   if (!stdout) throw new Error("Claude CLI returned empty output");

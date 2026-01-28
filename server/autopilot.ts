@@ -3,7 +3,6 @@ import {
   findProjectById,
   getAutopilotPolicy,
   getDb,
-  getProjectVm,
   listEnabledAutopilotPolicies,
   updateAutopilotPolicy,
   type AutopilotPolicy,
@@ -33,7 +32,6 @@ export type AutopilotActivity = {
 export type AutopilotStatus = {
   state: "disabled" | "paused" | "running" | "idle";
   enabled: boolean;
-  vm_ready: boolean;
   failure_count: number;
   stop_on_failure_count: number;
   active_run: {
@@ -167,12 +165,6 @@ function dependenciesSatisfied(dependsOn: string[], statusMap: Map<string, strin
   return true;
 }
 
-function isVmReady(projectId: string): boolean {
-  const vm = getProjectVm(projectId);
-  if (!vm) return false;
-  return vm.status === "running" || vm.status === "stopped";
-}
-
 function findActiveRun(projectId: string): AutopilotStatus["active_run"] {
   const database = getDb();
   const statuses = Array.from(ACTIVE_STATUSES);
@@ -240,7 +232,6 @@ function listAutopilotActivity(projectId: string, limit = 5): AutopilotActivity[
 }
 
 function buildAutopilotStatus(project: ProjectRow, policy: AutopilotPolicy): AutopilotStatus {
-  const vmReady = isVmReady(project.id);
   const activeRun = findActiveRun(project.id);
   const failureCount = countConsecutiveFailures(
     project.id,
@@ -252,9 +243,6 @@ function buildAutopilotStatus(project: ProjectRow, policy: AutopilotPolicy): Aut
   if (!policy.enabled) {
     state = "disabled";
     blockedReason = "disabled";
-  } else if (!vmReady) {
-    state = "idle";
-    blockedReason = "vm_not_ready";
   } else if (failureCount >= policy.stop_on_failure_count) {
     state = "paused";
     blockedReason = "failure_limit";
@@ -266,7 +254,6 @@ function buildAutopilotStatus(project: ProjectRow, policy: AutopilotPolicy): Aut
   return {
     state,
     enabled: policy.enabled,
-    vm_ready: vmReady,
     failure_count: failureCount,
     stop_on_failure_count: policy.stop_on_failure_count,
     active_run: activeRun,

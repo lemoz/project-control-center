@@ -9,11 +9,8 @@ import {
   getCodexCliPath,
   getOpenAiApiKey,
   getProcessEnv,
-  getRemoteTestTimeoutSeconds,
   getReviewerSandboxMode,
   getUseTsWorker,
-  getVmCodexAuthPath,
-  getVmRepoRoot,
   type SandboxMode,
 } from "./config.js";
 import {
@@ -24,22 +21,18 @@ import {
   getLatestUnresolvedSecurityIncident,
   getDb,
   getMergeLock,
-  getProjectVm,
   getRunById,
   listRunsByProject,
   releaseMergeLock,
   type SecurityIncidentRow,
   type CostCategory,
-  type ProjectVmRow,
   type RunPhaseMetricOutcome,
   type RunPhaseMetricPhase,
   type RunRow,
   type RunTrigger,
   updateIncidentResolution,
-  updateProjectVm,
   updateRun,
 } from "./db.js";
-import { VmManagerError, startVM } from "./vm_manager.js";
 import {
   createScopeCreepDraftWorkOrder,
   listWorkOrders,
@@ -72,14 +65,6 @@ import {
   type ProgressiveEstimate,
   type RunEstimate,
 } from "./estimation.js";
-import {
-  remoteDownload,
-  remoteExec,
-  remoteUpload,
-  type ExecResult,
-  type RemoteExecOptions,
-  type RemoteSyncOptions,
-} from "./remote_exec.js";
 import { enforceRunBudget } from "./budget_enforcement.js";
 import { buildFailureContext, classifyRunFailure } from "./failure_analysis.js";
 import {
@@ -90,15 +75,7 @@ import {
 const DEFAULT_MAX_BUILDER_ITERATIONS = 10;
 const BASELINE_MAX_ATTEMPTS = 2;
 const MAX_TEST_OUTPUT_LINES = 200;
-const VM_ISOLATION_MODES = new Set(["vm", "vm+container"]);
-const REMOTE_RUN_WORKSPACES_ROOT = ".system/run-workspaces";
-const REMOTE_RUN_ARTIFACTS_ROOT = ".system/run-artifacts";
 const TEST_ARTIFACT_DIRS = ["test-results", "playwright-report"];
-const DEFAULT_CONTAINER_MEMORY = "4g";
-const DEFAULT_CONTAINER_CPUS = 2;
-const DEFAULT_CONTAINER_TIMEOUT_SEC = 3600;
-const DEFAULT_CONTAINER_IMAGE = "pcc-runner:latest";
-const REMOTE_TEST_TIMEOUT_MS = Math.round(getRemoteTestTimeoutSeconds() * 1000);
 const E2E_WEB_PORT_BASE = 3012;
 const E2E_OFFLINE_WEB_PORT_BASE = 3013;
 const E2E_API_PORT_BASE = 4011;
@@ -284,24 +261,6 @@ function getPortOffset(runId: string): number {
   const hash = Number.parseInt(prefix, 16);
   if (!Number.isFinite(hash)) return 0;
   return (hash % E2E_PORT_OFFSET_MOD) * E2E_PORT_OFFSET_STEP;
-}
-
-type ContainerResourceLimits = {
-  memory: string;
-  cpus: number;
-  timeoutSec: number;
-};
-
-type ContainerConfig = {
-  image: string;
-  resources: ContainerResourceLimits;
-};
-
-type VmStatusView = Pick<ProjectVmRow, "status">;
-
-function shouldFallbackToLocalVm(vm: VmStatusView | null): boolean {
-  if (!vm) return true;
-  return vm.status === "not_provisioned" || vm.status === "deleted";
 }
 
 function ensureDir(dir: string) {
@@ -548,59 +507,6 @@ function createOutputCapture(maxLines: number) {
   return { pushChunk, finalize };
 }
 
-function shellEscape(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function buildContainerConfig(): ContainerConfig {
-  return {
-    image: DEFAULT_CONTAINER_IMAGE,
-    resources: {
-      memory: DEFAULT_CONTAINER_MEMORY,
-      cpus: DEFAULT_CONTAINER_CPUS,
-      timeoutSec: DEFAULT_CONTAINER_TIMEOUT_SEC,
-    },
-  };
-}
-
-function resolveVmRepoRootLocal(): string {
-  const root = getVmRepoRoot().trim();
-  if (!root.startsWith("/")) {
-    throw new Error(`VM repo root must be an absolute POSIX path. Got "${root}".`);
-  }
-  const normalized = path.posix.normalize(root);
-  if (normalized.includes("..")) {
-    throw new Error(`VM repo root must not include traversal segments. Got "${root}".`);
-  }
-  return normalized.replace(/\/+$/g, "") || "/";
-}
-
-function resolveVmAbsolutePath(remotePath: string): string {
-  if (path.posix.isAbsolute(remotePath)) {
-    return path.posix.normalize(remotePath);
-  }
-  const root = resolveVmRepoRootLocal();
-  const normalized = path.posix.normalize(remotePath);
-  if (normalized.includes("..")) {
-    throw new Error(`VM path must not include traversal segments. Got "${remotePath}".`);
-  }
-  const joined = path.posix.join(root, normalized);
-  if (!joined.startsWith(`${root}/`) && joined !== root) {
-    throw new Error(`VM path must stay within ${root}. Got "${remotePath}".`);
-  }
-  return joined;
-}
-
-function buildContainerName(runId: string, label: string): string {
-  const shortId = runId.slice(0, 8);
-  const safeLabel = label
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  const base = safeLabel ? `pcc-run-${shortId}-${safeLabel}` : `pcc-run-${shortId}`;
-  return base.slice(0, 63);
-}
-
 function formatTestOutput(output: string, truncated: boolean, maxLines: number): string {
   const trimmed = output.trim();
   if (!trimmed) return "(no test output captured)";
@@ -619,32 +525,6 @@ function buildTestFailureOutput(
       return `Command: ${test.command}\n${output || "(no output)"}`;
     })
     .join("\n\n");
-}
-
-function buildVmTestResults(
-  tests: Array<{ command: string; passed: boolean }>
-): {
-  passed: boolean;
-  total: number;
-  failed: number;
-  summary: string;
-  failedTests: string[];
-} {
-  const total = tests.length;
-  const failedTests = tests.filter((test) => !test.passed).map((test) => test.command);
-  const failed = failedTests.length;
-  const passedCount = Math.max(0, total - failed);
-  const summary =
-    total > 0
-      ? `${passedCount}/${total} commands passed${failed ? `, ${failed} failed` : ""}`
-      : "0/0 commands passed (no tests reported)";
-  return {
-    passed: failed === 0,
-    total,
-    failed,
-    summary,
-    failedTests,
-  };
 }
 
 function copySnapshot(srcRoot: string, dstRoot: string) {
@@ -1485,7 +1365,7 @@ function buildCodexExecArgs(params: {
   const model = params.model?.trim() || "gpt-5.2-codex";
   args.push("--model", model);
 
-  // Enable full network access for agent runs (will be properly isolated when moved to VMs)
+  // Enable full network access for agent runs.
   args.push("-c", 'sandbox_permissions=["network-full-access"]');
 
   // Set reasoning effort level (xhigh for maximum thinking)
@@ -1667,250 +1547,6 @@ async function runCodexExec(params: {
   }
 
   return { escalationRequested, escalationResolved };
-}
-
-type RemoteCodexExecParams = {
-  projectId: string;
-  runId: string;
-  workspacePath: string;
-  artifactsDir: string;
-  localPromptPath: string;
-  localSchemaPath: string;
-  localOutputPath: string;
-  localLogPath: string;
-  sandbox: SandboxMode;
-  skipGitRepoCheck?: boolean;
-  model?: string;
-  containerConfig: ContainerConfig;
-  containerName: string;
-  workingDir?: string;
-  log?: (line: string) => void;
-};
-
-const DOCKER_FALLBACK_PATTERNS = [
-  /Cannot connect to the Docker daemon/i,
-  /docker: command not found/i,
-  /Is the docker daemon running/i,
-  /permission denied/i,
-];
-
-class ContainerFallbackError extends Error {
-  reason: string;
-
-  constructor(reason: string) {
-    super(reason);
-    this.reason = reason;
-  }
-}
-
-function summarizeExecOutput(result: ExecResult): string {
-  const combined = `${result.stderr}\n${result.stdout}`.trim();
-  if (!combined) return "unknown error";
-  return combined.replace(/\s+/g, " ").slice(0, 200);
-}
-
-function buildCodexShellCommand(cmd: string, args: string[], promptPath: string): string {
-  const argString = args.map(shellEscape).join(" ");
-  return `cat ${shellEscape(promptPath)} | ${cmd} ${argString}`;
-}
-
-async function checkDockerRuntime(projectId: string): Promise<{ ok: boolean; detail?: string }> {
-  const result = await remoteExec(projectId, "docker info >/dev/null 2>&1", {
-    allowFailure: true,
-    timeout: 15000,
-  });
-  if (result.exitCode === 0) return { ok: true };
-  const detail = summarizeExecOutput(result);
-  return { ok: false, detail };
-}
-
-function shouldFallbackFromContainer(result: ExecResult): string | null {
-  if (result.exitCode === 125) {
-    return `docker run failed: ${summarizeExecOutput(result)}`;
-  }
-  const combined = `${result.stderr}\n${result.stdout}`;
-  if (DOCKER_FALLBACK_PATTERNS.some((pattern) => pattern.test(combined))) {
-    return `docker run failed: ${summarizeExecOutput(result)}`;
-  }
-  return null;
-}
-
-function isCodexMissingInContainer(result: ExecResult): boolean {
-  if (result.exitCode !== 127) return false;
-  const combined = `${result.stderr}\n${result.stdout}`;
-  return /codex: not found/i.test(combined) || /codex.*not found/i.test(combined);
-}
-
-async function runCodexExecInContainer(params: {
-  projectId: string;
-  containerName: string;
-  image: string;
-  workspacePath: string;
-  artifactsDir: string;
-  env: Record<string, string>;
-  resources: ContainerResourceLimits;
-  command: string;
-  workingDir?: string;
-}): Promise<ExecResult> {
-  const workspaceHostPath = resolveVmAbsolutePath(params.workspacePath);
-  const artifactsHostPath = resolveVmAbsolutePath(params.artifactsDir);
-  const workingDir = params.workingDir?.trim() || "/workspace";
-
-  const codexAuthPath = getVmCodexAuthPath();
-
-  // When running as non-root user, use /workspace as HOME (always exists and writable)
-  const containerHome = "/workspace";
-  const mountFlags = [
-    `-v ${shellEscape(`${workspaceHostPath}:/workspace`)}`,
-    `-v ${shellEscape(`${artifactsHostPath}:/artifacts`)}`,
-    // Mount codex auth directory to workspace (writable by non-root user)
-    `-v ${shellEscape(`${codexAuthPath}:${containerHome}/.codex`)}`,
-  ];
-
-  // Set HOME so codex finds its config in the writable location
-  const envFlags = [
-    `-e HOME=${containerHome}`,
-    ...Object.entries(params.env)
-      .filter(([key]) => ENV_KEY_PATTERN.test(key))
-      .map(([key, value]) => `-e ${key}=${shellEscape(value)}`),
-  ];
-
-  const resourceFlags: string[] = [];
-  if (params.resources.cpus > 0) resourceFlags.push(`--cpus=${params.resources.cpus}`);
-  if (params.resources.memory.trim())
-    resourceFlags.push(`--memory=${shellEscape(params.resources.memory.trim())}`);
-
-  const dockerCmd = [
-    "docker run --rm",
-    `--name ${shellEscape(params.containerName)}`,
-    "--network host",
-    "--user $(id -u):$(id -g)",  // Run as host user to avoid root-owned files
-    ...resourceFlags,
-    ...mountFlags,
-    ...envFlags,
-    `-w ${shellEscape(workingDir)}`,
-    shellEscape(params.image),
-    "sh -lc",
-    shellEscape(params.command),
-  ].join(" ");
-
-  // Debug: Log env flags (mask the actual key value)
-  const maskedEnvFlags = envFlags.map((f) => f.replace(/='.+'/, "='***'"));
-  console.log(`[DEBUG] Docker env flags: ${maskedEnvFlags.join(" ")}`);
-
-  try {
-    return await remoteExec(params.projectId, dockerCmd, {
-      allowFailure: true,
-      timeout: Math.round(params.resources.timeoutSec * 1000),
-    });
-  } finally {
-    await remoteExec(params.projectId, `docker rm -f ${shellEscape(params.containerName)}`, {
-      allowFailure: true,
-    });
-  }
-}
-
-async function runCodexExecRemote(params: RemoteCodexExecParams): Promise<CodexExecResult> {
-  params.log?.(
-    `Running codex in container ${params.containerName} (${params.containerConfig.image})`
-  );
-  const promptName = path.posix.basename(params.localPromptPath);
-  const schemaName = path.posix.basename(params.localSchemaPath);
-  const outputName = path.posix.basename(params.localOutputPath);
-  const remotePromptPath = path.posix.join(params.artifactsDir, promptName);
-  const remoteSchemaPath = path.posix.join(params.artifactsDir, schemaName);
-  const remoteOutputPath = path.posix.join(params.artifactsDir, outputName);
-
-  await remoteExec(
-    params.projectId,
-    `mkdir -p ${shellEscape(params.artifactsDir)}`,
-    { cwd: "." }
-  );
-  await remoteUpload(params.projectId, params.localPromptPath, remotePromptPath);
-  await remoteUpload(params.projectId, params.localSchemaPath, remoteSchemaPath);
-
-  const env = {
-    OPENAI_API_KEY: getOpenAiApiKey() || "",
-  };
-
-  // Debug: log API key status
-  params.log?.(`[DEBUG] OPENAI_API_KEY length: ${env.OPENAI_API_KEY.length}`);
-
-  ensureDir(path.dirname(params.localLogPath));
-  const logStream = fs.createWriteStream(params.localLogPath, { flags: "a" });
-  logStream.write(`[${nowIso()}] codex exec start (${params.sandbox})\n`);
-
-  let logFinalized = false;
-  const writeExecOutput = (result: ExecResult) => {
-    if (result.stdout) logStream.write(result.stdout);
-    if (result.stderr) logStream.write(result.stderr);
-  };
-  const finalizeLog = (exitCode: number, note?: string, result?: ExecResult) => {
-    if (logFinalized) return;
-    if (result) writeExecOutput(result);
-    if (note) logStream.write(`[${nowIso()}] ${note}\n`);
-    logStream.write(`[${nowIso()}] codex exec end exit=${exitCode}\n`);
-    logStream.end();
-    logFinalized = true;
-  };
-
-  try {
-    const dockerReady = await checkDockerRuntime(params.projectId);
-    if (!dockerReady.ok) {
-      const reason = dockerReady.detail
-        ? `docker unavailable: ${dockerReady.detail}`
-        : "docker unavailable";
-      finalizeLog(1, `container fallback: ${reason}`);
-      throw new ContainerFallbackError(reason);
-    }
-
-    const codexArgs = buildCodexExecArgs({
-      sandbox: params.sandbox,
-      schemaPath: `/artifacts/${schemaName}`,
-      outputPath: `/artifacts/${outputName}`,
-      skipGitRepoCheck: params.skipGitRepoCheck,
-      model: params.model,
-    });
-    const command = buildCodexShellCommand("codex", codexArgs, `/artifacts/${promptName}`);
-
-    const containerResult = await runCodexExecInContainer({
-      projectId: params.projectId,
-      containerName: params.containerName,
-      image: params.containerConfig.image,
-      workspacePath: params.workspacePath,
-      artifactsDir: params.artifactsDir,
-      env,
-      resources: params.containerConfig.resources,
-      command,
-      workingDir: params.workingDir,
-    });
-
-    if (isCodexMissingInContainer(containerResult)) {
-      finalizeLog(containerResult.exitCode, undefined, containerResult);
-      throw new Error("codex CLI missing inside container");
-    }
-
-    const fallbackReason = shouldFallbackFromContainer(containerResult);
-    if (fallbackReason) {
-      finalizeLog(containerResult.exitCode, `container fallback: ${fallbackReason}`, containerResult);
-      throw new ContainerFallbackError(fallbackReason);
-    }
-
-    finalizeLog(containerResult.exitCode, undefined, containerResult);
-
-    if (containerResult.exitCode !== 0) {
-      throw new Error(`codex exec failed (exit ${containerResult.exitCode})`);
-    }
-  } catch (err) {
-    if (!logFinalized) {
-      finalizeLog(1);
-    }
-    throw err;
-  }
-
-  await remoteDownload(params.projectId, remoteOutputPath, params.localOutputPath);
-
-  return { escalationRequested: false, escalationResolved: null };
 }
 
 function builderSchema(): object {
@@ -2199,13 +1835,6 @@ function buildReviewerPrompt(params: {
   constitution?: string;
   builderChanges?: BuilderChange[];
   builderChangesPath?: string;
-  vmTestResults?: {
-    passed: boolean;
-    total: number;
-    failed: number;
-    summary: string;
-    failedTests: string[];
-  };
 }) {
   const constitutionBlock = formatConstitutionBlock(params.constitution ?? "");
   const builderChanges = params.builderChanges ?? [];
@@ -2226,16 +1855,6 @@ function buildReviewerPrompt(params: {
         (builderChangesPath ? `\nBuilder output file: ${builderChangesPath}\n` : "") +
         `\n`
       : "";
-  const vmTests = params.vmTestResults;
-  const vmTestsBlock = vmTests
-    ? `## Test Results (VM)\n` +
-      `Tests were executed on the VM and ${vmTests.passed ? "**passed**" : "**failed**"}: ${vmTests.summary}\n` +
-      (vmTests.failedTests.length
-        ? `Failed tests:\n${vmTests.failedTests.map((name) => `- ${name}`).join("\n")}\n`
-        : "") +
-      `\n` +
-      `Note: Builder's local test attempt may show failures due to Codex sandbox restrictions (e.g., EPERM on port binding). The VM results above are authoritative.\n\n`
-    : "";
   const crossProjectAwarenessBlock =
     `## Cross-Project Awareness\n\n` +
     `If the Work Order involves coordination with another project (for example, pcc-cloud),\n` +
@@ -2282,7 +1901,6 @@ function buildReviewerPrompt(params: {
     `- Output JSON matching the required schema.\n\n` +
     executionEnvironmentBlock +
     builderChangesBlock +
-    vmTestsBlock +
     `## Evaluating Blocking Fixes\n` +
     `When builder claims a change is a "blocking_fix":\n` +
     `1. Verify the claim - is it actually blocking?\n` +
@@ -2741,173 +2359,6 @@ async function runRepoTests(
   ];
 }
 
-type RemoteRunConfig = {
-  projectId: string;
-  workspacePath: string;
-  artifactsPath: string;
-};
-
-function buildRemoteRunPaths(runId: string): { workspacePath: string; artifactsPath: string } {
-  return {
-    workspacePath: path.posix.join(REMOTE_RUN_WORKSPACES_ROOT, runId),
-    artifactsPath: path.posix.join(REMOTE_RUN_ARTIFACTS_ROOT, runId),
-  };
-}
-
-async function prepareRemoteRun(config: RemoteRunConfig, log: (line: string) => void) {
-  log(`Preparing remote run workspace at ${config.workspacePath}`);
-  await remoteExec(config.projectId, `rm -rf ${shellEscape(config.workspacePath)} ${shellEscape(config.artifactsPath)}`, {
-    cwd: ".",
-    allowFailure: true,
-  });
-  await remoteExec(
-    config.projectId,
-    `mkdir -p ${shellEscape(config.workspacePath)} ${shellEscape(config.artifactsPath)} ${shellEscape(
-      path.posix.join(config.artifactsPath, "tests")
-    )}`,
-    { cwd: "." }
-  );
-}
-
-async function syncRemoteWorkspaceFiles(
-  config: RemoteRunConfig,
-  localPath: string,
-  log: (line: string) => void
-) {
-  log(`Syncing worktree to VM workspace ${config.workspacePath}`);
-  await withRetry(
-    () => remoteUpload(config.projectId, localPath, config.workspacePath, {
-      allowDelete: true,
-    }),
-    "remote upload",
-    log
-  );
-}
-
-async function syncRemoteWorkspaceToLocal(
-  config: RemoteRunConfig,
-  localPath: string,
-  log: (line: string) => void
-) {
-  log(`Syncing VM workspace ${config.workspacePath} back to worktree`);
-  await withRetry(
-    () => remoteDownload(config.projectId, config.workspacePath, localPath, {
-      allowDelete: true,
-    }),
-    "remote download",
-    log
-  );
-}
-
-async function cleanupRemoteRun(config: RemoteRunConfig, log: (line: string) => void) {
-  log(`Cleaning up remote run workspace at ${config.workspacePath}`);
-  await remoteExec(config.projectId, `rm -rf ${shellEscape(config.workspacePath)} ${shellEscape(config.artifactsPath)}`, {
-    cwd: ".",
-    allowFailure: true,
-  });
-}
-
-async function syncRemoteWorkspace(
-  config: RemoteRunConfig,
-  localPath: string,
-  log: (line: string) => void
-) {
-  await syncRemoteWorkspaceFiles(config, localPath, log);
-  log(`Installing dependencies in VM workspace...`);
-  await remoteExec(config.projectId, "npm ci", {
-    cwd: config.workspacePath,
-    allowAbsolute: true,
-  });
-  log(`Installing Playwright browsers...`);
-  await remoteExec(config.projectId, "npx playwright install chromium", {
-    cwd: config.workspacePath,
-    allowAbsolute: true,
-  });
-}
-
-async function runRemoteTests(params: {
-  repoPath: string;
-  runDir: string;
-  iteration: number;
-  runId: string;
-  remote: RemoteRunConfig;
-  logPath?: string;
-  labelPrefix?: string;
-}) {
-  const testInfo = getTestScriptInfo(params.repoPath);
-  if (!testInfo.hasTests) {
-    return [{ command: "(no tests)", passed: true, output: testInfo.message }];
-  }
-
-  const logPath = params.logPath ?? path.join(params.runDir, "tests", "npm-test.log");
-  const labelPrefix = params.labelPrefix ? `${params.labelPrefix} ` : "";
-  ensureDir(path.dirname(logPath));
-  const logStream = fs.createWriteStream(logPath, { flags: "a" });
-  const portOffset = getPortOffset(params.runId);
-  const env = {
-    CI: "1",
-    NEXT_DIST_DIR: ".system/next-run-tests",
-    E2E_WEB_PORT: String(E2E_WEB_PORT_BASE + portOffset),
-    E2E_OFFLINE_WEB_PORT: String(E2E_OFFLINE_WEB_PORT_BASE + portOffset),
-    E2E_API_PORT: String(E2E_API_PORT_BASE + portOffset),
-  };
-
-  const runRemoteCommand = async (label: string, command: string) => {
-    logStream.write(`[${nowIso()}] ${labelPrefix}${label} start (iter ${params.iteration})\n`);
-    const result = await remoteExec(params.remote.projectId, command, {
-      cwd: params.remote.workspacePath,
-      env,
-      allowFailure: true,
-      timeout: REMOTE_TEST_TIMEOUT_MS,
-    });
-
-    if (result.stdout) logStream.write(result.stdout);
-    if (result.stderr) logStream.write(result.stderr);
-    logStream.write(`[${nowIso()}] ${labelPrefix}${label} end exit=${result.exitCode}\n`);
-
-    const outputCapture = createOutputCapture(MAX_TEST_OUTPUT_LINES);
-    outputCapture.pushChunk(Buffer.from(result.stdout));
-    outputCapture.pushChunk(Buffer.from(result.stderr));
-    const captured = outputCapture.finalize();
-
-    return {
-      exitCode: result.exitCode,
-      output: formatTestOutput(captured.text, captured.truncated, MAX_TEST_OUTPUT_LINES),
-    };
-  };
-
-  try {
-    const ciResult = await runRemoteCommand("npm ci", "npm ci");
-    if (ciResult.exitCode !== 0) {
-      return [{ command: "npm ci", passed: false, output: ciResult.output }];
-    }
-
-    const testResult = await runRemoteCommand("npm test", "npm test");
-    return [
-      { command: "npm ci", passed: true, output: ciResult.output },
-      { command: "npm test", passed: testResult.exitCode === 0, output: testResult.output },
-    ];
-  } finally {
-    logStream.end();
-  }
-}
-
-async function remoteDirExists(
-  config: RemoteRunConfig,
-  cwd: string,
-  dirName: string
-): Promise<boolean> {
-  const result = await remoteExec(config.projectId, `test -d ${shellEscape(dirName)}`, {
-    cwd,
-    allowFailure: true,
-  });
-  return result.exitCode === 0;
-}
-
-function buildRemoteTestArtifactsRoot(remote: RemoteRunConfig, iteration: number): string {
-  return path.posix.join(remote.artifactsPath, "tests", `iter-${iteration}`);
-}
-
 function buildLocalTestArtifactsRoot(runDir: string, iteration: number): string {
   return path.join(runDir, "tests", "artifacts", `iter-${iteration}`);
 }
@@ -2947,63 +2398,11 @@ function copyLocalTestArtifacts(params: {
   }
 }
 
-async function stageRemoteTestArtifacts(params: {
-  remote: RemoteRunConfig;
-  iteration: number;
-  log: (line: string) => void;
-}) {
-  const remoteArtifactsRoot = buildRemoteTestArtifactsRoot(params.remote, params.iteration);
-  await remoteExec(
-    params.remote.projectId,
-    `rm -rf ${shellEscape(remoteArtifactsRoot)} && mkdir -p ${shellEscape(remoteArtifactsRoot)}`,
-    { cwd: "." }
-  );
-
-  for (const dir of TEST_ARTIFACT_DIRS) {
-    const exists = await remoteDirExists(params.remote, params.remote.workspacePath, dir);
-    if (!exists) continue;
-    params.log(`Staging remote test artifacts from ${dir} into ${remoteArtifactsRoot}`);
-    await remoteExec(
-      params.remote.projectId,
-      `cp -R ${shellEscape(path.posix.join(params.remote.workspacePath, dir))} ${shellEscape(
-        remoteArtifactsRoot
-      )}`,
-      { cwd: "." }
-    );
-  }
-}
-
-async function syncRemoteTestArtifacts(params: {
-  remote: RemoteRunConfig;
-  runDir: string;
-  iteration: number;
-  log: (line: string) => void;
-}) {
-  const remoteArtifactsRoot = buildRemoteTestArtifactsRoot(params.remote, params.iteration);
-  const localArtifactsRoot = buildLocalTestArtifactsRoot(params.runDir, params.iteration);
-  ensureDir(localArtifactsRoot);
-
-  for (const dir of TEST_ARTIFACT_DIRS) {
-    const exists = await remoteDirExists(params.remote, remoteArtifactsRoot, dir);
-    if (!exists) continue;
-    const remotePath = path.posix.join(remoteArtifactsRoot, dir);
-    const localPath = path.join(localArtifactsRoot, dir);
-    removePathIfExists(localPath);
-    params.log(`Downloading remote test artifacts from ${remotePath}`);
-    await remoteDownload(params.remote.projectId, remotePath, localPath);
-  }
-}
-
 export async function runRun(runId: string) {
   const run = getRunById(runId);
   if (!run) return;
 
   let runLog: fs.WriteStream | null = null;
-  let remoteConfig: RemoteRunConfig | null = null;
-  let remoteFallbackReason: string | null = null;
-  let containerConfig: ContainerConfig | null = null;
-  let containerEnabled = false;
-  let containerFallbackReason: string | null = null;
   const log = (line: string) => {
     if (!runLog) return;
     runLog.write(`[${nowIso()}] ${line}\n`);
@@ -3203,101 +2602,6 @@ export async function runRun(runId: string) {
     }
     ensureNodeModulesSymlink(repoPath, worktreePath, log);
 
-    const isolationMode = project.isolation_mode || "local";
-    const wantsVmIsolation = VM_ISOLATION_MODES.has(isolationMode);
-    const wantsContainerIsolation = wantsVmIsolation;
-    if (wantsContainerIsolation) {
-      containerConfig = buildContainerConfig();
-    }
-    let vm = getProjectVm(project.id);
-    let fallbackToLocal = wantsVmIsolation && shouldFallbackToLocalVm(vm);
-    if (wantsVmIsolation) {
-      if (!vm) {
-        remoteFallbackReason = "VM not configured";
-      } else if (fallbackToLocal) {
-        const statusLabel = vm.status.replace("_", " ");
-        remoteFallbackReason = `VM ${statusLabel}`;
-      } else {
-        if (vm.status === "stopped") {
-          log("VM is stopped; attempting to start before run");
-          try {
-            vm = await startVM(project.id);
-          } catch (err) {
-            if (
-              err instanceof VmManagerError &&
-              (err.code === "not_provisioned" || err.code === "not_found")
-            ) {
-              fallbackToLocal = true;
-            }
-            const message = err instanceof Error ? err.message : String(err);
-            remoteFallbackReason = `Failed to start VM: ${message}`;
-          }
-        }
-        if (!remoteFallbackReason) {
-          if (vm.status !== "running") {
-            const suffix = vm.last_error ? ` (${vm.last_error})` : "";
-            remoteFallbackReason = `VM not running (status=${vm.status})${suffix}`;
-          } else if (!vm.external_ip) {
-            remoteFallbackReason = "VM missing external IP";
-          } else {
-            const remotePaths = buildRemoteRunPaths(runId);
-            remoteConfig = {
-              projectId: project.id,
-              workspacePath: remotePaths.workspacePath,
-              artifactsPath: remotePaths.artifactsPath,
-            };
-          }
-        }
-      }
-    }
-
-    containerEnabled = wantsContainerIsolation && !!remoteConfig;
-    const executionPath = path.join(runDir, "execution.json");
-    const updateExecutionMetadata = (patch: Record<string, unknown>) => {
-      const current = readJsonIfExists<Record<string, unknown>>(executionPath) ?? {};
-      writeJson(executionPath, { ...current, ...patch });
-    };
-    const recordContainerFallback = (reason: string) => {
-      if (containerFallbackReason) return;
-      containerFallbackReason = reason;
-      containerEnabled = false;
-      log(`Container runtime unavailable; falling back to local execution: ${reason}`);
-      updateExecutionMetadata({
-        container_execution_mode: "local",
-        container_fallback_reason: reason,
-      });
-    };
-
-    const requiresRemote = wantsVmIsolation && !fallbackToLocal;
-    if (remoteFallbackReason && wantsVmIsolation) {
-      if (requiresRemote) {
-        log(`VM isolation required but unavailable: ${remoteFallbackReason}`);
-      } else {
-        log(`VM isolation unavailable; running locally: ${remoteFallbackReason}`);
-      }
-    }
-
-    const containerExecutionMode = wantsContainerIsolation
-      ? containerEnabled
-        ? "container"
-        : requiresRemote
-          ? "blocked"
-          : "local"
-      : "disabled";
-    writeJson(executionPath, {
-      requested_isolation_mode: isolationMode,
-      vm_status: vm?.status ?? null,
-      execution_mode: remoteConfig ? "remote" : requiresRemote ? "blocked" : "local",
-      fallback_reason: remoteFallbackReason,
-      remote_workspace_path: remoteConfig?.workspacePath ?? null,
-      remote_artifacts_path: remoteConfig?.artifactsPath ?? null,
-      container_requested: wantsContainerIsolation,
-      container_execution_mode: containerExecutionMode,
-      container_image: containerConfig?.image ?? null,
-      container_fallback_reason: containerFallbackReason,
-      recorded_at: nowIso(),
-    });
-
     const setupStartedAt = new Date();
     const recordSetupOutcome = (
       outcome: RunPhaseMetricOutcome,
@@ -3314,35 +2618,6 @@ export async function runRun(runId: string) {
       });
     };
 
-    if (requiresRemote && !remoteConfig) {
-      const message = `VM isolation required but unavailable: ${remoteFallbackReason || "unknown error"}`;
-      updateRun(runId, {
-        status: "failed",
-        error: message,
-        finished_at: nowIso(),
-      });
-      recordSetupOutcome("failed");
-      log(message);
-      return;
-    }
-
-    if (remoteConfig) {
-      updateProjectVm(project.id, { last_activity_at: nowIso(), last_error: null });
-      try {
-        await prepareRemoteRun(remoteConfig, log);
-      } catch (err) {
-        const message = `remote workspace setup failed: ${String(err)}`;
-        log(message);
-        updateRun(runId, {
-          status: "failed",
-          error: message,
-          finished_at: nowIso(),
-        });
-        recordSetupOutcome("failed");
-        return;
-      }
-    }
-
     const baselineResultsPath = path.join(runDir, "tests", "baseline-results.json");
     const baselineLogPath = path.join(runDir, "tests", "baseline-npm-test.log");
     let baselineTests =
@@ -3353,39 +2628,14 @@ export async function runRun(runId: string) {
     };
     if (!baselineTests) {
       log("Running baseline health check...");
-      if (remoteConfig) {
-        try {
-          await syncRemoteWorkspace(remoteConfig, worktreePath, log);
-        } catch (err) {
-          const message = `remote workspace sync failed: ${String(err)}`;
-          log(message);
-          updateRun(runId, {
-            status: "failed",
-            error: message,
-            finished_at: nowIso(),
-          });
-          recordSetupOutcome("failed", setupMetadataBase);
-          return;
-        }
-      }
       let baselineFailures: Array<{ command: string; passed: boolean; output?: string }> = [];
       for (let attempt = 1; attempt <= BASELINE_MAX_ATTEMPTS; attempt++) {
         baselineAttempts = attempt;
         try {
-          baselineTests = remoteConfig
-            ? await runRemoteTests({
-                repoPath: worktreePath,
-                runDir,
-                iteration: 0,
-                runId,
-                remote: remoteConfig,
-                logPath: baselineLogPath,
-                labelPrefix: "baseline",
-              })
-            : await runRepoTests(worktreePath, runDir, 0, runId, {
-                logPath: baselineLogPath,
-                label: "baseline npm test",
-              });
+          baselineTests = await runRepoTests(worktreePath, runDir, 0, runId, {
+            logPath: baselineLogPath,
+            label: "baseline npm test",
+          });
           writeJson(baselineResultsPath, baselineTests);
         } catch (err) {
           baselineTests = [{ command: "tests", passed: false, output: String(err) }];
@@ -3401,19 +2651,7 @@ export async function runRun(runId: string) {
       }
 
       setupMetadataBase.baseline_attempts = baselineAttempts;
-
-      if (remoteConfig) {
-        try {
-          await stageRemoteTestArtifacts({ remote: remoteConfig, iteration: 0, log });
-          await syncRemoteTestArtifacts({ remote: remoteConfig, runDir, iteration: 0, log });
-        } catch (err) {
-          const message = `remote artifact sync failed: ${String(err)}`;
-          log(message);
-          setupMetadataBase.baseline_artifact_sync_failed = true;
-        }
-      } else {
-        copyLocalTestArtifacts({ worktreePath, runDir, iteration: 0, log });
-      }
+      copyLocalTestArtifacts({ worktreePath, runDir, iteration: 0, log });
     } else {
       log("Using cached baseline test results");
     }
@@ -3603,97 +2841,7 @@ export async function runRun(runId: string) {
 
         let builderExecResult: CodexExecResult;
         try {
-          if (remoteConfig && containerConfig && containerEnabled) {
-            try {
-              await syncRemoteWorkspaceFiles(remoteConfig, worktreePath, log);
-            } catch (err) {
-              const message = `remote workspace sync failed: ${String(err)}`;
-              log(message);
-              recordPhaseMetric({
-                runId,
-                phase: "builder",
-                iteration,
-                outcome: "failed",
-                startedAt: builderStartedAt,
-                log,
-              });
-              updateRun(runId, {
-                status: "failed",
-                error: message,
-                finished_at: nowIso(),
-              });
-              return;
-            }
-            let ranRemote = false;
-            try {
-              try {
-                builderExecResult = await runCodexExecRemote({
-                  projectId: remoteConfig.projectId,
-                  runId,
-                  workspacePath: remoteConfig.workspacePath,
-                  artifactsDir: path.posix.join(
-                    remoteConfig.artifactsPath,
-                    "builder",
-                    `iter-${iteration}`
-                  ),
-                  localPromptPath: builderPromptPath,
-                  localSchemaPath: builderSchemaPath,
-                  localOutputPath: builderOutputPath,
-                  localLogPath: builderLogPath,
-                  sandbox: getBuilderSandboxMode(),
-                  skipGitRepoCheck: true,
-                  model: builderModel,
-                  containerConfig,
-                  containerName: buildContainerName(runId, `builder-${iteration}`),
-                  log,
-                });
-              } finally {
-                recordCostFromCodexLog({
-                  projectId: project.id,
-                  runId,
-                  category: "builder",
-                  model: builderModel,
-                  logPath: builderLogPath,
-                  description: `builder iteration ${iteration}`,
-                  promptPath: builderPromptPath,
-                  outputPath: builderOutputPath,
-                  log,
-                });
-              }
-              ranRemote = true;
-            } catch (err) {
-              if (err instanceof ContainerFallbackError) {
-                recordContainerFallback(err.reason);
-                builderExecResult = await runLocalBuilder();
-              } else {
-                throw err;
-              }
-            }
-            if (ranRemote) {
-              try {
-                await syncRemoteWorkspaceToLocal(remoteConfig, worktreePath, log);
-              } catch (err) {
-                const message = `remote workspace download failed: ${String(err)}`;
-                log(message);
-                recordPhaseMetric({
-                  runId,
-                  phase: "builder",
-                  iteration,
-                  outcome: "failed",
-                  startedAt: builderStartedAt,
-                  log,
-                });
-                updateRun(runId, {
-                  status: "failed",
-                  error: message,
-                  finished_at: nowIso(),
-                });
-                return;
-              }
-            }
-          } else {
-            builderExecResult = await runLocalBuilder();
-          }
+          builderExecResult = await runLocalBuilder();
         } catch (err) {
           log(`Builder failed: ${String(err)}`);
           recordPhaseMetric({
@@ -3834,48 +2982,15 @@ export async function runRun(runId: string) {
       updateRun(runId, { status: "testing" });
       log(`Running tests (iter ${iteration})`);
       let tests: Array<{ command: string; passed: boolean; output?: string }> = [];
-      if (remoteConfig) {
-        try {
-          await syncRemoteWorkspace(remoteConfig, worktreePath, log);
-        } catch (err) {
-          const message = `remote workspace sync failed: ${String(err)}`;
-          log(message);
-          updateRun(runId, {
-            status: "failed",
-            error: message,
-            finished_at: nowIso(),
-          });
-          recordTestOutcome("failed");
-          return;
-        }
-      }
       try {
-        tests = remoteConfig
-          ? await runRemoteTests({
-              repoPath: worktreePath,
-              runDir,
-              iteration,
-              runId,
-              remote: remoteConfig,
-            })
-          : await runRepoTests(worktreePath, runDir, iteration, runId);
+        tests = await runRepoTests(worktreePath, runDir, iteration, runId);
         writeJson(path.join(runDir, "tests", "results.json"), tests);
       } catch (err) {
         tests = [{ command: "tests", passed: false, output: String(err) }];
         writeJson(path.join(runDir, "tests", "results.json"), tests);
       }
 
-      if (remoteConfig) {
-        try {
-          await stageRemoteTestArtifacts({ remote: remoteConfig, iteration, log });
-          await syncRemoteTestArtifacts({ remote: remoteConfig, runDir, iteration, log });
-        } catch (err) {
-          const message = `remote artifact sync failed: ${String(err)}`;
-          log(message);
-        }
-      } else {
-        copyLocalTestArtifacts({ worktreePath, runDir, iteration, log });
-      }
+      copyLocalTestArtifacts({ worktreePath, runDir, iteration, log });
 
       historyEntry.tests = tests.map((test) => ({
         command: test.command,
@@ -3964,7 +3079,6 @@ export async function runRun(runId: string) {
         builderChangesPath: fs.existsSync(reviewerBuilderResultPath)
           ? "builder_result.json"
           : undefined,
-        vmTestResults: remoteConfig ? buildVmTestResults(tests) : undefined,
       });
       const reviewerPromptPath = path.join(reviewerDir, "prompt.txt");
       fs.writeFileSync(reviewerPromptPath, reviewerPrompt, "utf8");
@@ -4005,73 +3119,7 @@ export async function runRun(runId: string) {
         })();
 
       try {
-        if (remoteConfig && containerConfig && containerEnabled) {
-          const remoteReviewerDir = path.posix.join(
-            remoteConfig.artifactsPath,
-            "reviewer",
-            `iter-${iteration}`
-          );
-          try {
-            await remoteUpload(
-              remoteConfig.projectId,
-              reviewerDir,
-              remoteReviewerDir,
-              { allowDelete: true }
-            );
-          } catch (err) {
-            const message = `remote reviewer sync failed: ${String(err)}`;
-            log(message);
-            recordReviewerOutcome("failed");
-            updateRun(runId, {
-              status: "failed",
-              error: message,
-              finished_at: nowIso(),
-            });
-            return;
-          }
-          try {
-            try {
-              await runCodexExecRemote({
-                projectId: remoteConfig.projectId,
-                runId,
-                workspacePath: remoteConfig.workspacePath,
-                artifactsDir: remoteReviewerDir,
-                localPromptPath: reviewerPromptPath,
-                localSchemaPath: reviewerSchemaPath,
-                localOutputPath: reviewerOutputPath,
-                localLogPath: reviewerLogPath,
-                sandbox: getReviewerSandboxMode(),
-                skipGitRepoCheck: true,
-                model: reviewerModel,
-                containerConfig,
-                containerName: buildContainerName(runId, `reviewer-${iteration}`),
-                workingDir: "/artifacts",
-                log,
-              });
-            } finally {
-              recordCostFromCodexLog({
-                projectId: project.id,
-                runId,
-                category: "reviewer",
-                model: reviewerModel,
-                logPath: reviewerLogPath,
-                description: `reviewer iteration ${iteration}`,
-                promptPath: reviewerPromptPath,
-                outputPath: reviewerOutputPath,
-                log,
-              });
-            }
-          } catch (err) {
-            if (err instanceof ContainerFallbackError) {
-              recordContainerFallback(err.reason);
-              await runLocalReviewer();
-            } else {
-              throw err;
-            }
-          }
-        } else {
-          await runLocalReviewer();
-        }
+        await runLocalReviewer();
       } catch (err) {
         log(`Reviewer failed: ${String(err)}`);
         recordReviewerOutcome("failed");
@@ -4388,77 +3436,7 @@ export async function runRun(runId: string) {
           }
         })();
       try {
-        if (remoteConfig && containerConfig && containerEnabled) {
-          try {
-            await syncRemoteWorkspaceFiles(remoteConfig, worktreePath, log);
-          } catch (err) {
-            const message = `remote workspace sync failed: ${String(err)}`;
-            log(message);
-            finishMergeConflict(message, conflictDetails.conflictingRunId, conflictFiles);
-            return {
-              ok: false,
-              conflictRunId: conflictDetails.conflictingRunId,
-              conflictFiles,
-            };
-          }
-          let ranRemote = false;
-          try {
-            try {
-              await runCodexExecRemote({
-                projectId: remoteConfig.projectId,
-                runId,
-                workspacePath: remoteConfig.workspacePath,
-                artifactsDir: path.posix.join(remoteConfig.artifactsPath, "merge", "builder"),
-                localPromptPath: mergePromptPath,
-                localSchemaPath: builderSchemaPath,
-                localOutputPath: mergeBuilderOutputPath,
-                localLogPath: mergeBuilderLogPath,
-                sandbox: getBuilderSandboxMode(),
-                skipGitRepoCheck: true,
-                model: builderModel,
-                containerConfig,
-                containerName: buildContainerName(runId, "merge-builder"),
-                log,
-              });
-            } finally {
-              recordCostFromCodexLog({
-                projectId: project.id,
-                runId,
-                category: "builder",
-                model: builderModel,
-                logPath: mergeBuilderLogPath,
-                description: "merge conflict builder",
-                promptPath: mergePromptPath,
-                outputPath: mergeBuilderOutputPath,
-                log,
-              });
-            }
-            ranRemote = true;
-          } catch (err) {
-            if (err instanceof ContainerFallbackError) {
-              recordContainerFallback(err.reason);
-              await runLocalMergeBuilder();
-            } else {
-              throw err;
-            }
-          }
-          if (ranRemote) {
-            try {
-              await syncRemoteWorkspaceToLocal(remoteConfig, worktreePath, log);
-            } catch (err) {
-              const message = `remote workspace download failed: ${String(err)}`;
-              log(message);
-              finishMergeConflict(message, conflictDetails.conflictingRunId, conflictFiles);
-              return {
-                ok: false,
-                conflictRunId: conflictDetails.conflictingRunId,
-                conflictFiles,
-              };
-            }
-          }
-        } else {
-          await runLocalMergeBuilder();
-        }
+        await runLocalMergeBuilder();
       } catch (err) {
         const message = `merge builder failed: ${String(err)}`;
         log(`Merge builder failed: ${String(err)}`);
@@ -4535,18 +3513,11 @@ export async function runRun(runId: string) {
         // ignore
       }
 
-      const mergeVmTests = remoteConfig
-        ? readJsonIfExists<Array<{ command: string; passed: boolean }>>(
-            path.join(runDir, "tests", "results.json")
-          )
-        : null;
       const mergeReviewerPrompt = buildReviewerPrompt({
         workOrderId: workOrder.id,
         workOrderMarkdown,
         diffPatch: resolvedDiff || "(no changes detected)",
         constitution: reviewerConstitution.content,
-        vmTestResults:
-          remoteConfig && mergeVmTests ? buildVmTestResults(mergeVmTests) : undefined,
       });
       const mergeReviewerPromptPath = path.join(mergeReviewerDir, "prompt.txt");
       fs.writeFileSync(mergeReviewerPromptPath, mergeReviewerPrompt, "utf8");
@@ -4593,72 +3564,7 @@ export async function runRun(runId: string) {
           }
         })();
       try {
-        if (remoteConfig && containerConfig && containerEnabled) {
-          const remoteMergeReviewerDir = path.posix.join(
-            remoteConfig.artifactsPath,
-            "merge",
-            "reviewer"
-          );
-          try {
-            await remoteUpload(
-              remoteConfig.projectId,
-              mergeReviewerDir,
-              remoteMergeReviewerDir,
-              { allowDelete: true }
-            );
-          } catch (err) {
-            const message = `remote merge reviewer sync failed: ${String(err)}`;
-            log(message);
-            finishMergeConflict(message, conflictDetails.conflictingRunId, conflictFiles);
-            return {
-              ok: false,
-              conflictRunId: conflictDetails.conflictingRunId,
-              conflictFiles,
-            };
-          }
-          try {
-            try {
-              await runCodexExecRemote({
-                projectId: remoteConfig.projectId,
-                runId,
-                workspacePath: remoteConfig.workspacePath,
-                artifactsDir: remoteMergeReviewerDir,
-                localPromptPath: mergeReviewerPromptPath,
-                localSchemaPath: reviewerSchemaPath,
-                localOutputPath: mergeReviewerOutputPath,
-                localLogPath: mergeReviewerLogPath,
-                sandbox: getReviewerSandboxMode(),
-                skipGitRepoCheck: true,
-                model: reviewerModel,
-                containerConfig,
-                containerName: buildContainerName(runId, "merge-reviewer"),
-                workingDir: "/artifacts",
-                log,
-              });
-            } finally {
-              recordCostFromCodexLog({
-                projectId: project.id,
-                runId,
-                category: "reviewer",
-                model: reviewerModel,
-                logPath: mergeReviewerLogPath,
-                description: "merge reviewer",
-                promptPath: mergeReviewerPromptPath,
-                outputPath: mergeReviewerOutputPath,
-                log,
-              });
-            }
-          } catch (err) {
-            if (err instanceof ContainerFallbackError) {
-              recordContainerFallback(err.reason);
-              await runLocalMergeReviewer();
-            } else {
-              throw err;
-            }
-          }
-        } else {
-          await runLocalMergeReviewer();
-        }
+        await runLocalMergeReviewer();
       } catch (err) {
         const message = `merge reviewer failed: ${String(err)}`;
         log(`Merge reviewer failed: ${String(err)}`);
@@ -5005,13 +3911,6 @@ export async function runRun(runId: string) {
         outcome,
         log: handoffLog,
       });
-    }
-    if (remoteConfig) {
-      try {
-        await cleanupRemoteRun(remoteConfig, log);
-      } catch (err) {
-        log(`Remote cleanup failed: ${String(err)}`);
-      }
     }
     try {
       runLog?.end();
@@ -5478,32 +4377,6 @@ export function finalizeManualRunResolution(
   }
 }
 
-export async function remoteExecForProject(
-  projectId: string,
-  command: string,
-  options?: RemoteExecOptions
-): Promise<ExecResult> {
-  return remoteExec(projectId, command, options);
-}
-
-export async function remoteUploadForProject(
-  projectId: string,
-  localPath: string,
-  remotePath: string,
-  options?: RemoteSyncOptions
-): Promise<void> {
-  return remoteUpload(projectId, localPath, remotePath, options);
-}
-
-export async function remoteDownloadForProject(
-  projectId: string,
-  remotePath: string,
-  localPath: string,
-  options?: RemoteSyncOptions
-): Promise<void> {
-  return remoteDownload(projectId, remotePath, localPath, options);
-}
-
 export const __test__ = {
   buildConflictContext,
   ensureWorktreeLink,
@@ -5511,5 +4384,4 @@ export const __test__ = {
   removeWorktreeLink,
   resolveWorktreePaths,
   resolveBaseBranch,
-  shouldFallbackToLocalVm,
 };

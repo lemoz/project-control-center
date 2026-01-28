@@ -50,7 +50,6 @@ import {
   getIncidentStats,
   getOpenEscalationForProject,
   getProjectCommunicationById,
-  getProjectVm,
   getRunById,
   getLatestConstitutionSuggestionCreatedAt,
   getEstimationContextSummary,
@@ -81,7 +80,6 @@ import {
   startShift,
   startGlobalShift,
   updateInitiative,
-  updateProjectIsolationSettings,
   updateEscalation,
   updateProjectCommunication,
   updateShift,
@@ -103,22 +101,11 @@ import {
   type InitiativeStatus,
   type ProjectCommunicationIntent,
   type ProjectCommunicationScope,
-  type ProjectIsolationMode,
   type ProjectRow,
-  type ProjectVmRow,
-  type ProjectVmSize,
   type Track,
   type ShiftHandoffDecision,
   type CreateGlobalPatternInput,
 } from "./db.js";
-import {
-  deleteVM,
-  provisionVM,
-  resizeVM,
-  startVM,
-  stopVM,
-  VmManagerError,
-} from "./vm_manager.js";
 import { getDiscoveredRepoPaths, syncAndListRepoSummaries } from "./projects_catalog.js";
 import {
   cascadeAutoReady,
@@ -195,21 +182,16 @@ import {
   getRun,
   getRunsForProject,
   provideRunInput,
-  remoteDownloadForProject,
-  remoteExecForProject,
-  remoteUploadForProject,
 } from "./runner_agent.js";
 import {
   getBudgetSummary,
   getHeartbeatResponse,
-  getVmHealthResponse,
   listActiveRuns,
   listObservabilityAlerts,
   listRunFailureBreakdown,
   listRunTimeline,
   tailRunLog,
 } from "./observability.js";
-import { RemoteExecError } from "./remote_exec.js";
 import { readControlMetadata } from "./sidecar.js";
 import { spawnShiftAgent, tailShiftLog } from "./shift_agent.js";
 import {
@@ -497,7 +479,7 @@ function isLoopbackAddress(value: string | undefined): boolean {
   return normalized.startsWith("127.");
 }
 
-const HEALTH_PATHS = new Set(["/health", "/heartbeat", "/observability/vm-health"]);
+const HEALTH_PATHS = new Set(["/health", "/heartbeat"]);
 
 function normalizeHealthPath(value: string): string {
   if (value.length > 1 && value.endsWith("/")) return value.slice(0, -1);
@@ -841,21 +823,6 @@ app.post("/narration/speak", async (req, res) => {
   res.setHeader("Content-Type", result.contentType);
   res.setHeader("Cache-Control", "no-store");
   return res.send(result.audio);
-});
-
-app.get("/observability/vm-health", async (req, res) => {
-  const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
-  if (projectId && !findProjectById(projectId)) {
-    return res.status(404).json({ error: "project not found" });
-  }
-  try {
-    const data = await getVmHealthResponse(projectId);
-    return res.json(data);
-  } catch (err) {
-    return res.status(500).json({
-      error: err instanceof Error ? err.message : "failed to fetch VM health",
-    });
-  }
 });
 
 app.get("/observability/runs/active", (req, res) => {
@@ -3846,340 +3813,6 @@ app.post("/repos/:id/constitution/suggestions/:suggestionId/reject", (req, res) 
     actor,
   });
   return res.json({ ok: true, suggestion: decided });
-});
-
-const VM_ISOLATION_MODES = new Set(["local", "vm", "vm+container"]);
-const VM_SIZES = new Set(["medium", "large", "xlarge"]);
-
-function buildVmResponse(project: ProjectRow, vm: ProjectVmRow | null) {
-  const fallbackVm = {
-    project_id: project.id,
-    provider: null,
-    repo_path: null,
-    gcp_instance_id: null,
-    gcp_instance_name: null,
-    gcp_project: null,
-    gcp_zone: null,
-    external_ip: null,
-    internal_ip: null,
-    status: "not_provisioned",
-    size: null,
-    created_at: null,
-    last_started_at: null,
-    last_activity_at: null,
-    last_error: null,
-    total_hours_used: 0,
-  };
-  const mergedVm = { ...fallbackVm, ...(vm ?? {}) };
-  return {
-    project: {
-      id: project.id,
-      name: project.name,
-      isolation_mode: project.isolation_mode || "local",
-      vm_size: project.vm_size || "medium",
-    },
-    vm: mergedVm,
-  };
-}
-
-function sendVmError(res: Response, err: unknown) {
-  const message = err instanceof Error ? err.message : "vm action failed";
-  if (err instanceof VmManagerError) {
-    const status =
-      err.code === "not_found" ? 404 : err.code === "not_provisioned" ? 409 : 400;
-    return res.status(status).json({ error: message });
-  }
-  return res.status(500).json({ error: message });
-}
-
-function sendRemoteExecError(res: Response, err: unknown) {
-  if (!(err instanceof RemoteExecError)) {
-    const message = err instanceof Error ? err.message : "remote exec failed";
-    return res.status(500).json({ error: message });
-  }
-
-  const status =
-    err.code === "invalid_path" ||
-    err.code === "invalid_env" ||
-    err.code === "invalid_command" ||
-    err.code === "preflight"
-      ? 400
-      : err.code === "not_configured" || err.code === "not_running"
-        ? 409
-        : err.code === "timeout"
-          ? 504
-          : err.code === "command_failed"
-            ? 422
-            : err.code === "tool_missing"
-              ? 424
-              : err.code === "ssh_failed" || err.code === "sync_failed"
-                ? 502
-                : 500;
-
-  return res.status(status).json({
-    error: err.message,
-    code: err.code,
-    details: err.details ?? null,
-  });
-}
-
-app.get("/repos/:id/vm", (req, res) => {
-  const { id } = req.params;
-  const project = findProjectById(id);
-  if (!project) return res.status(404).json({ error: "project not found" });
-  const vm = getProjectVm(project.id);
-  return res.json(buildVmResponse(project, vm));
-});
-
-app.patch("/repos/:id/vm", (req, res) => {
-  const { id } = req.params;
-  const project = findProjectById(id);
-  if (!project) return res.status(404).json({ error: "project not found" });
-
-  const isolation_mode = req.body?.isolation_mode;
-  const vm_size = req.body?.vm_size;
-
-  if (isolation_mode === undefined && vm_size === undefined) {
-    return res.status(400).json({ error: "no vm settings provided" });
-  }
-  if (
-    isolation_mode !== undefined &&
-    (typeof isolation_mode !== "string" || !VM_ISOLATION_MODES.has(isolation_mode))
-  ) {
-    return res.status(400).json({
-      error: "`isolation_mode` must be one of local, vm, vm+container",
-    });
-  }
-  if (vm_size !== undefined && (typeof vm_size !== "string" || !VM_SIZES.has(vm_size))) {
-    return res.status(400).json({
-      error: "`vm_size` must be one of medium, large, xlarge",
-    });
-  }
-
-  const patch: { isolation_mode?: ProjectIsolationMode; vm_size?: ProjectVmSize } = {};
-  if (isolation_mode !== undefined) patch.isolation_mode = isolation_mode as ProjectIsolationMode;
-  if (vm_size !== undefined) patch.vm_size = vm_size as ProjectVmSize;
-  const updated = updateProjectIsolationSettings(project.id, patch);
-  const vm = getProjectVm(project.id);
-  return res.json(buildVmResponse(updated ?? project, vm));
-});
-
-app.post("/repos/:id/vm/provision", async (req, res) => {
-  const { id } = req.params;
-  const project = findProjectById(id);
-  if (!project) return res.status(404).json({ error: "project not found" });
-  const zone = typeof req.body?.zone === "string" ? req.body.zone : undefined;
-  const image = typeof req.body?.image === "string" ? req.body.image : undefined;
-
-  try {
-    const vm = await provisionVM({
-      projectId: project.id,
-      size: project.vm_size || "medium",
-      zone,
-      image,
-    });
-    return res.json(buildVmResponse(project, vm));
-  } catch (err) {
-    return sendVmError(res, err);
-  }
-});
-
-app.post("/repos/:id/vm/start", async (req, res) => {
-  const { id } = req.params;
-  const project = findProjectById(id);
-  if (!project) return res.status(404).json({ error: "project not found" });
-  try {
-    const vm = await startVM(project.id);
-    return res.json(buildVmResponse(project, vm));
-  } catch (err) {
-    return sendVmError(res, err);
-  }
-});
-
-app.post("/repos/:id/vm/stop", async (req, res) => {
-  const { id } = req.params;
-  const project = findProjectById(id);
-  if (!project) return res.status(404).json({ error: "project not found" });
-  try {
-    const vm = await stopVM(project.id);
-    return res.json(buildVmResponse(project, vm));
-  } catch (err) {
-    return sendVmError(res, err);
-  }
-});
-
-app.put("/repos/:id/vm/resize", async (req, res) => {
-  const { id } = req.params;
-  const project = findProjectById(id);
-  if (!project) return res.status(404).json({ error: "project not found" });
-  const requestedSize = req.body?.vm_size ?? req.body?.size ?? project.vm_size;
-  if (typeof requestedSize !== "string" || !VM_SIZES.has(requestedSize)) {
-    return res.status(400).json({
-      error: "`vm_size` must be one of medium, large, xlarge",
-    });
-  }
-
-  try {
-    const vm = await resizeVM(project.id, requestedSize as ProjectVmSize);
-    return res.json(buildVmResponse(project, vm));
-  } catch (err) {
-    return sendVmError(res, err);
-  }
-});
-
-app.delete("/repos/:id/vm", async (req, res) => {
-  const { id } = req.params;
-  const project = findProjectById(id);
-  if (!project) return res.status(404).json({ error: "project not found" });
-  try {
-    const vm = await deleteVM(project.id);
-    return res.json(buildVmResponse(project, vm));
-  } catch (err) {
-    return sendVmError(res, err);
-  }
-});
-
-app.post("/repos/:id/remote/exec", async (req, res) => {
-  const { id } = req.params;
-  const project = findProjectById(id);
-  if (!project) return res.status(404).json({ error: "project not found" });
-
-  const payload = req.body ?? {};
-  const command = payload.command;
-  if (typeof command !== "string" || !command.trim()) {
-    return res.status(400).json({ error: "`command` must be a non-empty string" });
-  }
-
-  const cwd = typeof payload.cwd === "string" ? payload.cwd : undefined;
-  const timeout = typeof payload.timeout === "number" ? payload.timeout : undefined;
-  if (payload.timeout !== undefined && typeof payload.timeout !== "number") {
-    return res.status(400).json({ error: "`timeout` must be a number" });
-  }
-
-  const allowFailureValue = payload.allow_failure ?? payload.allowFailure;
-  if (allowFailureValue !== undefined && typeof allowFailureValue !== "boolean") {
-    return res.status(400).json({ error: "`allow_failure` must be boolean" });
-  }
-  const allowAbsoluteValue = payload.allow_absolute ?? payload.allowAbsolute;
-  if (allowAbsoluteValue !== undefined && typeof allowAbsoluteValue !== "boolean") {
-    return res.status(400).json({ error: "`allow_absolute` must be boolean" });
-  }
-
-  let env: Record<string, string> | undefined;
-  if (payload.env !== undefined) {
-    if (!payload.env || typeof payload.env !== "object" || Array.isArray(payload.env)) {
-      return res.status(400).json({ error: "`env` must be an object" });
-    }
-    env = {};
-    for (const [key, value] of Object.entries(payload.env as Record<string, unknown>)) {
-      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-        env[key] = String(value);
-      } else {
-        return res.status(400).json({
-          error: "`env` values must be strings, numbers, or booleans",
-        });
-      }
-    }
-  }
-
-  try {
-    const result = await remoteExecForProject(project.id, command, {
-      cwd,
-      timeout,
-      env,
-      allowFailure: allowFailureValue,
-      allowAbsolute: allowAbsoluteValue,
-    });
-    return res.json(result);
-  } catch (err) {
-    return sendRemoteExecError(res, err);
-  }
-});
-
-app.post("/repos/:id/remote/upload", async (req, res) => {
-  const { id } = req.params;
-  const project = findProjectById(id);
-  if (!project) return res.status(404).json({ error: "project not found" });
-
-  const payload = req.body ?? {};
-  const localPathRaw = typeof payload.local_path === "string"
-    ? payload.local_path
-    : payload.localPath;
-  const remotePathRaw = typeof payload.remote_path === "string"
-    ? payload.remote_path
-    : payload.remotePath;
-  if (typeof localPathRaw !== "string" || typeof remotePathRaw !== "string") {
-    return res.status(400).json({ error: "`local_path` and `remote_path` are required" });
-  }
-  if (!localPathRaw.trim() || !remotePathRaw.trim()) {
-    return res.status(400).json({
-      error: "`local_path` and `remote_path` must be non-empty strings",
-    });
-  }
-  const localPath = localPathRaw;
-  const remotePath = remotePathRaw;
-
-  const allowDeleteValue = payload.allow_delete ?? payload.allowDelete;
-  if (allowDeleteValue !== undefined && typeof allowDeleteValue !== "boolean") {
-    return res.status(400).json({ error: "`allow_delete` must be boolean" });
-  }
-  const allowAbsoluteValue = payload.allow_absolute ?? payload.allowAbsolute;
-  if (allowAbsoluteValue !== undefined && typeof allowAbsoluteValue !== "boolean") {
-    return res.status(400).json({ error: "`allow_absolute` must be boolean" });
-  }
-
-  try {
-    await remoteUploadForProject(project.id, localPath, remotePath, {
-      allowDelete: allowDeleteValue,
-      allowAbsolute: allowAbsoluteValue,
-    });
-    return res.json({ ok: true });
-  } catch (err) {
-    return sendRemoteExecError(res, err);
-  }
-});
-
-app.post("/repos/:id/remote/download", async (req, res) => {
-  const { id } = req.params;
-  const project = findProjectById(id);
-  if (!project) return res.status(404).json({ error: "project not found" });
-
-  const payload = req.body ?? {};
-  const localPathRaw = typeof payload.local_path === "string"
-    ? payload.local_path
-    : payload.localPath;
-  const remotePathRaw = typeof payload.remote_path === "string"
-    ? payload.remote_path
-    : payload.remotePath;
-  if (typeof localPathRaw !== "string" || typeof remotePathRaw !== "string") {
-    return res.status(400).json({ error: "`local_path` and `remote_path` are required" });
-  }
-  if (!localPathRaw.trim() || !remotePathRaw.trim()) {
-    return res.status(400).json({
-      error: "`local_path` and `remote_path` must be non-empty strings",
-    });
-  }
-  const localPath = localPathRaw;
-  const remotePath = remotePathRaw;
-
-  const allowDeleteValue = payload.allow_delete ?? payload.allowDelete;
-  if (allowDeleteValue !== undefined && typeof allowDeleteValue !== "boolean") {
-    return res.status(400).json({ error: "`allow_delete` must be boolean" });
-  }
-  const allowAbsoluteValue = payload.allow_absolute ?? payload.allowAbsolute;
-  if (allowAbsoluteValue !== undefined && typeof allowAbsoluteValue !== "boolean") {
-    return res.status(400).json({ error: "`allow_absolute` must be boolean" });
-  }
-
-  try {
-    await remoteDownloadForProject(project.id, remotePath, localPath, {
-      allowDelete: allowDeleteValue,
-      allowAbsolute: allowAbsoluteValue,
-    });
-    return res.json({ ok: true });
-  } catch (err) {
-    return sendRemoteExecError(res, err);
-  }
 });
 
 function sendWorkOrderError(res: Response, err: unknown) {

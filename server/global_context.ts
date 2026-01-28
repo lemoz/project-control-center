@@ -1,6 +1,5 @@
 import {
   getActiveShift,
-  getProjectVm,
   listEscalations,
   listProjectCommunications,
   type EscalationRow,
@@ -117,8 +116,6 @@ export type GlobalContextResponse = {
   communications_queue: CommunicationQueueGroup[];
   escalation_queue: EscalationQueueItem[];
   resources: {
-    vms_running: number;
-    vms_available: number;
     budget_used_today: number;
   };
   economy: {
@@ -432,8 +429,6 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
   const escalationQueue: EscalationQueueItem[] = [];
   const priorityByProjectId = new Map<string, boolean>();
 
-  let vmsRunning = 0;
-  let vmsAvailable = 0;
   let portfolioBurnRateDaily = 0;
   const budgetStatusCounts = {
     healthy: 0,
@@ -599,9 +594,6 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
     budgetStatusCounts[budgetStatus] += 1;
     portfolioBurnRateDaily += context.economy.burn_rate_daily_usd;
 
-    const vm = getProjectVm(project.id);
-    if (vm?.status === "running") vmsRunning += 1;
-    if (vm?.status === "stopped") vmsAvailable += 1;
   }
 
   projects.sort((a, b) => {
@@ -657,8 +649,6 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
     communications_queue: communicationsQueue,
     escalation_queue: escalationQueue,
     resources: {
-      vms_running: vmsRunning,
-      vms_available: vmsAvailable,
       budget_used_today: parseBudgetUsedToday(),
     },
     economy: {

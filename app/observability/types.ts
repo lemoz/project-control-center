@@ -1,22 +1,3 @@
-export type VmMetric = {
-  used_gb: number;
-  total_gb: number;
-  percent: number;
-};
-
-export type VmHealthResponse = {
-  project_id: string | null;
-  project_name: string | null;
-  vm_status: string | null;
-  disk: VmMetric;
-  memory: VmMetric;
-  cpu: { load_1m: number; load_5m: number; percent: number };
-  containers: Array<{ name: string; status: string; uptime: string }>;
-  reachable: boolean;
-  last_check: string;
-  error: string | null;
-};
-
 export type ActiveRun = {
   id: string;
   work_order_id: string;

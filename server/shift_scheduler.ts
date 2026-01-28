@@ -1,6 +1,3 @@
-import { spawn } from "child_process";
-import path from "path";
-import { getControlCenterApiUrl, getProcessEnv } from "./config.js";
 import {
   countReadyWorkOrders,
   countShiftsSince,
@@ -91,43 +88,10 @@ function projectLabel(project: ProjectRow): string {
   return project.name ? `${project.name} (${project.id})` : project.id;
 }
 
-async function spawnVmShiftAgent(projectId: string): Promise<void> {
-  const scriptPath = path.join(process.cwd(), "scripts", "start-shift-vm.sh");
-  if (!getControlCenterApiUrl()) {
-    throw new Error("CONTROL_CENTER_API_URL is required to start VM shifts");
-  }
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn("bash", [scriptPath, projectId], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: getProcessEnv(),
-    });
-    let stderr = "";
-    child.stdout?.on("data", () => {
-      // Drain stdout to avoid backpressure.
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (err) => reject(err));
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      const suffix = stderr.trim() ? `: ${stderr.trim()}` : "";
-      reject(new Error(`start-shift-vm failed (code ${code ?? "unknown"})${suffix}`));
-    });
-  });
-}
-
 async function spawnShiftAgentForProject(
   project: ProjectRow,
   shift: ShiftRow
 ): Promise<void> {
-  if (project.isolation_mode === "vm" || project.isolation_mode === "vm+container") {
-    await spawnVmShiftAgent(project.id);
-    return;
-  }
   spawnShiftAgent({ projectId: project.id, projectPath: project.path, shift });
 }
 
@@ -156,8 +120,6 @@ async function maybeStartShift(
   settings: ShiftSchedulerSettings,
   now: Date
 ): Promise<"started" | "skipped" | "error"> {
-  const requiresVm =
-    project.isolation_mode === "vm" || project.isolation_mode === "vm+container";
   expireStaleShifts(project.id);
   const activeShift = getActiveShift(project.id);
   if (activeShift) return "skipped";
@@ -181,14 +143,6 @@ async function maybeStartShift(
     const cooldownAnchor = lastShift.completed_at ?? lastShift.started_at;
     const sinceCooldown = minutesSince(cooldownAnchor, nowMs);
     if (sinceCooldown !== null && sinceCooldown < settings.cooldown_minutes) return "skipped";
-  }
-
-  if (requiresVm && !getControlCenterApiUrl()) {
-    recordActivity(
-      `Skipping ${projectLabel(project)}: CONTROL_CENTER_API_URL not set for VM shifts.`,
-      project.id
-    );
-    return "error";
   }
 
   const result = startShift({

@@ -21,8 +21,7 @@ process.env.CONTROL_CENTER_SCAN_ROOTS = repoRoot;
 process.env.CONTROL_CENTER_SCAN_TTL_MS = "0";
 process.env.CONTROL_CENTER_BUDGET_USED_TODAY = "12.5";
 
-const { createProjectCommunication, createRun, getDb, startShift, upsertProjectVm } =
-  await import("./db.ts");
+const { createProjectCommunication, createRun, getDb, startShift } = await import("./db.ts");
 const { buildGlobalContextResponse } = await import("./global_context.ts");
 const { invalidateDiscoveryCache, syncAndListRepoSummaries } = await import(
   "./projects_catalog.ts"
@@ -293,44 +292,6 @@ test("buildGlobalContextResponse aggregates and sorts projects", () => {
 
   startShift({ projectId: "beta", agentType: "global", agentId: "agent-1" });
 
-  upsertProjectVm({
-    project_id: "beta",
-    provider: null,
-    repo_path: null,
-    gcp_instance_id: null,
-    gcp_instance_name: null,
-    gcp_project: null,
-    gcp_zone: null,
-    external_ip: null,
-    internal_ip: null,
-    status: "running",
-    size: "medium",
-    created_at: betaCreatedAt,
-    last_started_at: betaCreatedAt,
-    last_activity_at: betaCreatedAt,
-    last_error: null,
-    total_hours_used: 1,
-  });
-
-  upsertProjectVm({
-    project_id: "gamma",
-    provider: null,
-    repo_path: null,
-    gcp_instance_id: null,
-    gcp_instance_name: null,
-    gcp_project: null,
-    gcp_zone: null,
-    external_ip: null,
-    internal_ip: null,
-    status: "stopped",
-    size: "medium",
-    created_at: betaCreatedAt,
-    last_started_at: null,
-    last_activity_at: null,
-    last_error: null,
-    total_hours_used: 0,
-  });
-
   const response = buildGlobalContextResponse();
 
   assert.equal(response.projects.length, 3);
@@ -364,8 +325,6 @@ test("buildGlobalContextResponse aggregates and sorts projects", () => {
   );
   assert.equal(response.escalation_queue[0].priority, 1);
 
-  assert.equal(response.resources.vms_running, 1);
-  assert.equal(response.resources.vms_available, 1);
   assert.equal(response.resources.budget_used_today, 12.5);
   assert.ok(response.economy);
   assert.ok(Number.isFinite(response.economy.monthly_budget_usd));
