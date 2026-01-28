@@ -36,6 +36,7 @@ import {
   createSignal,
   createConstitutionSuggestions,
   createInitiative,
+  deleteInitiative,
   expireStaleGlobalShifts,
   expireStaleShifts,
   decideConstitutionSuggestion,
@@ -63,6 +64,7 @@ import {
   listProjectCommunications,
   listGlobalShifts,
   listConstitutionSuggestions,
+  listInitiatives,
   listSignals,
   searchGlobalPatternsByTags,
   listTracks,
@@ -97,6 +99,7 @@ import {
   type EscalationStatus,
   type EscalationType,
   type InitiativeMilestone,
+  type InitiativePatch,
   type InitiativeStatus,
   type ProjectCommunicationIntent,
   type ProjectCommunicationScope,
@@ -1810,11 +1813,12 @@ type InitiativeCreateInput = {
 
 type InitiativePlanRequest = {
   plan: InitiativePlan | null;
-  update_milestones: boolean;
+  guidance: string | null;
 };
 
 type InitiativeNotifyRequest = {
   plan: InitiativePlan | null;
+  guidance: string | null;
   start_shifts: boolean;
   spawn_shifts: boolean;
 };
@@ -1872,9 +1876,12 @@ function parseInitiativeCreateInput(
     return { ok: false, error: "`target_date` must be a non-empty string" };
   }
 
-  const projects = normalizeStringArrayField(record.projects) ?? [];
+  const projects =
+    normalizeStringArrayField(record.involved_projects) ??
+    normalizeStringArrayField(record.projects) ??
+    [];
   if (!projects.length) {
-    return { ok: false, error: "`projects` must be a non-empty array" };
+    return { ok: false, error: "`involved_projects` must be a non-empty array" };
   }
 
   const rawStatus = typeof record.status === "string" ? record.status.trim() : "";
@@ -1903,20 +1910,89 @@ function parseInitiativeCreateInput(
   };
 }
 
+function parseInitiativePatchInput(
+  payload: unknown
+): { ok: true; patch: InitiativePatch } | { ok: false; error: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, error: "request body must be an object" };
+  }
+  const record = payload as Record<string, unknown>;
+  const patch: InitiativePatch = {};
+
+  if ("name" in record) {
+    const name = typeof record.name === "string" ? record.name.trim() : "";
+    if (!name) return { ok: false, error: "`name` must be a non-empty string" };
+    patch.name = name;
+  }
+
+  if ("description" in record || "goal" in record) {
+    const descriptionRaw =
+      typeof record.description === "string" ? record.description.trim() : "";
+    const goalRaw = typeof record.goal === "string" ? record.goal.trim() : "";
+    const description = descriptionRaw || goalRaw;
+    if (!description) {
+      return { ok: false, error: "`description` must be a non-empty string" };
+    }
+    patch.description = description;
+  }
+
+  if ("target_date" in record) {
+    const targetDate =
+      typeof record.target_date === "string" ? record.target_date.trim() : "";
+    if (!targetDate) {
+      return { ok: false, error: "`target_date` must be a non-empty string" };
+    }
+    patch.target_date = targetDate;
+  }
+
+  if ("status" in record) {
+    const rawStatus = typeof record.status === "string" ? record.status.trim() : "";
+    if (!rawStatus || !INITIATIVE_STATUS_SET.has(rawStatus as InitiativeStatus)) {
+      return {
+        ok: false,
+        error: "`status` must be planning, active, completed, or at_risk",
+      };
+    }
+    patch.status = rawStatus as InitiativeStatus;
+  }
+
+  if ("involved_projects" in record || "projects" in record) {
+    const projects =
+      normalizeStringArrayField(record.involved_projects) ??
+      normalizeStringArrayField(record.projects) ??
+      [];
+    if (!projects.length) {
+      return { ok: false, error: "`involved_projects` must be a non-empty array" };
+    }
+    patch.projects = projects;
+  }
+
+  if ("milestones" in record) {
+    const milestonesParsed = parseInitiativeMilestones(record.milestones);
+    if (!milestonesParsed.ok) return { ok: false, error: milestonesParsed.error };
+    patch.milestones = milestonesParsed.milestones;
+  }
+
+  return { ok: true, patch };
+}
+
 function parseInitiativePlanRequest(
   payload: unknown,
   initiativeId: string,
   projectIds: string[]
 ): { ok: true; input: InitiativePlanRequest } | { ok: false; error: string } {
   if (payload === undefined || payload === null) {
-    return { ok: true, input: { plan: null, update_milestones: true } };
+    return { ok: true, input: { plan: null, guidance: null } };
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return { ok: false, error: "request body must be an object" };
   }
   const record = payload as Record<string, unknown>;
-  const update =
-    typeof record.update_milestones === "boolean" ? record.update_milestones : true;
+  if ("guidance" in record && record.guidance !== null && typeof record.guidance !== "string") {
+    return { ok: false, error: "`guidance` must be a string" };
+  }
+  const guidanceRaw = typeof record.guidance === "string" ? record.guidance.trim() : "";
+  const guidance = guidanceRaw ? guidanceRaw : null;
   let plan: InitiativePlan | null = null;
   if ("plan" in record) {
     plan = coerceInitiativePlanInput(record.plan, initiativeId, projectIds);
@@ -1924,7 +2000,7 @@ function parseInitiativePlanRequest(
       return { ok: false, error: "`plan` must match the initiative plan schema" };
     }
   }
-  return { ok: true, input: { plan, update_milestones: update } };
+  return { ok: true, input: { plan, guidance } };
 }
 
 function parseInitiativeNotifyRequest(
@@ -1935,13 +2011,18 @@ function parseInitiativeNotifyRequest(
   if (payload === undefined || payload === null) {
     return {
       ok: true,
-      input: { plan: null, start_shifts: true, spawn_shifts: false },
+      input: { plan: null, guidance: null, start_shifts: true, spawn_shifts: false },
     };
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return { ok: false, error: "request body must be an object" };
   }
   const record = payload as Record<string, unknown>;
+  if ("guidance" in record && record.guidance !== null && typeof record.guidance !== "string") {
+    return { ok: false, error: "`guidance` must be a string" };
+  }
+  const guidanceRaw = typeof record.guidance === "string" ? record.guidance.trim() : "";
+  const guidance = guidanceRaw ? guidanceRaw : null;
   const start =
     typeof record.start_shifts === "boolean" ? record.start_shifts : true;
   const spawn =
@@ -1953,7 +2034,10 @@ function parseInitiativeNotifyRequest(
       return { ok: false, error: "`plan` must match the initiative plan schema" };
     }
   }
-  return { ok: true, input: { plan, start_shifts: start, spawn_shifts: spawn } };
+  return {
+    ok: true,
+    input: { plan, guidance, start_shifts: start, spawn_shifts: spawn },
+  };
 }
 
 type EscalationCreateInput = {
@@ -2313,25 +2397,34 @@ function formatInitiativeSuggestionBody(params: {
   suggestions: InitiativeProjectSuggestion | null;
 }): string {
   const tag = initiativeTag(params.initiative.id);
-  if (!params.suggestions || params.suggestions.items.length === 0) {
+  const targetDate = params.initiative.target_date
+    ? params.initiative.target_date
+    : "unspecified";
+  if (!params.suggestions || params.suggestions.suggestions.length === 0) {
     return [
-      `Initiative "${params.initiative.name}" (target ${params.initiative.target_date})`,
+      `Initiative "${params.initiative.name}" (target ${targetDate})`,
       "No specific suggestions were generated for this project.",
       `If you create WOs for this initiative, tag them with "${tag}".`,
     ].join("\n");
   }
 
   const lines: string[] = [
-    `Initiative "${params.initiative.name}" (target ${params.initiative.target_date})`,
+    `Initiative "${params.initiative.name}" (target ${targetDate})`,
     `Please tag created WOs with "${tag}".`,
     "",
     "Suggested work:",
   ];
-  for (const item of params.suggestions.items) {
-    lines.push(`- [${item.milestone} • ${item.milestone_target}] ${item.title}`);
-    lines.push(`  ${item.description}`);
-    if (item.depends_on.length) {
-      lines.push(`  depends_on: ${item.depends_on.join(", ")}`);
+  for (const item of params.suggestions.suggestions) {
+    lines.push(`- ${item.suggested_title} (${item.estimated_hours}h)`);
+    lines.push(`  Goal: ${item.suggested_goal}`);
+    if (item.suggested_acceptance_criteria.length) {
+      lines.push("  Acceptance:");
+      for (const criterion of item.suggested_acceptance_criteria) {
+        lines.push(`    - ${criterion}`);
+      }
+    }
+    if (item.suggested_dependencies.length) {
+      lines.push(`  Dependencies: ${item.suggested_dependencies.join(", ")}`);
     }
   }
   return lines.join("\n");
@@ -2351,11 +2444,43 @@ app.post("/global/initiatives", (req, res) => {
   }
 });
 
+app.get("/global/initiatives", (req, res) => {
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit =
+    Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(200, Math.trunc(limitRaw)) : 50;
+  const initiatives = listInitiatives(limit).map((initiative) =>
+    buildInitiativeProgress(initiative)
+  );
+  return res.json({ initiatives });
+});
+
 app.get("/global/initiatives/:id", (req, res) => {
   const { id } = req.params;
   const initiative = getInitiativeById(id);
   if (!initiative) return res.status(404).json({ error: "initiative not found" });
   return res.json({ initiative: buildInitiativeProgress(initiative) });
+});
+
+app.patch("/global/initiatives/:id", (req, res) => {
+  const { id } = req.params;
+  if (!id || !id.trim()) {
+    return res.status(400).json({ error: "`id` must be provided" });
+  }
+  const parsed = parseInitiativePatchInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  const updated = updateInitiative(id, parsed.patch);
+  if (!updated) return res.status(404).json({ error: "initiative not found" });
+  return res.json({ initiative: buildInitiativeProgress(updated) });
+});
+
+app.delete("/global/initiatives/:id", (req, res) => {
+  const { id } = req.params;
+  if (!id || !id.trim()) {
+    return res.status(400).json({ error: "`id` must be provided" });
+  }
+  const deleted = deleteInitiative(id);
+  if (!deleted) return res.status(404).json({ error: "initiative not found" });
+  return res.json({ ok: true, id });
 });
 
 app.get("/global/initiatives/:id/critical-path", (req, res) => {
@@ -2394,6 +2519,7 @@ app.post("/global/initiatives/:id/plan", async (req, res) => {
         initiative,
         projects: projectRows,
         projectPath: projectRows[0]?.path,
+        guidance: parsed.input.guidance,
       });
     } catch (err) {
       return res.status(500).json({
@@ -2402,21 +2528,10 @@ app.post("/global/initiatives/:id/plan", async (req, res) => {
     }
   }
 
-  let updatedInitiative = initiative;
-  if (parsed.input.update_milestones) {
-    const milestones: InitiativeMilestone[] = plan.milestones.map((milestone) => ({
-      name: milestone.name,
-      target_date: milestone.target_date,
-      wos: [],
-      status: "pending",
-    }));
-    const updated = updateInitiative(initiative.id, { milestones });
-    if (updated) updatedInitiative = updated;
-  }
-
   return res.json({
-    initiative: buildInitiativeProgress(updatedInitiative),
+    initiative: buildInitiativeProgress(initiative),
     plan,
+    suggestions: plan.suggestions,
   });
 });
 
@@ -2442,6 +2557,7 @@ app.post("/global/initiatives/:id/notify-projects", async (req, res) => {
         initiative,
         projects: projectRows,
         projectPath: projectRows[0]?.path,
+        guidance: parsed.input.guidance,
       });
     } catch (err) {
       return res.status(500).json({
@@ -2467,7 +2583,7 @@ app.post("/global/initiatives/:id/notify-projects", async (req, res) => {
       initiative_name: initiative.name,
       target_date: initiative.target_date,
       tag: initiativeTag(initiative.id),
-      suggestions: projectSuggestion?.items ?? [],
+      suggestions: projectSuggestion?.suggestions ?? [],
     });
 
     const communication = createProjectCommunication({
@@ -2529,9 +2645,25 @@ app.post("/global/initiatives/:id/notify-projects", async (req, res) => {
     };
   });
 
+  let updatedInitiative = initiative;
+  if (plan.suggestions.length) {
+    const sentAt = new Date().toISOString();
+    const sentUpdates = plan.suggestions.map((suggestion) => ({
+      project_id: suggestion.project_id,
+      suggested_title: suggestion.suggested_title,
+      sent_at: sentAt,
+    }));
+    const existing = initiative.suggestions_sent ?? [];
+    const updated = updateInitiative(initiative.id, {
+      suggestions_sent: [...existing, ...sentUpdates],
+    });
+    if (updated) updatedInitiative = updated;
+  }
+
   return res.json({
-    initiative: buildInitiativeProgress(initiative),
+    initiative: buildInitiativeProgress(updatedInitiative),
     plan,
+    suggestions: plan.suggestions,
     notifications,
   });
 });

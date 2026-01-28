@@ -12,6 +12,7 @@ import {
   type InitiativeMilestone,
   type ProjectRow,
 } from "./db.js";
+import { listWorkOrders } from "./work_orders.js";
 import { parseDependencyRef } from "./work_order_dependencies.js";
 import { resolveUtilitySettings } from "./settings.js";
 import { buildInitiativePlanPrompt } from "./prompts/initiative_plan.js";
@@ -22,32 +23,31 @@ const DEFAULT_CODEX_MODEL = "gpt-5.2-codex";
 const CLAUDE_PLAN_MODEL = "claude-3-5-sonnet-20241022";
 const CLAUDE_TIMEOUT_MS = 60_000;
 const CODEX_TIMEOUT_MS = 60_000;
+const IN_PROGRESS_STATUSES = new Set(["building", "ai_review", "you_review"]);
 
-export type InitiativePlanItem = {
-  title: string;
-  description: string;
-  depends_on: string[];
-};
-
-export type InitiativePlanProject = {
+export type InitiativeSuggestion = {
   project_id: string;
-  items: InitiativePlanItem[];
-};
-
-export type InitiativePlanMilestone = {
-  name: string;
-  target_date: string;
-  description: string;
-  projects: InitiativePlanProject[];
+  suggested_title: string;
+  suggested_goal: string;
+  suggested_acceptance_criteria: string[];
+  suggested_dependencies: string[];
+  estimated_hours: number;
 };
 
 export type InitiativePlan = {
   initiative_id: string;
   generated_at: string;
-  milestones: InitiativePlanMilestone[];
+  suggestions: InitiativeSuggestion[];
 };
 
 export type InitiativeProgress = Initiative & {
+  involved_projects: string[];
+  progress: {
+    total_wos: number;
+    done: number;
+    in_progress: number;
+    blocked: number;
+  };
   total_wos: number;
   completed_wos: number;
   blocked_wos: number;
@@ -56,13 +56,7 @@ export type InitiativeProgress = Initiative & {
 
 export type InitiativeProjectSuggestion = {
   project_id: string;
-  items: Array<{
-    milestone: string;
-    milestone_target: string;
-    title: string;
-    description: string;
-    depends_on: string[];
-  }>;
+  suggestions: InitiativeSuggestion[];
 };
 
 type InitiativeWorkOrder = {
@@ -74,29 +68,20 @@ type InitiativeWorkOrder = {
 };
 
 type InitiativePlanDraft = {
-  milestones: InitiativePlanMilestone[];
+  suggestions: InitiativeSuggestion[];
 };
 
-const PlanItemSchema = z.object({
-  title: z.string().min(1),
-  description: z.string().min(1),
-  depends_on: z.array(z.string()).optional(),
-});
-
-const PlanProjectSchema = z.object({
+const SuggestionSchema = z.object({
   project_id: z.string().min(1),
-  items: z.array(PlanItemSchema).optional(),
-});
-
-const PlanMilestoneSchema = z.object({
-  name: z.string().min(1),
-  target_date: z.string().min(1),
-  description: z.string().optional(),
-  projects: z.array(PlanProjectSchema).optional(),
+  suggested_title: z.string().min(1),
+  suggested_goal: z.string().min(1),
+  suggested_acceptance_criteria: z.array(z.string()).optional(),
+  suggested_dependencies: z.array(z.string()).optional(),
+  estimated_hours: z.union([z.number(), z.string()]).optional(),
 });
 
 const PlanSchema = z.object({
-  milestones: z.array(PlanMilestoneSchema),
+  suggestions: z.array(SuggestionSchema),
 });
 
 function codexCommand(cliPath?: string): string {
@@ -116,37 +101,24 @@ function initiativePlanSchema(): object {
     type: "object",
     additionalProperties: true,
     properties: {
-      milestones: {
+      suggestions: {
         type: "array",
         items: {
           type: "object",
           additionalProperties: true,
           properties: {
-            name: { type: "string" },
-            target_date: { type: "string" },
-            description: { type: "string" },
-            projects: {
+            project_id: { type: "string" },
+            suggested_title: { type: "string" },
+            suggested_goal: { type: "string" },
+            suggested_acceptance_criteria: {
               type: "array",
-              items: {
-                type: "object",
-                additionalProperties: true,
-                properties: {
-                  project_id: { type: "string" },
-                  items: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      additionalProperties: true,
-                      properties: {
-                        title: { type: "string" },
-                        description: { type: "string" },
-                        depends_on: { type: "array", items: { type: "string" } },
-                      },
-                    },
-                  },
-                },
-              },
+              items: { type: "string" },
             },
+            suggested_dependencies: {
+              type: "array",
+              items: { type: "string" },
+            },
+            estimated_hours: { type: "number" },
           },
         },
       },
@@ -180,38 +152,63 @@ function extractJsonCandidate(text: string): string | null {
   return trimmed.slice(first, last + 1);
 }
 
+const MIN_ESTIMATED_HOURS = 2;
+const MAX_ESTIMATED_HOURS = 4;
+
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter(Boolean);
+}
+
+function normalizeEstimatedHours(value: unknown): number {
+  let raw: number;
+  if (typeof value === "number") {
+    raw = value;
+  } else if (typeof value === "string") {
+    raw = Number(value);
+  } else {
+    raw = NaN;
+  }
+  if (!Number.isFinite(raw)) return MIN_ESTIMATED_HOURS;
+  if (raw < MIN_ESTIMATED_HOURS) return MIN_ESTIMATED_HOURS;
+  if (raw > MAX_ESTIMATED_HOURS) return MAX_ESTIMATED_HOURS;
+  return raw;
+}
+
 function normalizePlanDraft(
   raw: unknown,
   allowedProjectIds: Set<string>
 ): InitiativePlanDraft | null {
   const parsed = PlanSchema.safeParse(raw);
   if (!parsed.success) return null;
-  const milestones = parsed.data.milestones
-    .map((milestone) => {
-      const name = milestone.name.trim();
-      const targetDate = milestone.target_date.trim();
-      if (!name || !targetDate) return null;
-      const description = (milestone.description ?? "").trim();
-      const projects = (milestone.projects ?? [])
-        .map((project) => {
-          const projectId = project.project_id.trim();
-          if (!projectId || !allowedProjectIds.has(projectId)) return null;
-          const items = (project.items ?? [])
-            .map((item) => ({
-              title: item.title.trim(),
-              description: item.description.trim(),
-              depends_on: (item.depends_on ?? [])
-                .map((dep) => dep.trim())
-                .filter(Boolean),
-            }))
-            .filter((item) => item.title && item.description);
-          return { project_id: projectId, items };
-        })
-        .filter(Boolean) as InitiativePlanProject[];
-      return { name, target_date: targetDate, description, projects };
+  const suggestions = parsed.data.suggestions
+    .map((suggestion) => {
+      const projectId = suggestion.project_id.trim();
+      if (!projectId || !allowedProjectIds.has(projectId)) return null;
+      const title = suggestion.suggested_title.trim();
+      const goal = suggestion.suggested_goal.trim();
+      if (!title || !goal) return null;
+      const acceptance = normalizeStringList(
+        suggestion.suggested_acceptance_criteria
+      );
+      const dependencies = normalizeStringList(suggestion.suggested_dependencies);
+      if (!acceptance.length) {
+        acceptance.push(`Delivers: ${goal}`);
+      }
+      const estimatedHours = normalizeEstimatedHours(suggestion.estimated_hours);
+      return {
+        project_id: projectId,
+        suggested_title: title,
+        suggested_goal: goal,
+        suggested_acceptance_criteria: acceptance,
+        suggested_dependencies: dependencies,
+        estimated_hours: estimatedHours,
+      };
     })
-    .filter(Boolean) as InitiativePlanMilestone[];
-  return { milestones };
+    .filter(Boolean) as InitiativeSuggestion[];
+  return { suggestions };
 }
 
 function parsePlanOutput(
@@ -366,25 +363,18 @@ function buildFallbackPlanDraft(
   initiative: Initiative,
   projects: ProjectRow[]
 ): InitiativePlanDraft {
-  const milestones: InitiativePlanMilestone[] = [
-    {
-      name: "Initial scope and sequencing",
-      target_date: initiative.target_date,
-      description: "Define the slice of work needed to hit the target date.",
-      projects: projects.map((project) => ({
-        project_id: project.id,
-        items: [
-          {
-            title: "Draft initiative work breakdown",
-            description:
-              "Propose WO-sized tasks, dependencies, and estimates for this initiative.",
-            depends_on: [],
-          },
-        ],
-      })),
-    },
-  ];
-  return { milestones };
+  const suggestions: InitiativeSuggestion[] = projects.map((project) => ({
+    project_id: project.id,
+    suggested_title: "Draft initiative work breakdown",
+    suggested_goal:
+      "Identify WO-sized tasks, dependencies, and estimates for this initiative.",
+    suggested_acceptance_criteria: [
+      "List candidate work orders with dependencies for this repo.",
+    ],
+    suggested_dependencies: [],
+    estimated_hours: MIN_ESTIMATED_HOURS,
+  }));
+  return { suggestions };
 }
 
 export function initiativeTag(initiativeId: string): string {
@@ -410,14 +400,47 @@ export function coerceInitiativePlanInput(
   return {
     initiative_id: initiativeId,
     generated_at: new Date().toISOString(),
-    milestones: draft.milestones,
+    suggestions: draft.suggestions,
   };
+}
+
+function detectProjectTechStack(projectPath: string): string {
+  const hasFile = (fileName: string) => fs.existsSync(path.join(projectPath, fileName));
+  const labels = new Set<string>();
+  const hasNextConfig =
+    hasFile("next.config.js") || hasFile("next.config.ts") || hasFile("next.config.mjs");
+  if (hasNextConfig) labels.add("Next.js");
+  if (hasFile("package.json")) labels.add("Node.js");
+  if (hasFile("requirements.txt") || hasFile("pyproject.toml") || hasFile("poetry.lock")) {
+    labels.add("Python");
+  }
+  if (hasFile("go.mod")) labels.add("Go");
+  if (hasFile("Cargo.toml")) labels.add("Rust");
+  if (hasFile("Gemfile")) labels.add("Ruby");
+  if (hasFile("pom.xml") || hasFile("build.gradle")) labels.add("Java");
+  if (hasFile("mix.exs")) labels.add("Elixir");
+  if (labels.size === 0) return "unknown";
+  return Array.from(labels).join(", ");
+}
+
+function listRecentWorkOrderTitles(projectPath: string, limit = 3): string[] {
+  try {
+    const workOrders = listWorkOrders(projectPath);
+    return workOrders
+      .slice()
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+      .slice(0, limit)
+      .map((wo) => wo.title);
+  } catch {
+    return [];
+  }
 }
 
 export async function generateInitiativePlan(params: {
   initiative: Initiative;
   projects: ProjectRow[];
   projectPath?: string;
+  guidance?: string | null;
 }): Promise<InitiativePlan> {
   const settings = resolveUtilitySettings().effective;
   const allowedProjectIds = new Set(params.projects.map((project) => project.id));
@@ -427,7 +450,11 @@ export async function generateInitiativePlan(params: {
       id: project.id,
       name: project.name,
       description: project.description,
+      path: project.path,
+      tech_stack: detectProjectTechStack(project.path),
+      recent_wos: listRecentWorkOrderTitles(project.path),
     })),
+    guidance: params.guidance ?? null,
   });
   const fallback = buildFallbackPlanDraft(params.initiative, params.projects);
   const projectPath =
@@ -458,14 +485,14 @@ export async function generateInitiativePlan(params: {
     draft = null;
   }
 
-  if (!draft || draft.milestones.length === 0) {
+  if (!draft || draft.suggestions.length === 0) {
     draft = fallback;
   }
 
   return {
     initiative_id: params.initiative.id,
     generated_at: new Date().toISOString(),
-    milestones: draft.milestones,
+    suggestions: draft.suggestions,
   };
 }
 
@@ -574,6 +601,9 @@ export function buildInitiativeProgress(initiative: Initiative): InitiativeProgr
   const workOrders = buildInitiativeWorkOrders(initiative);
   const total = workOrders.length;
   const completed = workOrders.filter((wo) => wo.status === "done").length;
+  const inProgress = workOrders.filter((wo) =>
+    IN_PROGRESS_STATUSES.has(wo.status)
+  ).length;
   const blocked = workOrders.filter((wo) => wo.status === "blocked").length;
 
   const byKey = new Map(workOrders.map((entry) => [entry.key, entry]));
@@ -593,6 +623,13 @@ export function buildInitiativeProgress(initiative: Initiative): InitiativeProgr
 
   return {
     ...initiative,
+    involved_projects: initiative.projects,
+    progress: {
+      total_wos: total,
+      done: completed,
+      in_progress: inProgress,
+      blocked,
+    },
     milestones,
     total_wos: total,
     completed_wos: completed,
@@ -603,24 +640,13 @@ export function buildInitiativeProgress(initiative: Initiative): InitiativeProgr
 
 export function groupPlanSuggestionsByProject(plan: InitiativePlan): InitiativeProjectSuggestion[] {
   const byProject = new Map<string, InitiativeProjectSuggestion>();
-  for (const milestone of plan.milestones) {
-    for (const project of milestone.projects) {
-      if (!project.items.length) continue;
-      let bucket = byProject.get(project.project_id);
-      if (!bucket) {
-        bucket = { project_id: project.project_id, items: [] };
-        byProject.set(project.project_id, bucket);
-      }
-      for (const item of project.items) {
-        bucket.items.push({
-          milestone: milestone.name,
-          milestone_target: milestone.target_date,
-          title: item.title,
-          description: item.description,
-          depends_on: item.depends_on,
-        });
-      }
+  for (const suggestion of plan.suggestions) {
+    let bucket = byProject.get(suggestion.project_id);
+    if (!bucket) {
+      bucket = { project_id: suggestion.project_id, suggestions: [] };
+      byProject.set(suggestion.project_id, bucket);
     }
+    bucket.suggestions.push(suggestion);
   }
   return Array.from(byProject.values());
 }
