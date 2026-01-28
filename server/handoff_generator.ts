@@ -311,14 +311,17 @@ function resolveWorkOrderTrack(
   workOrder: WorkOrder | undefined,
   tracks: Track[]
 ): WorkOrderTrackContext | null {
-  if (!workOrder?.trackId) return null;
-  const track = tracks.find((entry) => entry.id === workOrder.trackId);
+  if (!workOrder) return null;
+  const primary = workOrder.tracks[0] ?? workOrder.track ?? null;
+  const primaryId = primary?.id ?? workOrder.trackId ?? null;
+  if (!primaryId) return null;
+  const track = tracks.find((entry) => entry.id === primaryId);
   if (track) {
     return { id: track.id, name: track.name, goal: track.goal };
   }
-  const fallbackName = workOrder.track?.name ?? "";
+  const fallbackName = primary?.name ?? "";
   if (fallbackName) {
-    return { id: workOrder.trackId, name: fallbackName, goal: null };
+    return { id: primaryId, name: fallbackName, goal: null };
   }
   return null;
 }

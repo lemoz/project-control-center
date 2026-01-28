@@ -40,6 +40,8 @@ type WorkOrder = {
   ready_check: { ok: boolean; errors: string[] };
   trackId: string | null;
   track: { id: string; name: string; color: string | null } | null;
+  trackIds: string[];
+  tracks: { id: string; name: string; color: string | null }[];
 };
 
 type WorkOrdersResponse = {
@@ -204,24 +206,31 @@ export function KanbanBoard({ repoId }: { repoId: string }) {
     const byTrack = new Map<string, TrackCounts>();
     const noTrack: TrackCounts = { total: 0, done: 0, ready: 0, backlog: 0 };
     for (const wo of workOrders) {
-      if (!wo.trackId) {
+      const ids = wo.trackIds.length
+        ? wo.trackIds
+        : wo.trackId
+          ? [wo.trackId]
+          : [];
+      if (ids.length === 0) {
         noTrack.total += 1;
         if (wo.status === "done") noTrack.done += 1;
         if (wo.status === "ready") noTrack.ready += 1;
         if (wo.status === "backlog") noTrack.backlog += 1;
         continue;
       }
-      const existing = byTrack.get(wo.trackId) ?? {
-        total: 0,
-        done: 0,
-        ready: 0,
-        backlog: 0,
-      };
-      existing.total += 1;
-      if (wo.status === "done") existing.done += 1;
-      if (wo.status === "ready") existing.ready += 1;
-      if (wo.status === "backlog") existing.backlog += 1;
-      byTrack.set(wo.trackId, existing);
+      for (const trackId of ids) {
+        const existing = byTrack.get(trackId) ?? {
+          total: 0,
+          done: 0,
+          ready: 0,
+          backlog: 0,
+        };
+        existing.total += 1;
+        if (wo.status === "done") existing.done += 1;
+        if (wo.status === "ready") existing.ready += 1;
+        if (wo.status === "backlog") existing.backlog += 1;
+        byTrack.set(trackId, existing);
+      }
     }
     return { byTrack, noTrack };
   }, [workOrders]);
@@ -239,16 +248,23 @@ export function KanbanBoard({ repoId }: { repoId: string }) {
       });
     }
     for (const wo of workOrders) {
-      if (!wo.trackId) continue;
-      if (map.has(wo.trackId)) continue;
-      const counts = trackCounts.byTrack.get(wo.trackId);
-      map.set(wo.trackId, {
-        id: wo.trackId,
-        name: wo.track?.name ?? wo.trackId,
-        color: wo.track?.color ?? null,
-        sortOrder: null,
-        count: counts?.total ?? 0,
-      });
+      const ids = wo.trackIds.length
+        ? wo.trackIds
+        : wo.trackId
+          ? [wo.trackId]
+          : [];
+      for (const trackId of ids) {
+        if (map.has(trackId)) continue;
+        const counts = trackCounts.byTrack.get(trackId);
+        const trackInfo = wo.tracks.find((track) => track.id === trackId) ?? wo.track;
+        map.set(trackId, {
+          id: trackId,
+          name: trackInfo?.name ?? trackId,
+          color: trackInfo?.color ?? null,
+          sortOrder: null,
+          count: counts?.total ?? 0,
+        });
+      }
     }
     const options = Array.from(map.values());
     options.sort((a, b) => {
@@ -263,9 +279,11 @@ export function KanbanBoard({ repoId }: { repoId: string }) {
   const filteredWorkOrders = useMemo(() => {
     if (trackFilter === null) return workOrders;
     if (trackFilter === "none") {
-      return workOrders.filter((wo) => !wo.trackId);
+      return workOrders.filter((wo) => wo.trackIds.length === 0 && !wo.trackId);
     }
-    return workOrders.filter((wo) => wo.trackId === trackFilter);
+    return workOrders.filter(
+      (wo) => wo.trackIds.includes(trackFilter) || wo.trackId === trackFilter
+    );
   }, [trackFilter, workOrders]);
 
   const grouped = useMemo(() => {
@@ -305,13 +323,14 @@ export function KanbanBoard({ repoId }: { repoId: string }) {
     const byTrack = new Map<string, WorkOrder[]>();
     const unassigned: WorkOrder[] = [];
     for (const wo of filteredWorkOrders) {
-      if (!wo.trackId) {
+      const primaryTrackId = wo.trackIds[0] ?? wo.trackId ?? null;
+      if (!primaryTrackId) {
         unassigned.push(wo);
         continue;
       }
-      const items = byTrack.get(wo.trackId) ?? [];
+      const items = byTrack.get(primaryTrackId) ?? [];
       items.push(wo);
-      byTrack.set(wo.trackId, items);
+      byTrack.set(primaryTrackId, items);
     }
 
     const groups = trackOptions
@@ -744,13 +763,16 @@ function WorkOrderCard({
     latestRun?.status === "waiting_for_input" ||
     latestRun?.status === "ai_review" ||
     latestRun?.status === "testing";
-  const trackInfo =
-    workOrder.track ??
-    (workOrder.trackId
-      ? { id: workOrder.trackId, name: workOrder.trackId, color: null }
-      : null);
+  const trackBadges =
+    workOrder.tracks.length > 0
+      ? workOrder.tracks
+      : workOrder.track
+        ? [workOrder.track]
+        : workOrder.trackId
+          ? [{ id: workOrder.trackId, name: workOrder.trackId, color: null }]
+          : [];
   const hasTags = workOrder.tags.length > 0;
-  const showBadges = !!trackInfo || hasTags;
+  const showBadges = trackBadges.length > 0 || hasTags;
 
   return (
     <div
@@ -785,15 +807,11 @@ function WorkOrderCard({
                 alignItems: "center",
               }}
             >
-              {trackInfo && (
+              {trackBadges.length > 0 && (
                 <TrackBadge
-                  track={trackInfo}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    event.preventDefault();
-                    if (workOrder.trackId) {
-                      onTrackFilter(workOrder.trackId);
-                    }
+                  tracks={trackBadges}
+                  onSelect={(trackId) => {
+                    onTrackFilter(trackId);
                   }}
                 />
               )}

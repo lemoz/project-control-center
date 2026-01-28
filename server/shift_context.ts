@@ -420,14 +420,16 @@ function resolveWorkOrderTrack(
   workOrder: WorkOrder,
   trackIndex: Map<string, Track>
 ): WorkOrderSummary["track"] {
-  if (!workOrder.trackId) return null;
-  const track = trackIndex.get(workOrder.trackId);
+  const primary = workOrder.tracks[0] ?? workOrder.track ?? null;
+  const primaryId = primary?.id ?? workOrder.trackId ?? null;
+  if (!primaryId) return null;
+  const track = trackIndex.get(primaryId);
   if (track) {
     return { id: track.id, name: track.name, goal: track.goal };
   }
-  const fallbackName = workOrder.track?.name ?? "";
+  const fallbackName = primary?.name ?? "";
   if (fallbackName) {
-    return { id: workOrder.trackId, name: fallbackName, goal: null };
+    return { id: primaryId, name: fallbackName, goal: null };
   }
   return null;
 }
@@ -441,7 +443,9 @@ export function assembleTrackContext(
   workOrders: WorkOrder[]
 ): TrackContext {
   const summaries = tracks.map((track) => {
-    const trackWos = workOrders.filter((wo) => wo.trackId === track.id);
+    const trackWos = workOrders.filter(
+      (wo) => wo.trackIds.includes(track.id) || wo.trackId === track.id
+    );
     const progress = buildTrackProgress(trackWos);
     return {
       id: track.id,

@@ -1,7 +1,5 @@
 "use client";
 
-import type { MouseEventHandler } from "react";
-
 type TrackBadgeInfo = {
   id: string;
   name: string;
@@ -9,8 +7,8 @@ type TrackBadgeInfo = {
 };
 
 type TrackBadgeProps = {
-  track: TrackBadgeInfo | null;
-  onClick?: MouseEventHandler<HTMLButtonElement>;
+  tracks: TrackBadgeInfo[];
+  onSelect?: (trackId: string) => void;
 };
 
 const DEFAULT_TRACK_COLOR = "#475569";
@@ -56,46 +54,59 @@ function isLightColor(color: string): boolean {
   return luminance > 0.7;
 }
 
-export function TrackBadge({ track, onClick }: TrackBadgeProps) {
-  if (!track) return null;
-
-  const baseColor = track.color ?? DEFAULT_TRACK_COLOR;
-  const textColor = isLightColor(baseColor) ? darkenColor(baseColor, 0.45) : baseColor;
-
-  if (onClick) {
-    return (
-      <button
-        type="button"
-        className="badge"
-        onClick={onClick}
-        style={{
-          padding: "4px 10px",
-          fontSize: 13,
-          fontWeight: 600,
-          borderColor: baseColor,
-          backgroundColor: withAlpha(baseColor, 0.2),
-          color: textColor,
-          cursor: "pointer",
-        }}
-      >
-        {track.name}
-      </button>
-    );
-  }
+export function TrackBadge({ tracks, onSelect }: TrackBadgeProps) {
+  if (!tracks.length) return null;
 
   return (
-    <span
-      className="badge"
-      style={{
-        padding: "4px 10px",
-        fontSize: 13,
-        fontWeight: 600,
-        borderColor: baseColor,
-        backgroundColor: withAlpha(baseColor, 0.2),
-        color: textColor,
-      }}
-    >
-      {track.name}
+    <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {tracks.map((track) => {
+        const baseColor = track.color ?? DEFAULT_TRACK_COLOR;
+        const textColor = isLightColor(baseColor)
+          ? darkenColor(baseColor, 0.45)
+          : baseColor;
+
+        if (onSelect) {
+          return (
+            <button
+              key={track.id}
+              type="button"
+              className="badge"
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelect(track.id);
+              }}
+              style={{
+                padding: "4px 10px",
+                fontSize: 13,
+                fontWeight: 600,
+                borderColor: baseColor,
+                backgroundColor: withAlpha(baseColor, 0.2),
+                color: textColor,
+                cursor: "pointer",
+              }}
+            >
+              {track.name}
+            </button>
+          );
+        }
+
+        return (
+          <span
+            key={track.id}
+            className="badge"
+            style={{
+              padding: "4px 10px",
+              fontSize: 13,
+              fontWeight: 600,
+              borderColor: baseColor,
+              backgroundColor: withAlpha(baseColor, 0.2),
+              color: textColor,
+            }}
+          >
+            {track.name}
+          </span>
+        );
+      })}
     </span>
   );
 }

@@ -511,12 +511,23 @@ export type TaggedWorkOrder = {
   depends_on: string[];
 };
 
+export type WorkOrderTrackRow = {
+  project_id: string;
+  wo_id: string;
+  track_id: string;
+  created_at: string;
+};
+
+export type TrackStatus = "active" | "paused" | "completed";
+
 export type TrackRow = {
   id: string;
   project_id: string;
   name: string;
   description: string | null;
   goal: string | null;
+  status: TrackStatus;
+  parent_track_id: string | null;
   color: string | null;
   icon: string | null;
   sort_order: number;
@@ -530,6 +541,8 @@ export type Track = {
   name: string;
   description: string | null;
   goal: string | null;
+  status: TrackStatus;
+  parentTrackId: string | null;
   color: string | null;
   icon: string | null;
   sortOrder: number;
@@ -818,12 +831,15 @@ function initSchema(database: Database.Database) {
       name TEXT NOT NULL,
       description TEXT,
       goal TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      parent_track_id TEXT,
       color TEXT,
       icon TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_track_id) REFERENCES tracks(id) ON DELETE SET NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_tracks_project_id ON tracks(project_id);
@@ -859,6 +875,19 @@ function initSchema(database: Database.Database) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_work_orders_project_id ON work_orders(project_id);
+
+    CREATE TABLE IF NOT EXISTS wo_tracks (
+      project_id TEXT NOT NULL,
+      wo_id TEXT NOT NULL,
+      track_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, wo_id, track_id),
+      FOREIGN KEY (project_id, wo_id) REFERENCES work_orders(project_id, id) ON DELETE CASCADE,
+      FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_wo_tracks_project_id ON wo_tracks(project_id);
+    CREATE INDEX IF NOT EXISTS idx_wo_tracks_track_id ON wo_tracks(track_id);
 
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY,
@@ -1539,15 +1568,29 @@ function initSchema(database: Database.Database) {
         name TEXT NOT NULL,
         description TEXT,
         goal TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        parent_track_id TEXT,
         color TEXT,
         icon TEXT,
         sort_order INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY (parent_track_id) REFERENCES tracks(id) ON DELETE SET NULL
       );
       CREATE INDEX idx_tracks_project_id ON tracks(project_id);
     `);
+  }
+  const trackColumns = database
+    .prepare("PRAGMA table_info(tracks)")
+    .all() as Array<{ name: string }>;
+  const hasTrackStatus = trackColumns.some((c) => c.name === "status");
+  const hasTrackParent = trackColumns.some((c) => c.name === "parent_track_id");
+  if (!hasTrackStatus) {
+    database.exec("ALTER TABLE tracks ADD COLUMN status TEXT NOT NULL DEFAULT 'active';");
+  }
+  if (!hasTrackParent) {
+    database.exec("ALTER TABLE tracks ADD COLUMN parent_track_id TEXT;");
   }
 
   const constitutionSuggestionTableExists = database
@@ -1639,6 +1682,31 @@ function initSchema(database: Database.Database) {
     database.exec(
       "ALTER TABLE work_orders ADD COLUMN track_id TEXT REFERENCES tracks(id) ON DELETE SET NULL;"
     );
+  }
+
+  const woTracksTableExists = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='wo_tracks'")
+    .get();
+  if (!woTracksTableExists) {
+    database.exec(`
+      CREATE TABLE wo_tracks (
+        project_id TEXT NOT NULL,
+        wo_id TEXT NOT NULL,
+        track_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, wo_id, track_id),
+        FOREIGN KEY (project_id, wo_id) REFERENCES work_orders(project_id, id) ON DELETE CASCADE,
+        FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_wo_tracks_project_id ON wo_tracks(project_id);
+      CREATE INDEX idx_wo_tracks_track_id ON wo_tracks(track_id);
+    `);
+    database.exec(`
+      INSERT OR IGNORE INTO wo_tracks (project_id, wo_id, track_id, created_at)
+      SELECT project_id, id, track_id, COALESCE(updated_at, created_at)
+      FROM work_orders
+      WHERE track_id IS NOT NULL;
+    `);
   }
 
   const runColumns = database.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
@@ -4190,6 +4258,8 @@ type TrackPatch = Partial<{
   name: string;
   description: string | null;
   goal: string | null;
+  status: TrackStatus;
+  parentTrackId: string | null;
   color: string | null;
   icon: string | null;
   sortOrder: number;
@@ -4202,6 +4272,8 @@ function toTrack(row: TrackRow, counts?: TrackCounts): Track {
     name: row.name,
     description: row.description,
     goal: row.goal,
+    status: row.status,
+    parentTrackId: row.parent_track_id,
     color: row.color,
     icon: row.icon,
     sortOrder: row.sort_order,
@@ -4227,6 +4299,8 @@ export function createTrack(input: {
   name: string;
   description?: string | null;
   goal?: string | null;
+  status?: TrackStatus;
+  parent_track_id?: string | null;
   color?: string | null;
   icon?: string | null;
   sort_order?: number;
@@ -4239,6 +4313,8 @@ export function createTrack(input: {
     name: input.name,
     description: input.description ?? null,
     goal: input.goal ?? null,
+    status: input.status ?? "active",
+    parent_track_id: input.parent_track_id ?? null,
     color: input.color ?? null,
     icon: input.icon ?? null,
     sort_order:
@@ -4251,9 +4327,9 @@ export function createTrack(input: {
   database
     .prepare(
       `INSERT INTO tracks
-        (id, project_id, name, description, goal, color, icon, sort_order, created_at, updated_at)
+        (id, project_id, name, description, goal, status, parent_track_id, color, icon, sort_order, created_at, updated_at)
        VALUES
-        (@id, @project_id, @name, @description, @goal, @color, @icon, @sort_order, @created_at, @updated_at)`
+        (@id, @project_id, @name, @description, @goal, @status, @parent_track_id, @color, @icon, @sort_order, @created_at, @updated_at)`
     )
     .run(row);
   return toTrack(row);
@@ -4269,6 +4345,8 @@ export function updateTrack(
     { key: "name", column: "name" },
     { key: "description", column: "description" },
     { key: "goal", column: "goal" },
+    { key: "status", column: "status" },
+    { key: "parentTrackId", column: "parent_track_id" },
     { key: "color", column: "color" },
     { key: "icon", column: "icon" },
     { key: "sortOrder", column: "sort_order" },
@@ -4317,6 +4395,69 @@ export function getTrackById(projectId: string, trackId: string): Track | null {
     .prepare("SELECT * FROM tracks WHERE id = ? AND project_id = ? LIMIT 1")
     .get(trackId, projectId) as TrackRow | undefined;
   return row ? toTrack(row) : null;
+}
+
+export function replaceWorkOrderTracks(
+  projectId: string,
+  workOrderId: string,
+  trackIds: string[]
+): void {
+  const database = getDb();
+  const cleaned = Array.from(
+    new Set(
+      trackIds
+        .filter((id) => typeof id === "string")
+        .map((id) => id.trim())
+        .filter(Boolean)
+    )
+  );
+  if (cleaned.length === 0) {
+    const tx = database.transaction(() => {
+      database
+        .prepare("DELETE FROM wo_tracks WHERE project_id = ? AND wo_id = ?")
+        .run(projectId, workOrderId);
+      database
+        .prepare("UPDATE work_orders SET track_id = NULL WHERE project_id = ? AND id = ?")
+        .run(projectId, workOrderId);
+    });
+    tx();
+    return;
+  }
+
+  const placeholders = cleaned.map(() => "?").join(", ");
+  const rows = database
+    .prepare(
+      `SELECT id FROM tracks WHERE project_id = ? AND id IN (${placeholders})`
+    )
+    .all(projectId, ...cleaned) as Array<{ id: string }>;
+  const allowed = new Set(rows.map((row) => row.id));
+  const filtered = cleaned.filter((id) => allowed.has(id));
+  const primary = filtered[0] ?? null;
+  const now = new Date().toISOString();
+
+  const tx = database.transaction(() => {
+    database
+      .prepare("DELETE FROM wo_tracks WHERE project_id = ? AND wo_id = ?")
+      .run(projectId, workOrderId);
+    if (filtered.length > 0) {
+      const insert = database.prepare(
+        `INSERT INTO wo_tracks (project_id, wo_id, track_id, created_at)
+         VALUES (@project_id, @wo_id, @track_id, @created_at)`
+      );
+      for (const trackId of filtered) {
+        insert.run({
+          project_id: projectId,
+          wo_id: workOrderId,
+          track_id: trackId,
+          created_at: now,
+        });
+      }
+    }
+    database
+      .prepare("UPDATE work_orders SET track_id = ? WHERE project_id = ? AND id = ?")
+      .run(primary, projectId, workOrderId);
+  });
+  tx();
 }
 
 const INITIATIVE_STATUSES: InitiativeStatus[] = [
