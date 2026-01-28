@@ -122,7 +122,7 @@ function pulseColor(action?: string): string {
 // ---------------------------------------------------------------------------
 
 type GlobalOrbitalCanvasProps = {
-  onSelectProject?: (projectId: string) => void;
+  onSelectProject?: (projectId: string | null) => void;
   selectedProjectId?: string | null;
   globalSession?: GlobalAgentSession | null;
 };
@@ -236,8 +236,11 @@ export function GlobalOrbitalCanvas({
   // Propagate selected project to parent
   // -----------------------------------------------------------------------
   useEffect(() => {
-    if (selectedNode && selectedNode.type === "project" && onSelectProject) {
+    if (!onSelectProject) return;
+    if (selectedNode && selectedNode.type === "project") {
       onSelectProject(selectedNode.id);
+    } else if (!selectedNode) {
+      onSelectProject(null);
     }
   }, [selectedNode, onSelectProject]);
 
@@ -251,9 +254,12 @@ export function GlobalOrbitalCanvas({
       }
       return;
     }
-    if (selectedNode?.id === selectedProjectId) return;
+    // Always call selectNode — it's a setState wrapper that bails out on
+    // same value, so it's safe.  We intentionally exclude selectedNode from
+    // deps to avoid a ping-pong loop with the propagation effect above.
     selectNode(selectedProjectId);
-  }, [clearSelection, selectNode, selectedProjectId, selectedNode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clearSelection, selectNode, selectedProjectId]);
 
   // Global session is now provided via props from HomeCanvas
 

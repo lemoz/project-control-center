@@ -99,15 +99,14 @@ type GlobalContextResponse = {
 // Data loaders
 // ---------------------------------------------------------------------------
 
-async function fetchRepoSummaries(): Promise<RepoSummary[]> {
-  const res = await fetch("/api/repos", { cache: "no-store" });
-  const json = (await res.json().catch(() => null)) as RepoSummary[] | { error?: string } | null;
+async function fetchRepoSummary(projectId: string): Promise<RepoSummary | null> {
+  const res = await fetch(`/api/repos/${encodeURIComponent(projectId)}`, { cache: "no-store" });
+  const json = (await res.json().catch(() => null)) as RepoSummary | { error?: string } | null;
   if (!res.ok) {
-    const error = (json as { error?: string } | null)?.error || "failed to load projects";
+    const error = (json as { error?: string } | null)?.error || "failed to load project";
     throw new Error(error);
   }
-  if (!Array.isArray(json)) return [];
-  return json;
+  return (json as RepoSummary) ?? null;
 }
 
 async function fetchGlobalContext(): Promise<GlobalContextResponse> {
@@ -154,22 +153,21 @@ export function ProjectDetailPanel({ projectId, onClose }: ProjectDetailPanelPro
     setError(null);
 
     Promise.allSettled([
-      fetchRepoSummaries(),
+      fetchRepoSummary(projectId),
       fetchGlobalContext(),
       fetchWorkOrders(projectId),
     ])
-      .then(([reposResult, globalResult, workOrdersResult]) => {
+      .then(([repoResult, globalResult, workOrdersResult]) => {
         if (cancelled) return;
         const errors: string[] = [];
 
-        if (reposResult.status === "fulfilled") {
-          const repo = reposResult.value.find((item) => item.id === projectId) ?? null;
-          setProjectSummary(repo);
+        if (repoResult.status === "fulfilled") {
+          setProjectSummary(repoResult.value);
         } else {
           errors.push(
-            reposResult.reason instanceof Error
-              ? reposResult.reason.message
-              : "failed to load projects"
+            repoResult.reason instanceof Error
+              ? repoResult.reason.message
+              : "failed to load project"
           );
           setProjectSummary(null);
         }
@@ -243,10 +241,9 @@ export function ProjectDetailPanel({ projectId, onClose }: ProjectDetailPanelPro
   const healthColor = healthStatus ? HEALTH_COLORS[healthStatus] ?? "#a9b0c2" : "#a9b0c2";
 
   return (
-    <div className={styles.detailPanelOverlay} onClick={onClose} role="presentation">
+    <div className={styles.detailPanelOverlay} role="presentation">
       <aside
         className={`card ${styles.detailPanel} ${styles.detailPanelSlideIn}`}
-        onClick={(event) => event.stopPropagation()}
       >
         <div className={styles.detailHeader}>
           <div>
