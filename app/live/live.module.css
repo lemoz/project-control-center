@@ -235,6 +235,84 @@
   border: 1px solid #1f2433;
 }
 
+.activityFeedList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.activityFeedItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(15, 19, 32, 0.85);
+  border: 1px solid rgba(43, 51, 71, 0.45);
+}
+
+.activityFeedHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.activityFeedTag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #1b2132;
+  border: 1px solid #2b3347;
+  font-weight: 600;
+  color: #cbd5f5;
+}
+
+.activityFeedTimestamp {
+  font-size: 10px;
+  color: #8c94a8;
+}
+
+.activityFeedDetail {
+  font-size: 12px;
+  line-height: 1.35;
+  color: #e6e8ee;
+}
+
+.activityFeedContext {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+  color: #a9b0c2;
+}
+
+.activityFeedContextValue {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  color: #cbd5f5;
+}
+
+.activityFeedDecision {
+  border-left: 3px solid rgba(56, 189, 248, 0.7);
+  padding-left: 6px;
+}
+
+.activityFeedGuidance {
+  border-color: rgba(34, 211, 238, 0.6);
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.2);
+}
+
+.activityFeedAlert {
+  border-color: rgba(248, 113, 113, 0.7);
+  background: rgba(45, 17, 24, 0.85);
+}
+
+.activityFeedFailed {
+  border-color: rgba(248, 113, 113, 0.55);
+}
+
 .activityOverlayFooter {
   display: flex;
   align-items: center;
