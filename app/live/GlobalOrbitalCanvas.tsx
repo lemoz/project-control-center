@@ -410,7 +410,7 @@ export function GlobalOrbitalCanvas({
           display: "flex",
           flexDirection: "column",
           gap: 8,
-          zIndex: 5,
+          zIndex: 3,
         }}
       >
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>

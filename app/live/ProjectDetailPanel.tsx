@@ -140,12 +140,24 @@ export function ProjectDetailPanel({ projectId, onClose }: ProjectDetailPanelPro
           </div>
         </div>
         <button
-          className="btnSecondary"
           onClick={onClose}
-          style={{ padding: "4px 8px", fontSize: 12 }}
+          style={{
+            width: 28,
+            height: 28,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(255, 255, 255, 0.08)",
+            border: "none",
+            borderRadius: "50%",
+            color: "#a9b0c2",
+            fontSize: 18,
+            cursor: "pointer",
+            flexShrink: 0,
+          }}
           aria-label="Close project details"
         >
-          X
+          &times;
         </button>
       </div>
 
@@ -196,9 +208,14 @@ export function ProjectDetailPanel({ projectId, onClose }: ProjectDetailPanelPro
       {!loading && (
         <div className={styles.detailSection}>
           <div className={styles.detailLabel}>Work Orders</div>
-          <div className="muted" style={{ fontSize: 12 }}>
-            {woCounts.ready} ready &middot; {woCounts.building} building &middot;{" "}
-            {woCounts.blocked} blocked &middot; {woCounts.done} done
+          <div style={{ fontSize: 12, color: "#a9b0c2", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <span style={{ color: woCounts.ready > 0 ? "#22c55e" : undefined }}>{woCounts.ready} ready</span>
+            <span style={{ color: "#2b3347" }}>&middot;</span>
+            <span style={{ color: woCounts.building > 0 ? "#59c6ff" : undefined }}>{woCounts.building} building</span>
+            <span style={{ color: "#2b3347" }}>&middot;</span>
+            <span style={{ color: woCounts.blocked > 0 ? "#f87171" : undefined }}>{woCounts.blocked} blocked</span>
+            <span style={{ color: "#2b3347" }}>&middot;</span>
+            <span>{woCounts.done} done</span>
           </div>
           {activeWOs.length > 0 ? (
             <div className={styles.runList}>

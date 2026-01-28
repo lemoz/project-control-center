@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { GlobalOrbitalCanvas } from "./live/GlobalOrbitalCanvas";
 import { GlobalSessionOverlay } from "./live/GlobalSessionOverlay";
-import { VoiceWidget } from "./landing/components/VoiceWidget/VoiceWidget";
+import { CollapsibleVoiceWidget } from "./live/CollapsibleVoiceWidget";
 import { ProjectDetailPanel } from "./live/ProjectDetailPanel";
 
 export function HomeCanvas() {
@@ -28,9 +28,7 @@ export function HomeCanvas() {
         <GlobalSessionOverlay />
       </div>
 
-      <div className="home-voice-dock">
-        <VoiceWidget />
-      </div>
+      <CollapsibleVoiceWidget />
 
       <Link href="/portfolio" className="home-list-toggle btnSecondary">
         List view

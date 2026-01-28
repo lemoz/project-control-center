@@ -64,10 +64,13 @@
   bottom: 20px;
   max-width: 340px;
   background: rgba(12, 16, 28, 0.92);
-  border: 1px solid #2b3347;
-  border-radius: 12px;
-  padding: 12px 14px;
-  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(43, 51, 71, 0.6);
+  border-radius: 14px;
+  padding: 14px 16px;
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: 2;
 }
 
 .voiceDock {
@@ -530,14 +533,19 @@
   position: absolute;
   right: 16px;
   bottom: 16px;
-  width: 360px;
+  width: 380px;
   max-width: calc(100% - 32px);
   max-height: calc(100% - 32px);
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   z-index: 5;
+  background: rgba(12, 16, 28, 0.95);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(43, 51, 71, 0.5);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(0, 0, 0, 0.1);
 }
 
 .detailHeader {
@@ -545,6 +553,8 @@
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(43, 51, 71, 0.5);
 }
 
 .detailTitle {
@@ -562,14 +572,15 @@
 .detailSection {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .detailLabel {
-  font-size: 12px;
-  color: #a9b0c2;
+  font-size: 11px;
+  font-weight: 600;
+  color: #7c8aaf;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
 }
 
 .detailList {
@@ -636,7 +647,7 @@
     right: 12px;
     bottom: 12px;
     width: auto;
-    max-height: 55vh;
+    max-height: 50vh;
   }
 
   .activityModalOverlay {

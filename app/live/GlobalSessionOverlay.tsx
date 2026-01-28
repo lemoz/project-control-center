@@ -459,7 +459,18 @@ export function GlobalSessionOverlay() {
   if (!session || session.state === "ended") {
     return (
       <div className={styles.overlayCard} style={{ position: "relative" }}>
-        <div style={{ fontWeight: 700, fontSize: 14 }}>Global Agent</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              display: "inline-block",
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: "#6b7280",
+            }}
+          />
+          <span style={{ fontWeight: 700, fontSize: 14 }}>Global Agent</span>
+        </div>
         <div style={{ fontSize: 12, color: "#a9b0c2", marginTop: 4 }}>
           {session?.state === "ended" ? "Session ended" : "No active session"}
         </div>
@@ -672,21 +683,43 @@ export function GlobalSessionOverlay() {
         </div>
         <div
           style={{
-            display: "flex",
-            gap: 12,
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr 1fr",
+            gap: 8,
             marginTop: 8,
-            fontSize: 12,
-            color: "#a9b0c2",
-            flexWrap: "wrap",
+            textAlign: "center",
           }}
         >
-          <span>Iter: {session.iteration_count}</span>
-          <span>Dec: {session.decisions_count}</span>
-          <span>Act: {session.actions_count}</span>
-          {session.autonomous_started_at && (
-            <span>{formatDuration(session.autonomous_started_at)}</span>
-          )}
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#e6e8ee" }}>
+              {session.iteration_count}
+            </div>
+            <div style={{ fontSize: 10, color: "#7c8aaf", textTransform: "uppercase", letterSpacing: "0.08em", marginTop: 2 }}>
+              Iterations
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#e6e8ee" }}>
+              {session.decisions_count}
+            </div>
+            <div style={{ fontSize: 10, color: "#7c8aaf", textTransform: "uppercase", letterSpacing: "0.08em", marginTop: 2 }}>
+              Decisions
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#e6e8ee" }}>
+              {session.actions_count}
+            </div>
+            <div style={{ fontSize: 10, color: "#7c8aaf", textTransform: "uppercase", letterSpacing: "0.08em", marginTop: 2 }}>
+              Actions
+            </div>
+          </div>
         </div>
+        {session.autonomous_started_at && (
+          <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+            Elapsed: {formatDuration(session.autonomous_started_at)}
+          </div>
+        )}
         <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
           Last check-in: {formatTimestamp(session.last_check_in_at)}
         </div>
