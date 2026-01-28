@@ -1,9 +1,13 @@
 ---
 id: WO-2026-233
 title: Project Detail Panel on Global Canvas
-status: ready
+status: you_review
 priority: 1
-tags: [ui, canvas, detail-panel, global]
+tags:
+  - ui
+  - canvas
+  - detail-panel
+  - global
 estimate_hours: 4
 created_at: 2026-01-28
 updated_at: 2026-01-28
