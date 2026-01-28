@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { RunEstimateDisplay } from "./RunEstimateDisplay";
+import { type RunPhase } from "./RunPhaseProgress";
 
 function formatFailureLabel(value: string | null | undefined): string {
   if (!value) return "";
@@ -20,6 +22,24 @@ type RunStatus =
   | "merge_conflict"
   | "failed"
   | "canceled";
+
+type RunEstimateConfidence = "high" | "medium" | "low";
+
+type RunEstimate = {
+  estimated_iterations: number;
+  estimated_minutes: number;
+  confidence: RunEstimateConfidence;
+  reasoning: string;
+};
+
+type ProgressiveEstimate = {
+  phase: string;
+  iteration: number;
+  estimated_remaining_minutes: number;
+  estimated_completion_at: string;
+  reasoning: string;
+  updated_at: string;
+};
 
 type RunEscalationInput = {
   key: string;
@@ -86,6 +106,10 @@ type RunDetails = {
   failure_category?: string | null;
   failure_reason?: string | null;
   failure_detail?: string | null;
+  current_eta_minutes?: number | null;
+  estimated_completion_at?: string | null;
+  eta_history?: ProgressiveEstimate[];
+  initial_estimate?: RunEstimate | null;
   escalation?: RunEscalation | null;
   log_tail?: string;
   builder_log_tail?: string;
@@ -94,6 +118,41 @@ type RunDetails = {
   iteration_history?: RunIterationHistory[];
   security_incident?: SecurityIncidentSummary | null;
 };
+
+const ACTIVE_RUN_STATUSES: RunStatus[] = [
+  "queued",
+  "building",
+  "waiting_for_input",
+  "ai_review",
+  "testing",
+];
+
+function isActiveRunStatus(status: RunStatus): boolean {
+  return ACTIVE_RUN_STATUSES.includes(status);
+}
+
+function resolveRunPhase(status: RunStatus): RunPhase | null {
+  switch (status) {
+    case "queued":
+    case "baseline_failed":
+      return "setup";
+    case "building":
+    case "waiting_for_input":
+      return "builder";
+    case "testing":
+      return "test";
+    case "ai_review":
+      return "reviewer";
+    case "you_review":
+    case "merged":
+    case "merge_conflict":
+    case "failed":
+    case "canceled":
+      return "merge";
+    default:
+      return "setup";
+  }
+}
 
 export function RunDetails({ runId }: { runId: string }) {
   const [run, setRun] = useState<RunDetails | null>(null);
@@ -129,16 +188,8 @@ export function RunDetails({ runId }: { runId: string }) {
 
   useEffect(() => {
     if (!run) return;
-    if (
-      run.status !== "queued" &&
-      run.status !== "building" &&
-      run.status !== "waiting_for_input" &&
-      run.status !== "ai_review" &&
-      run.status !== "testing"
-    ) {
-      return;
-    }
-    const interval = setInterval(() => void load(), 2000);
+    if (!isActiveRunStatus(run.status)) return;
+    const interval = setInterval(() => void load(), 10000);
     return () => clearInterval(interval);
   }, [run, load]);
 
@@ -177,18 +228,19 @@ export function RunDetails({ runId }: { runId: string }) {
     }
   })();
 
+  const etaHistory = run?.eta_history ?? [];
+  const latestEta = etaHistory.length ? etaHistory[etaHistory.length - 1] : null;
+  const estimateReasoning =
+    latestEta?.reasoning || run?.initial_estimate?.reasoning || null;
+  const currentPhase = run ? resolveRunPhase(run.status) : null;
+  const isActive = run ? isActiveRunStatus(run.status) : false;
+
   const escalation = run?.escalation ?? null;
   const missingInputs = escalation
     ? escalation.inputs.filter((input) => !inputValues[input.key]?.trim())
     : [];
   const canSubmit = !!escalation && missingInputs.length === 0 && !submitting;
-  const canCancel =
-    !!run &&
-    (run.status === "queued" ||
-      run.status === "building" ||
-      run.status === "waiting_for_input" ||
-      run.status === "ai_review" ||
-      run.status === "testing");
+  const canCancel = !!run && isActiveRunStatus(run.status);
 
   const cancelRun = useCallback(async () => {
     if (!canCancel) return;
@@ -317,6 +369,19 @@ export function RunDetails({ runId }: { runId: string }) {
           </div>
         )}
       </section>
+
+      {!!run && (
+        <RunEstimateDisplay
+          initialEstimate={run.initial_estimate ?? null}
+          currentEta={run.current_eta_minutes ?? null}
+          estimatedCompletion={run.estimated_completion_at ?? null}
+          confidence={run.initial_estimate?.confidence ?? null}
+          reasoning={estimateReasoning}
+          phase={currentPhase}
+          iteration={run.builder_iteration ?? run.iteration ?? null}
+          isActive={isActive}
+        />
+      )}
 
       {run?.status === "waiting_for_input" && escalation && (
         <section className="card">
