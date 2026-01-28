@@ -1,7 +1,7 @@
 ---
 id: WO-2026-170
 title: Add documentation field to WO generation
-status: ready
+status: you_review
 priority: 3
 tags:
   - wo-generation

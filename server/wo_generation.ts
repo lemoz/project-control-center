@@ -55,6 +55,7 @@ type LlmDraft = {
   title: string | null;
   goal: string | null;
   context: string[];
+  documentation: string | null;
   acceptance_criteria: string[];
   non_goals: string[];
   stop_conditions: string[];
@@ -69,6 +70,7 @@ const LlmDraftSchema = z.object({
   title: z.string().min(1),
   goal: z.string().optional(),
   context: z.array(z.string()).optional(),
+  documentation: z.string().optional(),
   acceptance_criteria: z.array(z.string()).optional(),
   non_goals: z.array(z.string()).optional(),
   stop_conditions: z.array(z.string()).optional(),
@@ -99,6 +101,7 @@ function workOrderDraftSchema(): object {
       title: { type: "string" },
       goal: { type: "string" },
       context: { type: "array", items: { type: "string" } },
+      documentation: { type: "string" },
       acceptance_criteria: { type: "array", items: { type: "string" } },
       non_goals: { type: "array", items: { type: "string" } },
       stop_conditions: { type: "array", items: { type: "string" } },
@@ -164,6 +167,7 @@ function normalizeLlmDraft(raw: unknown): LlmDraft | null {
     title: normalizeOptionalString(data.title),
     goal: normalizeOptionalString(data.goal),
     context: normalizeStringArray(data.context),
+    documentation: normalizeOptionalString(data.documentation),
     acceptance_criteria: normalizeStringArray(data.acceptance_criteria),
     non_goals: normalizeStringArray(data.non_goals),
     stop_conditions: normalizeStringArray(data.stop_conditions),
@@ -651,9 +655,13 @@ export async function generateWorkOrderDraft(params: {
   const nonGoals = llmDraft?.non_goals.length
     ? llmDraft.non_goals
     : ["No unrelated refactors or scope expansion."];
-  const context = llmDraft?.context.length
+  const baseContext = llmDraft?.context.length
     ? llmDraft.context
     : [`User request: ${description}`];
+  const documentation = llmDraft?.documentation ?? null;
+  const context = documentation
+    ? [...baseContext, `Documentation:\n${documentation}`]
+    : baseContext;
 
   const validIds = new Set(workOrders.map((wo) => wo.id));
   const depends_on = deriveDependencies(llmDraft?.depends_on ?? [], similar, validIds);
