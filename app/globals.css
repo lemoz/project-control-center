@@ -799,4 +799,37 @@ a {
     width: auto;
     left: 12px;
   }
+
+  .home-session-overlay {
+    left: 12px;
+    bottom: 12px;
+    width: auto;
+    right: 12px;
+    max-width: none;
+  }
+}
+
+/* ── Global session overlay (canvas) ─────────────────────────────── */
+
+.home-session-overlay {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 10;
+  width: 360px;
+  max-width: calc(100% - 32px);
+}
+
+.session-pulse {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: sessionPulse 2s ease-in-out infinite;
+}
+
+@keyframes sessionPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
