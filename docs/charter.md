@@ -43,7 +43,7 @@ Project Control Center exists to reduce context loss, make agent runs safe and r
 - v0 dogfoods itself: at least 5 Work Orders completed using the UI.
 
 ## Constraints
-- Local‑first; no cloud hosting or sync in v0.
+- Local-first; no cloud hosting or sync in core v0 (cloud features live in `pcc-cloud`).
 - Access via ngrok; treat as internet‑exposed.
 - Private‑by‑default for new projects.
 - Summary‑first UX; avoid heavy diff review in UI.
@@ -64,5 +64,4 @@ Project Control Center exists to reduce context loss, make agent runs safe and r
 - Notifier plugins (iMessage/Shortcuts, email, etc.).
 - Per‑repo settings overrides.
 - Better repo discovery (ignore rules, archived detection).
-- Optional cloud sync / remote runners if needed.
-
+- Optional cloud sync or remote runners, owned by `pcc-cloud`.

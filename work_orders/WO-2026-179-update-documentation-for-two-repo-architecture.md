@@ -1,7 +1,7 @@
 ---
 id: WO-2026-179
 title: Update documentation for two-repo architecture
-status: ready
+status: you_review
 priority: 2
 tags:
   - cloud
@@ -11,7 +11,7 @@ estimate_hours: 2
 depends_on:
   - WO-2026-177
 era: v2
-updated_at: 2026-01-27
+updated_at: 2026-01-28
 goal: Update all documentation to reflect the two-repo architecture (OSS core + proprietary cloud).
 context:
   - WO-2026-177 creates the pcc-cloud structure and MIGRATION.md

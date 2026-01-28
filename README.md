@@ -4,6 +4,8 @@ Local-first, mobile-friendly control center for managing all your repos, specs, 
 
 This repo will become one of the projects it manages ("dogfooding"): we'll build the UI, then use it to track and complete its own work orders.
 
+Project Control Center now follows a two-repo architecture: this repo is the open-source core, while hosted cloud services live in `pcc-cloud`.
+
 ## Goals
 - Scan and index local git repos; classify as prototype vs long-term; surface stage/status/priority/next work orders.
 - Per-repo Kanban of Work Orders with a strict "Ready" contract.
@@ -16,12 +18,31 @@ This repo will become one of the projects it manages ("dogfooding"): we'll build
 - **Autonomous shift agents** that run work order loops with minimal human intervention.
 
 ## Non-goals (v0)
-- Cloud hosting or cross-device sync.
+- Cloud hosting or cross-device sync in the core repo (handled in `pcc-cloud`).
 - Multi-user collaboration or complex auth.
 - Full diff/merge UI (summary-first; diffs on-demand via local tools).
 - Built-in SMS/email notifications (in-app only; notifier plugins later).
 
 ## Architecture
+
+### Repo split
+- `project-control-center` (this repo): open-source core UI + local runner.
+- `pcc-cloud`: proprietary cloud services + marketing site.
+- See `MIGRATION.md` for the split plan and sequencing.
+
+### Self-hosted vs PCC Cloud
+| Category | Self-hosted (core) | PCC Cloud |
+| --- | --- | --- |
+| Hosting | Runs on your machine | Managed by `pcc-cloud` |
+| Data store | Local SQLite + repo files | Hosted databases + managed state |
+| Auth & billing | Local only | Cloud auth + billing |
+| VM provisioning | You manage VMs | Managed VM fleet |
+| Updates | You pull updates | Managed service updates |
+| Intended users | Solo / local-first | Teams, hosted deployments |
+
+See `docs/SELF_HOSTED.md` and `docs/CLOUD_ARCHITECTURE.md` for details.
+
+### Runtime (core)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -46,11 +67,10 @@ This repo will become one of the projects it manages ("dogfooding"): we'll build
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Two-repo architecture (planned)
-- `project-control-center` (this repo): open-source core UI + local runner.
-- `pcc-cloud`: proprietary cloud services + marketing site.
-- See `MIGRATION.md` for the split plan and sequencing.
+In cloud mode, VM provisioning/monitoring and hosted services live in `pcc-cloud`,
+while the core UI and runner stay in this repo.
 
+### Core components
 - **UI:** Next.js (TypeScript) app, configured as a PWA and tuned for mobile.
 - **Local API/Runner:** Node/TS server for filesystem scanning, git metadata, Work Order CRUD, and executing agent runs.
 - **State:** SQLite for global indexed state/history; per-repo sidecar `.control.yml` for human-maintained metadata.
@@ -125,6 +145,8 @@ Detach anytime with `Ctrl+b` then `d`.
 ## VM Setup (Remote Execution)
 
 For sandboxed execution, PCC can run builds on a GCP VM.
+Self-hosted setups manage this directly; PCC Cloud handles VM hosting in
+`pcc-cloud`.
 
 ### Prerequisites
 - GCP account with a project
@@ -259,3 +281,6 @@ Override with `E2E_API_PORT`, `E2E_WEB_PORT`, and `E2E_OFFLINE_WEB_PORT` if thos
 - `docs/e2e_testing.md` - E2E testing patterns
 - `docs/agent_shift_protocol.md` - Shift agent protocol
 - `docs/system-architecture.md` - System architecture diagram
+- `docs/architecture_diagram.md` - Two-repo architecture diagram
+- `docs/SELF_HOSTED.md` - Self-hosted setup guide
+- `docs/CLOUD_ARCHITECTURE.md` - Cloud deployment overview

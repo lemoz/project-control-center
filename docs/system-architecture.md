@@ -1,5 +1,9 @@
 # PCC System Architecture
 
+Note: Runtime components are split across two repos. Core UI/runner live in
+`project-control-center`, while hosted services (auth, billing, VM provisioning,
+VM monitoring) live in `pcc-cloud`. See `docs/CLOUD_ARCHITECTURE.md`.
+
 ```mermaid
 flowchart TB
     subgraph USER["User Layer"]
