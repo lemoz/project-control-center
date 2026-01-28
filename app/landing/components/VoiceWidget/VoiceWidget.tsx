@@ -364,11 +364,17 @@ export function VoiceWidget() {
       const json = (await res.json().catch(() => null)) as ActiveSessionResponse | null;
       if (!res.ok) throw new Error(json?.error || "failed to load session");
       setSessionSnapshot(json?.session ?? null);
-      setCanvasVoiceState({ session: deriveVoiceSession(json?.session ?? null) });
+      setCanvasVoiceState({
+        session: deriveVoiceSession(json?.session ?? null),
+        globalSessionState: json?.session?.state ?? null,
+        globalSessionPaused: Boolean(json?.session?.paused_at),
+      });
     } catch {
       setSessionSnapshot(null);
       setCanvasVoiceState({
         session: deriveVoiceSession(null),
+        globalSessionState: null,
+        globalSessionPaused: false,
       });
     }
   }, []);
