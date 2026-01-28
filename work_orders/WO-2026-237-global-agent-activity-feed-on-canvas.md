@@ -1,9 +1,13 @@
 ---
 id: WO-2026-237
 title: Global Agent Activity Feed on Canvas
-status: ready
+status: done
 priority: 2
-tags: [ui, canvas, global-session, activity]
+tags:
+  - ui
+  - canvas
+  - global-session
+  - activity
 estimate_hours: 4
 created_at: 2026-01-28
 updated_at: 2026-01-28

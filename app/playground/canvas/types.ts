@@ -1,4 +1,25 @@
 export type ProjectStatus = "active" | "blocked" | "parked";
+export type ProjectHealthStatus =
+  | "healthy"
+  | "attention_needed"
+  | "stalled"
+  | "failing"
+  | "blocked";
+
+export type GlobalAgentSessionState =
+  | "onboarding"
+  | "briefing"
+  | "autonomous"
+  | "debrief"
+  | "ended";
+
+export type GlobalAgentSessionSummary = {
+  id: string;
+  state: GlobalAgentSessionState;
+  paused_at: string | null;
+  autonomous_started_at: string | null;
+  updated_at: string;
+};
 
 export type VisualizationNodeType = "project" | "work_order" | "run";
 
@@ -28,6 +49,7 @@ export type ProjectNode = {
   priority: number;
   consumptionRate: number;
   isActive: boolean;
+  hasActiveShift?: boolean;
   activePhase?: "building" | "testing" | "reviewing" | "waiting";
   activityLevel: number;
   lastActivity: Date | null;
@@ -35,6 +57,7 @@ export type ProjectNode = {
   escalationCount: number;
   escalationSummary?: string;
   health: number;
+  healthStatus?: ProjectHealthStatus;
   progress: number;
   successProgress: number;
   workOrders: {
@@ -104,6 +127,7 @@ export type VisualizationData = {
   timestamp: Date;
   runsByProject?: Record<string, RunSummary[]>;
   workOrderNodes?: WorkOrderNode[];
+  globalSession?: GlobalAgentSessionSummary | null;
 };
 
 export interface Visualization {

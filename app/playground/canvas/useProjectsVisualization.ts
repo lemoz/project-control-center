@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ProjectNode,
+  ProjectHealthStatus,
   RunStatus,
   RunSummary,
   VisualizationData,
   WorkOrderNode,
   WorkOrderStatus,
+  GlobalAgentSessionSummary,
 } from "./types";
 
 type RepoSummary = {
@@ -45,11 +47,11 @@ type RunsResponse = {
   error?: string;
 };
 
-type GlobalContextProject = {
+export type GlobalContextProject = {
   id: string;
   name: string;
   status: "active" | "blocked" | "parked";
-  health: "healthy" | "attention_needed" | "stalled" | "failing" | "blocked";
+  health: ProjectHealthStatus;
   budget?: {
     status: "healthy" | "warning" | "critical" | "exhausted";
     remaining_usd: number;
@@ -64,7 +66,7 @@ type GlobalContextProject = {
   last_activity: string | null;
 };
 
-type GlobalEconomySummary = {
+export type GlobalEconomySummary = {
   monthly_budget_usd: number;
   total_allocated_usd: number;
   total_spent_usd: number;
@@ -77,9 +79,10 @@ type GlobalEconomySummary = {
   portfolio_runway_days: number;
 };
 
-type GlobalContextResponse = {
+export type GlobalContextResponse = {
   projects: GlobalContextProject[];
   economy: GlobalEconomySummary;
+  global_session?: GlobalAgentSessionSummary | null;
   assembled_at: string;
 };
 
@@ -251,6 +254,16 @@ function computeActivityLevel(activeRunsCount: number, lastActivity: Date | null
   if (ageHours < 72) return 0.4;
   if (ageHours < 168) return 0.25;
   return 0.1;
+}
+
+function deriveHealthStatus(score: number, status: RepoSummary["status"]): ProjectHealthStatus {
+  if (status === "blocked") return "blocked";
+  if (status === "parked") return "stalled";
+  if (score >= 0.8) return "healthy";
+  if (score >= 0.55) return "stalled";
+  if (score >= 0.45) return "attention_needed";
+  if (score >= 0.3) return "failing";
+  return "blocked";
 }
 
 const ACTIVE_WORK_ORDER_STATUSES = new Set<WorkOrderStatus>([
@@ -448,6 +461,7 @@ export function useProjectsVisualization(): {
   error: string | null;
   refresh: () => void;
   lastUpdated: Date | null;
+  globalContext: GlobalContextResponse | null;
 } {
   const [projects, setProjects] = useState<RepoSummary[]>([]);
   const [workOrdersByProject, setWorkOrdersByProject] = useState<Record<string, WorkOrder[]>>({});
@@ -644,6 +658,8 @@ export function useProjectsVisualization(): {
         ? GLOBAL_HEALTH_SCORE[globalProject.health]
         : PROJECT_STATUS_HEALTH[project.status];
       const health = needsHuman ? Math.min(baseHealth, 0.35) : baseHealth;
+      const healthStatus =
+        globalProject?.health ?? deriveHealthStatus(health, project.status);
 
       const successProgress = shiftSummary
         ? computeSuccessProgressFromSummary(
@@ -674,6 +690,7 @@ export function useProjectsVisualization(): {
         priority: project.priority,
         consumptionRate,
         isActive: activeRunsCount > 0 || hasActiveShift,
+        hasActiveShift,
         activePhase,
         activityLevel,
         lastActivity,
@@ -681,6 +698,7 @@ export function useProjectsVisualization(): {
         escalationCount,
         escalationSummary: globalProject?.escalations[0]?.summary,
         health,
+        healthStatus,
         progress: successProgress,
         successProgress,
         workOrders: summary,
@@ -760,6 +778,7 @@ export function useProjectsVisualization(): {
       timestamp: lastUpdated ?? new Date(),
       runsByProject,
       workOrderNodes,
+      globalSession: globalContext?.global_session ?? null,
     };
   }, [projects, workOrdersByProject, runsByProject, globalContext, shiftContexts, costsByProject, lastUpdated]);
 
@@ -769,5 +788,6 @@ export function useProjectsVisualization(): {
     error,
     refresh: () => void load(),
     lastUpdated,
+    globalContext,
   };
 }

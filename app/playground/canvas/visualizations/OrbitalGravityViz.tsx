@@ -1,5 +1,6 @@
 import type {
   ProjectNode,
+  ProjectHealthStatus,
   RunSummary,
   Visualization,
   VisualizationData,
@@ -59,13 +60,28 @@ type Palette = {
 
 type WorkOrderRunPhase = "waiting" | "testing" | "ai_review" | "you_review" | "building" | null;
 
+type ProjectRing = "inner" | "middle" | "outer";
+
 type WorkOrderRing = "inner" | "middle" | "outer" | "archive";
 
+export type GlobalSessionIndicator = {
+  state: "onboarding" | "briefing" | "autonomous" | "debrief" | "ended";
+  paused_at: string | null;
+};
+
+type SunState = "idle" | "onboarding" | "briefing" | "autonomous" | "paused" | "debrief" | "ended";
+
+type SunPalette = {
+  core: string;
+  glow: string;
+  label: string;
+  prompt?: string;
+};
+
 const PROJECT_ZONES: Zone[] = [
-  { name: "focus", minR: 0, maxR: 80, color: "#fef3c7", label: "Focus" },
-  { name: "active", minR: 80, maxR: 180, color: "#fef9c3", label: "Active" },
-  { name: "ready", minR: 180, maxR: 280, color: "#f0fdf4", label: "Ready" },
-  { name: "idle", minR: 280, maxR: 400, color: "#f8fafc", label: "Idle" },
+  { name: "inner", minR: 40, maxR: 140, color: "#fde68a", label: "Shifts" },
+  { name: "middle", minR: 140, maxR: 260, color: "#dcfce7", label: "Healthy" },
+  { name: "outer", minR: 260, maxR: 400, color: "#e2e8f0", label: "Paused" },
 ];
 
 const WORK_ORDER_ZONES: Zone[] = [
@@ -91,6 +107,21 @@ const WORK_ORDER_ZONES: Zone[] = [
     label: "Backlog",
   },
 ];
+
+const SUN_STATE_PALETTES: Record<SunState, SunPalette> = {
+  idle: { core: "#e2e8f0", glow: "#94a3b8", label: "Idle", prompt: "Start session" },
+  onboarding: { core: "#bae6fd", glow: "#38bdf8", label: "Onboarding" },
+  briefing: { core: "#a7f3d0", glow: "#34d399", label: "Briefing" },
+  autonomous: { core: "#bbf7d0", glow: "#22c55e", label: "Autonomous" },
+  paused: { core: "#fde68a", glow: "#facc15", label: "Paused" },
+  debrief: { core: "#fecdd3", glow: "#fb7185", label: "Debrief" },
+  ended: {
+    core: "#e2e8f0",
+    glow: "#64748b",
+    label: "Session ended",
+    prompt: "Start new session",
+  },
+};
 
 const BASE_OUTER_RADIUS = 400;
 const ARCHIVE_EXTENSION = 80;
@@ -121,6 +152,14 @@ const COLORS = {
   ready: "#22c55e",
   backlog: "#64748b",
   done: "#94a3b8",
+};
+
+const PROJECT_HEALTH_COLORS: Record<ProjectHealthStatus, string> = {
+  healthy: "#22c55e",
+  attention_needed: "#fbbf24",
+  stalled: "#f59e0b",
+  failing: "#ef4444",
+  blocked: "#f97316",
 };
 
 const WORK_ORDER_BASE_HEAT: Record<WorkOrderStatus, number> = {
@@ -167,6 +206,32 @@ const TERMINAL_RUN_STATUSES = new Set<RunSummary["status"]>([
 
 const MAX_BACKLOG_NODES = 20;
 const MAX_ARCHIVE_NODES = 20;
+
+function resolveSunState(session: GlobalSessionIndicator | null): SunPalette & { key: SunState } {
+  if (!session) {
+    return { key: "idle", ...SUN_STATE_PALETTES.idle };
+  }
+  if (session.state === "ended") {
+    return { key: "ended", ...SUN_STATE_PALETTES.ended };
+  }
+  if (session.state === "debrief") {
+    return { key: "debrief", ...SUN_STATE_PALETTES.debrief };
+  }
+  if (session.paused_at) {
+    return { key: "paused", ...SUN_STATE_PALETTES.paused };
+  }
+  if (session.state === "onboarding") {
+    return { key: "onboarding", ...SUN_STATE_PALETTES.onboarding };
+  }
+  if (session.state === "briefing") {
+    return { key: "briefing", ...SUN_STATE_PALETTES.briefing };
+  }
+  return { key: "autonomous", ...SUN_STATE_PALETTES.autonomous };
+}
+
+function isAutonomousActive(session: GlobalSessionIndicator | null): boolean {
+  return Boolean(session && session.state === "autonomous" && !session.paused_at);
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -229,10 +294,16 @@ function lightenHex(hex: string, amount: number): string {
   return `#${toHex(mix(r))}${toHex(mix(g))}${toHex(mix(b))}`;
 }
 
-function radiusFromConsumption(consumptionRate: number): number {
-  const scaled = Math.log10(Math.max(1, consumptionRate));
-  const radius = 10 + scaled * 8;
-  return clamp(radius, 10, 30);
+function projectBaseRadius(node: ProjectNode): number {
+  const totalWorkOrders =
+    node.workOrders.ready + node.workOrders.building + node.workOrders.blocked + node.workOrders.done;
+  const priority = clamp(node.priority ?? 3, 1, 5);
+  const priorityBoost = (6 - priority) * 1.2;
+  if (totalWorkOrders > 0) {
+    const scaled = Math.sqrt(totalWorkOrders);
+    return clamp(12 + scaled * 3 + priorityBoost, 12, 36);
+  }
+  return clamp(12 + priorityBoost * 1.4, 12, 32);
 }
 
 function workOrderBaseRadius(node: WorkOrderNode): number {
@@ -280,6 +351,30 @@ function targetHeatForProject(node: ProjectNode): number {
   return clamp(heat, 0, 1);
 }
 
+function resolveProjectHealthStatus(node: ProjectNode): ProjectHealthStatus {
+  if (node.healthStatus) return node.healthStatus;
+  if (node.status === "blocked") return "blocked";
+  if (node.status === "parked") return "stalled";
+  const score = clamp(node.health, 0, 1);
+  if (score >= 0.8) return "healthy";
+  if (score >= 0.55) return "stalled";
+  if (score >= 0.45) return "attention_needed";
+  if (score >= 0.3) return "failing";
+  return "blocked";
+}
+
+function projectRingForNode(node: ProjectNode): ProjectRing {
+  const healthStatus = resolveProjectHealthStatus(node);
+  const hasActiveShift = Boolean(node.hasActiveShift);
+  const isPaused = node.status === "parked" || (!node.isActive && !hasActiveShift);
+  if (isPaused) return "outer";
+  if (node.status === "blocked" || node.escalationCount > 0 || node.needsHuman || hasActiveShift) {
+    return "inner";
+  }
+  if (healthStatus === "healthy") return "middle";
+  return "inner";
+}
+
 function resolveWorkOrderRunPhase(runs: RunSummary[]): WorkOrderRunPhase {
   if (!runs.length) return null;
   if (runs.some((run) => run.status === "waiting_for_input")) return "waiting";
@@ -313,25 +408,13 @@ function targetHeatForWorkOrder(
 }
 
 function paletteForProject(node: ProjectNode): Palette {
-  if (node.needsHuman || node.status === "blocked") {
-    return { base: COLORS.blocked, label: "#fecaca", glow: "#fca5a5" };
-  }
-  if (node.status === "parked") {
-    return { base: COLORS.parked, label: "#e2e8f0", glow: "#cbd5f5" };
-  }
-  if (!node.isActive) {
-    return { base: COLORS.idle, label: "#cbd5f5", glow: "#94a3b8" };
-  }
-  if (node.activePhase === "testing") {
-    return { base: COLORS.testing, label: "#cffafe", glow: "#67e8f9" };
-  }
-  if (node.activePhase === "reviewing") {
-    return { base: COLORS.reviewing, label: "#e9d5ff", glow: "#c084fc" };
-  }
-  if (node.activePhase === "waiting") {
-    return { base: COLORS.waiting, label: "#fef3c7", glow: "#fde68a" };
-  }
-  return { base: COLORS.active, label: "#dbeafe", glow: "#93c5fd" };
+  const healthStatus = resolveProjectHealthStatus(node);
+  const base = PROJECT_HEALTH_COLORS[healthStatus];
+  return {
+    base,
+    label: lightenHex(base, 0.55),
+    glow: base,
+  };
 }
 
 function statusAccentColorForWorkOrder(
@@ -361,11 +444,10 @@ function paletteForWorkOrder(
 }
 
 function computeProjectOrbitRadius(node: ProjectNode, heat: number, layout: Layout): number {
-  const outerTarget =
-    node.status === "parked" || (!node.isActive && node.activityLevel < 0.2)
-      ? layout.archiveRadius
-      : layout.outerRadius;
-  return lerp(outerTarget, layout.innerOrbitRadius, heat);
+  const ring = projectRingForNode(node);
+  const index = ring === "inner" ? 0 : ring === "middle" ? 1 : 2;
+  const zone = layout.zones[index] ?? layout.zones[layout.zones.length - 1];
+  return lerp(zone.maxR, zone.minR, clamp(heat, 0, 1));
 }
 
 function workOrderRingForStatus(
@@ -505,6 +587,7 @@ export class OrbitalGravityVisualization implements Visualization {
   private workOrderFilter: WorkOrderFilter;
   private pinnedWorkOrderIds: Set<string>;
   private visibleNodes: OrbitalNode[] = [];
+  private globalSessionState: GlobalSessionIndicator | null = null;
 
   constructor(options: OrbitalGravityOptions = {}) {
     this.mode = options.mode ?? "projects";
@@ -542,6 +625,10 @@ export class OrbitalGravityVisualization implements Visualization {
     this.update(this.data);
   }
 
+  setGlobalSessionState(session: GlobalSessionIndicator | null): void {
+    this.globalSessionState = session;
+  }
+
   init(canvas: HTMLCanvasElement, data: VisualizationData): void {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
@@ -552,6 +639,7 @@ export class OrbitalGravityVisualization implements Visualization {
   update(data: VisualizationData): void {
     this.data = data;
     const layout = this.getLayout();
+    const globalAutonomous = isAutonomousActive(this.globalSessionState);
     const seen = new Set<string>();
     const nodes = this.resolveNodes(data);
     this.visibleNodes = nodes;
@@ -572,15 +660,17 @@ export class OrbitalGravityVisualization implements Visualization {
     }
 
     for (const node of nodes) {
-      const baseRadius = isProjectNode(node)
-        ? radiusFromConsumption(node.consumptionRate)
-        : workOrderBaseRadius(node);
+      const baseRadius = isProjectNode(node) ? projectBaseRadius(node) : workOrderBaseRadius(node);
       const runPhase = isWorkOrderNode(node)
         ? this.runPhaseByNode.get(node.id) ?? null
         : null;
-      const targetHeat = isProjectNode(node)
+      const baseTargetHeat = isProjectNode(node)
         ? targetHeatForProject(node)
         : targetHeatForWorkOrder(node, runPhase);
+      const targetHeat =
+        isProjectNode(node) && globalAutonomous
+          ? Math.max(baseTargetHeat, 0.65)
+          : baseTargetHeat;
       const radialOffset = (seededFloat(`${node.id}-radius`) - 0.5) * RADIAL_JITTER * 2;
       const initialRadius =
         (isProjectNode(node)
@@ -662,6 +752,7 @@ export class OrbitalGravityVisualization implements Visualization {
     }
 
     const layout = this.getLayout();
+    const globalAutonomous = isAutonomousActive(this.globalSessionState);
     this.drawZones(ctx, layout);
     this.drawSun(ctx, layout);
 
@@ -680,9 +771,13 @@ export class OrbitalGravityVisualization implements Visualization {
       const runPhase = isWorkOrderNode(node)
         ? this.runPhaseByNode.get(node.id) ?? null
         : null;
-      const targetHeat = isProjectNode(node)
+      const baseTargetHeat = isProjectNode(node)
         ? targetHeatForProject(node)
         : targetHeatForWorkOrder(node, runPhase);
+      const targetHeat =
+        isProjectNode(node) && globalAutonomous
+          ? Math.max(baseTargetHeat, 0.65)
+          : baseTargetHeat;
       const heatRate = targetHeat > state.heat ? HEAT_GAIN_RATE : HEAT_DECAY_RATE;
       state.heat = lerp(state.heat, targetHeat, smoothFactor(delta, heatRate));
 
@@ -700,15 +795,24 @@ export class OrbitalGravityVisualization implements Visualization {
       state.targetRadius = desiredRadius;
       state.radius = lerp(state.radius, state.targetRadius, smoothFactor(delta, RADIUS_SMOOTH_RATE));
 
-      // Only orbit if agent is actively working, not waiting on human
-      const isAgentWorking = runPhase === "building" || runPhase === "testing" || runPhase === "ai_review";
-      if (isAgentWorking) {
+      const shouldOrbit = isWorkOrderNode(node)
+        ? runPhase === "building" || runPhase === "testing" || runPhase === "ai_review"
+        : globalAutonomous;
+      if (shouldOrbit) {
         const speedFactor = layout.outerRadius / Math.max(state.radius, layout.focusRadius);
         const focusSpeedDamp = lerp(1, 0.4, focusBlend);
-        const speedDamp = isWorkOrderNode(node) ? workOrderSpeedDamp(node.status) : 1;
+        const baseSpeed = isWorkOrderNode(node)
+          ? BASE_ORBIT_SPEED
+          : BASE_ORBIT_SPEED * 0.6;
+        const minSpeed = isWorkOrderNode(node)
+          ? MIN_ORBIT_SPEED
+          : MIN_ORBIT_SPEED * 0.6;
+        const speedDamp = isWorkOrderNode(node)
+          ? workOrderSpeedDamp(node.status)
+          : 0.7;
         state.angularVelocity = clamp(
-          BASE_ORBIT_SPEED * speedFactor * focusSpeedDamp * speedDamp,
-          MIN_ORBIT_SPEED * speedDamp,
+          baseSpeed * speedFactor * focusSpeedDamp * speedDamp,
+          minSpeed * speedDamp,
           MAX_ORBIT_SPEED
         );
         state.angle += state.angularVelocity * delta;
@@ -775,8 +879,14 @@ export class OrbitalGravityVisualization implements Visualization {
         ? paletteForProject(node)
         : paletteForWorkOrder(node, runPhase);
       const idleDimming = isProjectNode(node) ? (node.isActive ? 1 : 0.7) : 1;
-      const glow = clamp(0.25 + state.heat * 0.65, 0.2, 0.95) * idleDimming;
-      const fillAlpha = clamp(0.28 + state.heat * 0.5, 0.2, 0.85) * idleDimming;
+      const escalationBoost = isProjectNode(node)
+        ? clamp(node.escalationCount / 3, 0, 0.35)
+        : 0;
+      const glow =
+        clamp(0.25 + state.heat * 0.65 + escalationBoost, 0.2, 0.95) * idleDimming;
+      const fillAlpha =
+        clamp(0.28 + state.heat * 0.5 + escalationBoost * 0.4, 0.2, 0.85) *
+        idleDimming;
       const strokeAlpha = clamp(0.35 + state.heat * 0.45, 0.25, 0.9) * idleDimming;
       const strokeColor = palette.stroke ?? palette.base;
 
@@ -823,7 +933,7 @@ export class OrbitalGravityVisualization implements Visualization {
         ctx.restore();
 
         // Show count for escalations
-        if (isProjectNode(node) && node.escalationCount > 1) {
+        if (isProjectNode(node) && node.escalationCount > 0) {
           ctx.fillStyle = "#fff";
           ctx.font = "9px system-ui";
           ctx.textAlign = "center";
@@ -940,31 +1050,55 @@ export class OrbitalGravityVisualization implements Visualization {
   }
 
   private drawSun(ctx: CanvasRenderingContext2D, layout: Layout): void {
+    const sunState = resolveSunState(this.globalSessionState);
+    const pulseActive = sunState.key === "autonomous";
+    const pulse = pulseActive ? 0.5 + 0.5 * Math.sin(performance.now() / 320) : 0;
+    const pulseScale = 1 + pulse * 0.08;
+    const glowScale = 1 + pulse * 0.15;
+
     const gradient = ctx.createRadialGradient(
       0,
       0,
       0,
       0,
       0,
-      layout.sunRadius * 2.6
+      layout.sunRadius * (2.6 + pulse * 0.4)
     );
-    gradient.addColorStop(0, "rgba(255, 247, 214, 0.95)");
-    gradient.addColorStop(0.6, "rgba(254, 215, 140, 0.4)");
-    gradient.addColorStop(1, "rgba(254, 215, 140, 0.05)");
+    gradient.addColorStop(0, withAlpha(sunState.core, 0.95));
+    gradient.addColorStop(0.6, withAlpha(sunState.glow, 0.4 + pulse * 0.2));
+    gradient.addColorStop(1, withAlpha(sunState.glow, 0.05));
 
     ctx.save();
-    ctx.shadowBlur = layout.sunRadius * 2.4;
-    ctx.shadowColor = "rgba(254, 215, 140, 0.5)";
+    ctx.shadowBlur = layout.sunRadius * 2.2 * glowScale;
+    ctx.shadowColor = withAlpha(sunState.glow, 0.45 + pulse * 0.2);
     ctx.fillStyle = gradient;
     ctx.beginPath();
-    ctx.arc(0, 0, layout.sunRadius * 1.4, 0, Math.PI * 2);
+    ctx.arc(0, 0, layout.sunRadius * 1.4 * pulseScale, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
 
-    ctx.fillStyle = "rgba(255, 245, 220, 0.85)";
+    if (pulseActive) {
+      const ringRadius = layout.sunRadius * (1.8 + pulse * 0.2);
+      ctx.save();
+      ctx.strokeStyle = withAlpha(sunState.glow, 0.6 + pulse * 0.2);
+      ctx.lineWidth = 1.6 + pulse * 0.6;
+      ctx.beginPath();
+      ctx.arc(0, 0, ringRadius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.fillStyle = "rgba(226, 232, 240, 0.9)";
     ctx.font = "12px system-ui";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("attention", 0, layout.sunRadius + 16);
+    ctx.fillText("Global Agent", 0, layout.sunRadius + 14);
+
+    const statusLabel = sunState.prompt
+      ? `${sunState.label} · ${sunState.prompt}`
+      : sunState.label;
+    ctx.fillStyle = "rgba(148, 163, 184, 0.85)";
+    ctx.font = "11px system-ui";
+    ctx.fillText(statusLabel, 0, layout.sunRadius + 28);
   }
 }

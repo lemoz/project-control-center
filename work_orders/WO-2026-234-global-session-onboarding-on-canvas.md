@@ -1,9 +1,13 @@
 ---
 id: WO-2026-234
 title: Global Session Onboarding on Canvas
-status: ready
+status: done
 priority: 1
-tags: [ui, canvas, global-session, onboarding]
+tags:
+  - ui
+  - canvas
+  - global-session
+  - onboarding
 estimate_hours: 6
 created_at: 2026-01-28
 updated_at: 2026-01-28

@@ -9,6 +9,7 @@ import {
   setCanvasVoiceState,
   useCanvasVoiceState,
   type CanvasVoiceEscalation,
+  type CanvasVoiceEscalationDetail,
   type CanvasVoiceShiftUpdate,
   type CanvasVoiceState,
   type CanvasVoiceNode,
@@ -16,6 +17,7 @@ import {
 
 const MAX_CONTEXT_ITEMS = 8;
 const CONTEXT_THROTTLE_MS = 600;
+const MAX_GLOBAL_CONTEXT_ITEMS = 6;
 const SESSION_POLL_MS = 10_000;
 const SESSION_IDLE_POLL_MS = 30_000;
 const ESCALATION_POLL_MS = 20_000;
@@ -65,7 +67,28 @@ function formatSessionSummary(session: CanvasVoiceState["session"]): string {
   return [statusLine, stats, checkInLine, priorities].filter(Boolean).join(" ");
 }
 
-function formatEscalationSummary(escalations: CanvasVoiceEscalation[]): string {
+function formatGlobalSession(state: CanvasVoiceState): string {
+  const sessionState = state.globalSessionState;
+  if (!sessionState) return "";
+  const pausedLabel = state.globalSessionPaused ? " (paused)" : "";
+  return `Global session: ${sessionState}${pausedLabel}.`;
+}
+
+function formatActiveShifts(state: CanvasVoiceState): string {
+  const shifts = state.activeShiftProjects ?? [];
+  if (!shifts.length) return "Active shifts: none.";
+  const listed = shifts
+    .slice(0, MAX_GLOBAL_CONTEXT_ITEMS)
+    .map((shift) => shift.projectName)
+    .join(", ");
+  const overflow =
+    shifts.length > MAX_GLOBAL_CONTEXT_ITEMS
+      ? ` (+${shifts.length - MAX_GLOBAL_CONTEXT_ITEMS} more)`
+      : "";
+  return `Active shifts: ${listed}${overflow}.`;
+}
+
+function formatEscalationSummary(escalations: CanvasVoiceEscalationDetail[]): string {
   if (!escalations.length) return "Escalations: none.";
   const listed = escalations
     .slice(0, MAX_CONTEXT_ITEMS)
@@ -74,6 +97,23 @@ function formatEscalationSummary(escalations: CanvasVoiceEscalation[]): string {
   const overflow =
     escalations.length > MAX_CONTEXT_ITEMS
       ? ` (+${escalations.length - MAX_CONTEXT_ITEMS} more)`
+      : "";
+  return `Escalations: ${listed}${overflow}.`;
+}
+
+function formatEscalationSummaries(summaries: CanvasVoiceEscalation[]): string {
+  if (!summaries.length) return "Escalations: none.";
+  const listed = summaries
+    .slice(0, MAX_GLOBAL_CONTEXT_ITEMS)
+    .map((entry) => {
+      const countLabel = entry.count > 1 ? ` (${entry.count})` : "";
+      const summaryLabel = entry.summary ? ` - ${entry.summary}` : "";
+      return `${entry.projectName}${countLabel}${summaryLabel}`;
+    })
+    .join("; ");
+  const overflow =
+    summaries.length > MAX_GLOBAL_CONTEXT_ITEMS
+      ? ` (+${summaries.length - MAX_GLOBAL_CONTEXT_ITEMS} more)`
       : "";
   return `Escalations: ${listed}${overflow}.`;
 }
@@ -88,7 +128,6 @@ function formatShiftUpdate(update: CanvasVoiceShiftUpdate | null): string {
         : "shift finished";
   return `Latest shift: ${update.projectName} ${label}.`;
 }
-
 function buildCanvasSummary(state: CanvasVoiceState): string {
   const contextLabel = state.contextLabel ?? "Canvas";
   const focusLabel = state.focusedNode ? formatNodeLabel(state.focusedNode) : "none";
@@ -97,7 +136,11 @@ function buildCanvasSummary(state: CanvasVoiceState): string {
   const visibleProjects = formatNodeList("Visible projects", state.visibleProjects);
   const visibleWorkOrders = formatNodeList("Visible work orders", state.visibleWorkOrders);
   const sessionSummary = formatSessionSummary(state.session);
-  const escalationSummary = formatEscalationSummary(state.escalations);
+  const globalSession = formatGlobalSession(state);
+  const activeShifts = formatActiveShifts(state);
+  const escalationSummary = state.escalations.length
+    ? formatEscalationSummary(state.escalations)
+    : formatEscalationSummaries(state.escalationSummaries);
   const shiftSummary = formatShiftUpdate(state.lastShiftUpdate);
 
   return [
@@ -108,6 +151,8 @@ function buildCanvasSummary(state: CanvasVoiceState): string {
     visibleProjects,
     visibleWorkOrders,
     sessionSummary,
+    globalSession,
+    activeShifts,
     escalationSummary,
     shiftSummary,
   ]
@@ -345,7 +390,7 @@ export function VoiceWidget() {
       const res = await fetch("/api/global/context", { cache: "no-store" });
       const json = (await res.json().catch(() => null)) as GlobalContextResponse | null;
       if (!res.ok || !json?.projects) return;
-      const escalations: CanvasVoiceEscalation[] = [];
+      const escalations: CanvasVoiceEscalationDetail[] = [];
       for (const project of json.projects) {
         for (const escalation of project.escalations ?? []) {
           escalations.push({

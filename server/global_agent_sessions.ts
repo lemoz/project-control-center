@@ -987,6 +987,7 @@ async function runSessionLoop(sessionId: string): Promise<void> {
       type: "check_in",
       payload: {
         message: actionSummary || "Iteration completed.",
+        actions: shiftResult.actions,
         triggers: checkIn.triggers,
         stats: buildStatsPayload(updated),
         shift_id: shiftResult.shift.id,

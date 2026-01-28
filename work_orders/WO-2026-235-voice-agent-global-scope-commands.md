@@ -1,9 +1,13 @@
 ---
 id: WO-2026-235
 title: Voice Agent Global Scope Commands
-status: ready
+status: done
 priority: 2
-tags: [voice, canvas, global, tools]
+tags:
+  - voice
+  - canvas
+  - global
+  - tools
 estimate_hours: 4
 created_at: 2026-01-28
 updated_at: 2026-01-28

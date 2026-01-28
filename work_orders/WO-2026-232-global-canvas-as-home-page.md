@@ -1,9 +1,13 @@
 ---
 id: WO-2026-232
 title: Global Canvas as Home Page
-status: ready
+status: done
 priority: 1
-tags: [ui, canvas, home, onboarding]
+tags:
+  - ui
+  - canvas
+  - home
+  - onboarding
 estimate_hours: 3
 created_at: 2026-01-28
 updated_at: 2026-01-28
