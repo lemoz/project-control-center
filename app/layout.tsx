@@ -1,7 +1,7 @@
 import "./globals.css";
 import type { Metadata, Viewport } from "next";
 import { Suspense } from "react";
-import { ChatAttentionBell } from "./components/ChatAttentionBell";
+import { NavBar } from "./components/NavBar";
 import { ChatWidget } from "./components/ChatWidget";
 
 export const metadata: Metadata = {
@@ -30,22 +30,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
+        <Suspense fallback={null}>
+          <NavBar />
+        </Suspense>
         <div className="container">
-          <header style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-            <div style={{ fontWeight: 700, fontSize: 18 }}>Project Control Center</div>
-            <div className="muted" style={{ fontSize: 13 }}>v0 scaffold</div>
-            <div style={{ marginLeft: "auto", display: "flex", gap: 12, alignItems: "center" }}>
-              <Suspense fallback={null}>
-                <ChatAttentionBell />
-              </Suspense>
-              <nav style={{ display: "flex", gap: 12, fontSize: 14 }}>
-                <a href="/">Portfolio</a>
-                <a href="/observability">Observability</a>
-                <a href="/chat">Chat</a>
-                <a href="/settings">Settings</a>
-              </nav>
-            </div>
-          </header>
           {children}
         </div>
         <Suspense fallback={null}>

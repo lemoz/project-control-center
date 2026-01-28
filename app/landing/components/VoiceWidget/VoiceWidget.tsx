@@ -60,6 +60,11 @@ function transcriptLabel(entry: TranscriptEntry): string {
   return entry.role === "agent" ? "Agent" : "You";
 }
 
+type VoiceStatusResponse = {
+  available: boolean;
+  reason?: string;
+};
+
 export function VoiceWidget() {
   const {
     status,
@@ -78,6 +83,24 @@ export function VoiceWidget() {
   const [textInput, setTextInput] = useState("");
   const lastContextRef = useRef<string>("");
   const contextTimerRef = useRef<number | null>(null);
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatusResponse | null>(null);
+  const [voiceStatusLoading, setVoiceStatusLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/voice/status", { cache: "no-store" });
+        const json = (await res.json()) as VoiceStatusResponse;
+        if (!cancelled) setVoiceStatus(json);
+      } catch {
+        if (!cancelled) setVoiceStatus({ available: false, reason: "server_unreachable" });
+      } finally {
+        if (!cancelled) setVoiceStatusLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const isConnected = status === "connected";
   const isBusy = isConnecting || status === "disconnecting";
@@ -158,6 +181,19 @@ export function VoiceWidget() {
     () => statusLabel(status, isConnecting, isSpeaking, error),
     [status, isConnecting, isSpeaking, error]
   );
+
+  if (!voiceStatusLoading && !voiceStatus?.available) {
+    return (
+      <section className="card voice-widget">
+        <div className="voice-widget-header">
+          <div style={{ fontWeight: 600 }}>Voice guide</div>
+        </div>
+        <div className="notice">
+          Voice requires an ElevenLabs API key. Configure in Settings or upgrade to PCC Cloud.
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="card voice-widget">

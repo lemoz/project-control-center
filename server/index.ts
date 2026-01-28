@@ -685,6 +685,14 @@ app.get("/subscribers", (req, res) => {
   return res.json({ subscribers: listSubscribers(limit) });
 });
 
+app.get("/api/voice/status", (_req, res) => {
+  const apiKey = getElevenLabsApiKey();
+  const agentId = getElevenLabsAgentId();
+  const available = !!apiKey && !!agentId;
+  const reason = !apiKey ? "api_key_missing" : !agentId ? "agent_id_missing" : undefined;
+  return res.json({ available, reason });
+});
+
 app.post("/api/voice/session", async (_req, res) => {
   try {
     const signedUrl = await requestElevenLabsSignedUrl();

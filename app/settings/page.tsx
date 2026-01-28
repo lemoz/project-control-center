@@ -5,6 +5,7 @@ import { ShiftSchedulerSettingsForm } from "./ShiftSchedulerSettingsForm";
 import { UtilitySettingsForm } from "./UtilitySettingsForm";
 import { ChatSettingsForm } from "./ChatSettingsForm";
 import { GlobalConstitutionForm } from "./GlobalConstitutionForm";
+import { VoiceSettingsForm } from "./VoiceSettingsForm";
 
 export default function SettingsPage() {
   return (
@@ -16,6 +17,7 @@ export default function SettingsPage() {
       <UtilitySettingsForm />
       <GlobalConstitutionForm />
       <ChatSettingsForm />
+      <VoiceSettingsForm />
     </main>
   );
 }
