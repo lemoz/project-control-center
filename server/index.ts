@@ -17,6 +17,7 @@ import {
   getEscalationTimeoutHours,
   getFailRunsOnRestart,
   getHealthToken,
+  getGlobalAgentId,
   getNodeEnvLabel,
   getPccMode,
   getServerHost,
@@ -32,10 +33,12 @@ import {
   createGlobalPattern,
   createGlobalShiftHandoff,
   createShiftHandoff,
+  createInitiative,
   expireStaleGlobalShifts,
   expireStaleShifts,
   findProjectById,
   findGlobalPatternById,
+  getInitiativeById,
   getActiveShift,
   getActiveGlobalShift,
   getEscalationById,
@@ -68,6 +71,7 @@ import {
   updateProjectAutoShift,
   startShift,
   startGlobalShift,
+  updateInitiative,
   updateProjectIsolationSettings,
   updateEscalation,
   updateProjectCommunication,
@@ -85,6 +89,8 @@ import {
   type CreateShiftHandoffInput,
   type EscalationStatus,
   type EscalationType,
+  type InitiativeMilestone,
+  type InitiativeStatus,
   type ProjectCommunicationIntent,
   type ProjectCommunicationScope,
   type ProjectIsolationMode,
@@ -209,6 +215,14 @@ import { buildShiftContext } from "./shift_context.js";
 import { buildGlobalContextResponse } from "./global_context.js";
 import { createProjectFromSpec, type CreateProjectInput } from "./global_agent.js";
 import {
+  buildInitiativeProgress,
+  coerceInitiativePlanInput,
+  generateInitiativePlan,
+  groupPlanSuggestionsByProject,
+  initiativeTag,
+} from "./initiatives.js";
+import type { InitiativePlan, InitiativeProjectSuggestion } from "./initiatives.js";
+import {
   completeGlobalAgentOnboarding,
   createGlobalAgentSession,
   endGlobalAgentSession,
@@ -332,6 +346,21 @@ const COMMUNICATION_INTENTS: ProjectCommunicationIntent[] = [
 const COMMUNICATION_INTENT_SET = new Set<ProjectCommunicationIntent>(COMMUNICATION_INTENTS);
 const COMMUNICATION_SCOPES: ProjectCommunicationScope[] = ["project", "global", "user"];
 const COMMUNICATION_SCOPE_SET = new Set<ProjectCommunicationScope>(COMMUNICATION_SCOPES);
+const INITIATIVE_STATUSES: InitiativeStatus[] = [
+  "planning",
+  "active",
+  "completed",
+  "at_risk",
+];
+const INITIATIVE_STATUS_SET = new Set<InitiativeStatus>(INITIATIVE_STATUSES);
+const INITIATIVE_MILESTONE_STATUSES: InitiativeMilestone["status"][] = [
+  "pending",
+  "completed",
+  "at_risk",
+];
+const INITIATIVE_MILESTONE_STATUS_SET = new Set<InitiativeMilestone["status"]>(
+  INITIATIVE_MILESTONE_STATUSES
+);
 const COST_PERIODS = ["day", "week", "month", "all_time"] as const;
 const COST_CATEGORIES = ["builder", "reviewer", "chat", "handoff", "other", "all"] as const;
 const COST_PERIOD_SET = new Set<string>(COST_PERIODS);
@@ -1710,6 +1739,163 @@ function parseCreateProjectInput(
   };
 }
 
+type InitiativeCreateInput = {
+  name: string;
+  description: string;
+  target_date: string;
+  status: InitiativeStatus;
+  projects: string[];
+  milestones: InitiativeMilestone[];
+};
+
+type InitiativePlanRequest = {
+  plan: InitiativePlan | null;
+  update_milestones: boolean;
+};
+
+type InitiativeNotifyRequest = {
+  plan: InitiativePlan | null;
+  start_shifts: boolean;
+  spawn_shifts: boolean;
+};
+
+function parseInitiativeMilestones(
+  raw: unknown
+): { ok: true; milestones: InitiativeMilestone[] } | { ok: false; error: string } {
+  if (raw === undefined) return { ok: true, milestones: [] };
+  if (!Array.isArray(raw)) {
+    return { ok: false, error: "`milestones` must be an array" };
+  }
+  const milestones: InitiativeMilestone[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const name = typeof record.name === "string" ? record.name.trim() : "";
+    const targetDate =
+      typeof record.target_date === "string" ? record.target_date.trim() : "";
+    if (!name || !targetDate) {
+      return { ok: false, error: "each milestone needs name and target_date" };
+    }
+    const wos = normalizeStringArrayField(record.wos) ?? [];
+    const rawStatus = typeof record.status === "string" ? record.status.trim() : "";
+    const status = INITIATIVE_MILESTONE_STATUS_SET.has(
+      rawStatus as InitiativeMilestone["status"]
+    )
+      ? (rawStatus as InitiativeMilestone["status"])
+      : "pending";
+    milestones.push({ name, target_date: targetDate, wos, status });
+  }
+  return { ok: true, milestones };
+}
+
+function parseInitiativeCreateInput(
+  payload: unknown
+): { ok: true; input: InitiativeCreateInput } | { ok: false; error: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, error: "request body must be an object" };
+  }
+  const record = payload as Record<string, unknown>;
+  const name = typeof record.name === "string" ? record.name.trim() : "";
+  if (!name) return { ok: false, error: "`name` must be a non-empty string" };
+
+  const descriptionRaw =
+    typeof record.description === "string" ? record.description.trim() : "";
+  const goalRaw = typeof record.goal === "string" ? record.goal.trim() : "";
+  const description = descriptionRaw || goalRaw;
+  if (!description) {
+    return { ok: false, error: "`description` must be a non-empty string" };
+  }
+
+  const targetDate =
+    typeof record.target_date === "string" ? record.target_date.trim() : "";
+  if (!targetDate) {
+    return { ok: false, error: "`target_date` must be a non-empty string" };
+  }
+
+  const projects = normalizeStringArrayField(record.projects) ?? [];
+  if (!projects.length) {
+    return { ok: false, error: "`projects` must be a non-empty array" };
+  }
+
+  const rawStatus = typeof record.status === "string" ? record.status.trim() : "";
+  if (rawStatus && !INITIATIVE_STATUS_SET.has(rawStatus as InitiativeStatus)) {
+    return {
+      ok: false,
+      error: "`status` must be planning, active, completed, or at_risk",
+    };
+  }
+
+  const milestonesParsed = parseInitiativeMilestones(record.milestones);
+  if (!milestonesParsed.ok) return { ok: false, error: milestonesParsed.error };
+
+  return {
+    ok: true,
+    input: {
+      name,
+      description,
+      target_date: targetDate,
+      status: rawStatus
+        ? (rawStatus as InitiativeStatus)
+        : ("planning" as InitiativeStatus),
+      projects,
+      milestones: milestonesParsed.milestones,
+    },
+  };
+}
+
+function parseInitiativePlanRequest(
+  payload: unknown,
+  initiativeId: string,
+  projectIds: string[]
+): { ok: true; input: InitiativePlanRequest } | { ok: false; error: string } {
+  if (payload === undefined || payload === null) {
+    return { ok: true, input: { plan: null, update_milestones: true } };
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, error: "request body must be an object" };
+  }
+  const record = payload as Record<string, unknown>;
+  const update =
+    typeof record.update_milestones === "boolean" ? record.update_milestones : true;
+  let plan: InitiativePlan | null = null;
+  if ("plan" in record) {
+    plan = coerceInitiativePlanInput(record.plan, initiativeId, projectIds);
+    if (!plan) {
+      return { ok: false, error: "`plan` must match the initiative plan schema" };
+    }
+  }
+  return { ok: true, input: { plan, update_milestones: update } };
+}
+
+function parseInitiativeNotifyRequest(
+  payload: unknown,
+  initiativeId: string,
+  projectIds: string[]
+): { ok: true; input: InitiativeNotifyRequest } | { ok: false; error: string } {
+  if (payload === undefined || payload === null) {
+    return {
+      ok: true,
+      input: { plan: null, start_shifts: true, spawn_shifts: false },
+    };
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, error: "request body must be an object" };
+  }
+  const record = payload as Record<string, unknown>;
+  const start =
+    typeof record.start_shifts === "boolean" ? record.start_shifts : true;
+  const spawn =
+    typeof record.spawn_shifts === "boolean" ? record.spawn_shifts : false;
+  let plan: InitiativePlan | null = null;
+  if ("plan" in record) {
+    plan = coerceInitiativePlanInput(record.plan, initiativeId, projectIds);
+    if (!plan) {
+      return { ok: false, error: "`plan` must match the initiative plan schema" };
+    }
+  }
+  return { ok: true, input: { plan, start_shifts: start, spawn_shifts: spawn } };
+}
+
 type EscalationCreateInput = {
   type: EscalationType;
   summary: string;
@@ -2060,6 +2246,234 @@ app.get("/global/context", (_req, res) => {
 
 app.get("/global/blocked-chains", (_req, res) => {
   return res.json(buildGlobalBlockedChains());
+});
+
+function formatInitiativeSuggestionBody(params: {
+  initiative: { id: string; name: string; target_date: string };
+  suggestions: InitiativeProjectSuggestion | null;
+}): string {
+  const tag = initiativeTag(params.initiative.id);
+  if (!params.suggestions || params.suggestions.items.length === 0) {
+    return [
+      `Initiative "${params.initiative.name}" (target ${params.initiative.target_date})`,
+      "No specific suggestions were generated for this project.",
+      `If you create WOs for this initiative, tag them with "${tag}".`,
+    ].join("\n");
+  }
+
+  const lines: string[] = [
+    `Initiative "${params.initiative.name}" (target ${params.initiative.target_date})`,
+    `Please tag created WOs with "${tag}".`,
+    "",
+    "Suggested work:",
+  ];
+  for (const item of params.suggestions.items) {
+    lines.push(`- [${item.milestone} • ${item.milestone_target}] ${item.title}`);
+    lines.push(`  ${item.description}`);
+    if (item.depends_on.length) {
+      lines.push(`  depends_on: ${item.depends_on.join(", ")}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+app.post("/global/initiatives", (req, res) => {
+  const parsed = parseInitiativeCreateInput(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+  try {
+    const created = createInitiative(parsed.input);
+    const initiative = buildInitiativeProgress(created);
+    return res.status(201).json({ initiative });
+  } catch (err) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : "failed to create initiative",
+    });
+  }
+});
+
+app.get("/global/initiatives/:id", (req, res) => {
+  const { id } = req.params;
+  const initiative = getInitiativeById(id);
+  if (!initiative) return res.status(404).json({ error: "initiative not found" });
+  return res.json({ initiative: buildInitiativeProgress(initiative) });
+});
+
+app.get("/global/initiatives/:id/critical-path", (req, res) => {
+  const { id } = req.params;
+  const initiative = getInitiativeById(id);
+  if (!initiative) return res.status(404).json({ error: "initiative not found" });
+  const summary = buildInitiativeProgress(initiative);
+  return res.json({
+    initiative_id: initiative.id,
+    critical_path: summary.critical_path,
+    total_wos: summary.total_wos,
+    completed_wos: summary.completed_wos,
+    blocked_wos: summary.blocked_wos,
+  });
+});
+
+app.post("/global/initiatives/:id/plan", async (req, res) => {
+  const { id } = req.params;
+  const initiative = getInitiativeById(id);
+  if (!initiative) return res.status(404).json({ error: "initiative not found" });
+
+  const parsed = parseInitiativePlanRequest(req.body, initiative.id, initiative.projects);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+  const projectRows = initiative.projects
+    .map((projectId) => findProjectById(projectId))
+    .filter(Boolean) as ProjectRow[];
+  if (!projectRows.length) {
+    return res.status(400).json({ error: "initiative has no valid projects" });
+  }
+
+  let plan = parsed.input.plan;
+  if (!plan) {
+    try {
+      plan = await generateInitiativePlan({
+        initiative,
+        projects: projectRows,
+        projectPath: projectRows[0]?.path,
+      });
+    } catch (err) {
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : "failed to generate plan",
+      });
+    }
+  }
+
+  let updatedInitiative = initiative;
+  if (parsed.input.update_milestones) {
+    const milestones: InitiativeMilestone[] = plan.milestones.map((milestone) => ({
+      name: milestone.name,
+      target_date: milestone.target_date,
+      wos: [],
+      status: "pending",
+    }));
+    const updated = updateInitiative(initiative.id, { milestones });
+    if (updated) updatedInitiative = updated;
+  }
+
+  return res.json({
+    initiative: buildInitiativeProgress(updatedInitiative),
+    plan,
+  });
+});
+
+app.post("/global/initiatives/:id/notify-projects", async (req, res) => {
+  const { id } = req.params;
+  const initiative = getInitiativeById(id);
+  if (!initiative) return res.status(404).json({ error: "initiative not found" });
+
+  const parsed = parseInitiativeNotifyRequest(req.body, initiative.id, initiative.projects);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+  const projectRows = initiative.projects
+    .map((projectId) => findProjectById(projectId))
+    .filter(Boolean) as ProjectRow[];
+  if (!projectRows.length) {
+    return res.status(400).json({ error: "initiative has no valid projects" });
+  }
+
+  let plan = parsed.input.plan;
+  if (!plan) {
+    try {
+      plan = await generateInitiativePlan({
+        initiative,
+        projects: projectRows,
+        projectPath: projectRows[0]?.path,
+      });
+    } catch (err) {
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : "failed to generate plan",
+      });
+    }
+  }
+
+  const suggestions = groupPlanSuggestionsByProject(plan);
+  const suggestionsByProject = new Map(
+    suggestions.map((entry) => [entry.project_id, entry])
+  );
+
+  const notifications = projectRows.map((project) => {
+    const projectSuggestion = suggestionsByProject.get(project.id) ?? null;
+    const summary = `Initiative ${initiative.name}: suggested work`;
+    const body = formatInitiativeSuggestionBody({
+      initiative: { id: initiative.id, name: initiative.name, target_date: initiative.target_date },
+      suggestions: projectSuggestion,
+    });
+    const payload = JSON.stringify({
+      initiative_id: initiative.id,
+      initiative_name: initiative.name,
+      target_date: initiative.target_date,
+      tag: initiativeTag(initiative.id),
+      suggestions: projectSuggestion?.items ?? [],
+    });
+
+    const communication = createProjectCommunication({
+      project_id: project.id,
+      intent: "suggestion",
+      summary,
+      body,
+      payload,
+      from_scope: "global",
+      to_scope: "project",
+      to_project_id: project.id,
+    });
+
+    let shift = null;
+    let shift_started = false;
+    let shift_error: string | null = null;
+
+    if (parsed.input.start_shifts) {
+      const result = startShift({
+        projectId: project.id,
+        agentType: "global_agent",
+        agentId: getGlobalAgentId(),
+      });
+      if (result.ok) {
+        shift_started = true;
+        shift = result.shift;
+        if (parsed.input.spawn_shifts) {
+          try {
+            const spawned = spawnShiftAgent({
+              projectId: project.id,
+              projectPath: project.path,
+              shift: result.shift,
+            });
+            shift = { ...result.shift, pid: spawned.pid } as typeof result.shift & {
+              pid: number;
+            };
+          } catch (err) {
+            const message =
+              err instanceof Error ? err.message : "failed to spawn shift agent";
+            updateShift(result.shift.id, {
+              status: "failed",
+              completed_at: new Date().toISOString(),
+              error: message,
+            });
+            shift_error = message;
+          }
+        }
+      } else {
+        shift = result.activeShift;
+      }
+    }
+
+    return {
+      project_id: project.id,
+      communication_id: communication.id,
+      shift_started,
+      shift,
+      shift_error,
+    };
+  });
+
+  return res.json({
+    initiative: buildInitiativeProgress(initiative),
+    plan,
+    notifications,
+  });
 });
 
 app.get("/global/preferences", (_req, res) => {
