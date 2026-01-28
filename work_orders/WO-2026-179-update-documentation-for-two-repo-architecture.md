@@ -1,7 +1,7 @@
 ---
 id: WO-2026-179
 title: Update documentation for two-repo architecture
-status: you_review
+status: done
 priority: 2
 tags:
   - cloud
