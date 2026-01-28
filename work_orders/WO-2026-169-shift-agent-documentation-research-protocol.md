@@ -1,7 +1,7 @@
 ---
 id: WO-2026-169
 title: Shift agent documentation research protocol
-status: backlog
+status: ready
 priority: 2
 tags:
   - shift-agent
@@ -11,7 +11,7 @@ estimate_hours: 1
 depends_on:
   - WO-2026-168
 era: v2
-updated_at: 2026-01-26
+updated_at: 2026-01-28
 goal: Teach shift agents to pre-research and embed documentation in work orders before creating/updating them, since builder/reviewer agents are sandboxed without internet access.
 context:
   - Shift agent prompts at prompts/shift_agent.md and prompts/shift_agent_vm.md
