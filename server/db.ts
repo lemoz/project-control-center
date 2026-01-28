@@ -463,6 +463,13 @@ export type WorkOrderDepRow = {
   created_at: string;
 };
 
+export type TaggedWorkOrder = {
+  project_id: string;
+  work_order_id: string;
+  status: string;
+  depends_on: string[];
+};
+
 export type TrackRow = {
   id: string;
   project_id: string;
@@ -665,6 +672,44 @@ export type CreateGlobalPatternInput = {
   created_at?: string;
 };
 
+export type InitiativeStatus = "planning" | "active" | "completed" | "at_risk";
+export type InitiativeMilestoneStatus = "pending" | "completed" | "at_risk";
+
+export type InitiativeMilestone = {
+  name: string;
+  target_date: string;
+  wos: string[];
+  status: InitiativeMilestoneStatus;
+};
+
+export type Initiative = {
+  id: string;
+  name: string;
+  description: string;
+  target_date: string;
+  status: InitiativeStatus;
+  projects: string[];
+  milestones: InitiativeMilestone[];
+  created_at: string;
+  updated_at: string;
+};
+
+type InitiativeRow = {
+  id: string;
+  name: string;
+  description: string;
+  target_date: string;
+  status: InitiativeStatus;
+  projects: string;
+  milestones: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type InitiativePatch = Partial<
+  Pick<Initiative, "name" | "description" | "target_date" | "status" | "projects" | "milestones">
+>;
+
 let db: Database.Database | null = null;
 
 export function getDb() {
@@ -752,6 +797,20 @@ function initSchema(database: Database.Database) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_tracks_project_id ON tracks(project_id);
+
+    CREATE TABLE IF NOT EXISTS initiatives (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      target_date TEXT NOT NULL,
+      status TEXT NOT NULL,
+      projects TEXT NOT NULL DEFAULT '[]',
+      milestones TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_initiatives_status ON initiatives(status);
 
     CREATE TABLE IF NOT EXISTS work_orders (
       id TEXT NOT NULL,
@@ -3985,6 +4044,191 @@ export function getTrackById(projectId: string, trackId: string): Track | null {
   return row ? toTrack(row) : null;
 }
 
+const INITIATIVE_STATUSES: InitiativeStatus[] = [
+  "planning",
+  "active",
+  "completed",
+  "at_risk",
+];
+const INITIATIVE_STATUS_SET = new Set<InitiativeStatus>(INITIATIVE_STATUSES);
+const INITIATIVE_MILESTONE_STATUSES: InitiativeMilestoneStatus[] = [
+  "pending",
+  "completed",
+  "at_risk",
+];
+const INITIATIVE_MILESTONE_STATUS_SET = new Set<InitiativeMilestoneStatus>(
+  INITIATIVE_MILESTONE_STATUSES
+);
+
+function normalizeInitiativeStatus(value: unknown): InitiativeStatus {
+  if (typeof value === "string" && INITIATIVE_STATUS_SET.has(value as InitiativeStatus)) {
+    return value as InitiativeStatus;
+  }
+  return "planning";
+}
+
+function normalizeInitiativeProjects(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const cleaned = value
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter(Boolean);
+  return Array.from(new Set(cleaned));
+}
+
+function normalizeInitiativeMilestone(raw: unknown): InitiativeMilestone | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const name = typeof record.name === "string" ? record.name.trim() : "";
+  const targetDate =
+    typeof record.target_date === "string" ? record.target_date.trim() : "";
+  if (!name || !targetDate) return null;
+  const wos = Array.isArray(record.wos)
+    ? record.wos
+        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+        .filter(Boolean)
+    : [];
+  const rawStatus = typeof record.status === "string" ? record.status.trim() : "";
+  const status = INITIATIVE_MILESTONE_STATUS_SET.has(
+    rawStatus as InitiativeMilestoneStatus
+  )
+    ? (rawStatus as InitiativeMilestoneStatus)
+    : "pending";
+  return { name, target_date: targetDate, wos, status };
+}
+
+function normalizeInitiativeMilestones(value: unknown): InitiativeMilestone[] {
+  if (!Array.isArray(value)) return [];
+  const milestones: InitiativeMilestone[] = [];
+  for (const entry of value) {
+    const milestone = normalizeInitiativeMilestone(entry);
+    if (milestone) milestones.push(milestone);
+  }
+  return milestones;
+}
+
+function parseInitiativeProjects(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    return normalizeInitiativeProjects(JSON.parse(raw) as unknown);
+  } catch {
+    return [];
+  }
+}
+
+function parseInitiativeMilestones(raw: string | null): InitiativeMilestone[] {
+  if (!raw) return [];
+  try {
+    return normalizeInitiativeMilestones(JSON.parse(raw) as unknown);
+  } catch {
+    return [];
+  }
+}
+
+function toInitiative(row: InitiativeRow): Initiative {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    target_date: row.target_date,
+    status: normalizeInitiativeStatus(row.status),
+    projects: parseInitiativeProjects(row.projects),
+    milestones: parseInitiativeMilestones(row.milestones),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export function createInitiative(input: {
+  name: string;
+  description: string;
+  target_date: string;
+  status?: InitiativeStatus;
+  projects?: string[];
+  milestones?: InitiativeMilestone[];
+  created_at?: string;
+}): Initiative {
+  const database = getDb();
+  const now = input.created_at ?? new Date().toISOString();
+  const row: InitiativeRow = {
+    id: crypto.randomUUID(),
+    name: input.name,
+    description: input.description,
+    target_date: input.target_date,
+    status: normalizeInitiativeStatus(input.status),
+    projects: JSON.stringify(normalizeInitiativeProjects(input.projects ?? [])),
+    milestones: JSON.stringify(normalizeInitiativeMilestones(input.milestones ?? [])),
+    created_at: now,
+    updated_at: now,
+  };
+  database
+    .prepare(
+      `INSERT INTO initiatives
+        (id, name, description, target_date, status, projects, milestones, created_at, updated_at)
+       VALUES
+        (@id, @name, @description, @target_date, @status, @projects, @milestones, @created_at, @updated_at)`
+    )
+    .run(row);
+  return toInitiative(row);
+}
+
+export function getInitiativeById(id: string): Initiative | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM initiatives WHERE id = ? LIMIT 1")
+    .get(id) as InitiativeRow | undefined;
+  return row ? toInitiative(row) : null;
+}
+
+export function listInitiatives(limit = 50): Initiative[] {
+  const database = getDb();
+  const safeLimit =
+    Number.isFinite(limit) && limit > 0 ? Math.min(200, Math.trunc(limit)) : 50;
+  const rows = database
+    .prepare("SELECT * FROM initiatives ORDER BY updated_at DESC LIMIT ?")
+    .all(safeLimit) as InitiativeRow[];
+  return rows.map((row) => toInitiative(row));
+}
+
+export function updateInitiative(id: string, patch: InitiativePatch): Initiative | null {
+  const database = getDb();
+  const sets: string[] = [];
+  const params: Record<string, unknown> = { id };
+  if (patch.name !== undefined) {
+    sets.push("name = @name");
+    params.name = patch.name;
+  }
+  if (patch.description !== undefined) {
+    sets.push("description = @description");
+    params.description = patch.description;
+  }
+  if (patch.target_date !== undefined) {
+    sets.push("target_date = @target_date");
+    params.target_date = patch.target_date;
+  }
+  if (patch.status !== undefined) {
+    sets.push("status = @status");
+    params.status = normalizeInitiativeStatus(patch.status);
+  }
+  if (patch.projects !== undefined) {
+    sets.push("projects = @projects");
+    params.projects = JSON.stringify(normalizeInitiativeProjects(patch.projects));
+  }
+  if (patch.milestones !== undefined) {
+    sets.push("milestones = @milestones");
+    params.milestones = JSON.stringify(normalizeInitiativeMilestones(patch.milestones));
+  }
+  if (!sets.length) return getInitiativeById(id);
+  params.updated_at = new Date().toISOString();
+  database
+    .prepare(
+      `UPDATE initiatives
+       SET ${sets.join(", ")}, updated_at = @updated_at
+       WHERE id = @id`
+    )
+    .run(params);
+  return getInitiativeById(id);
+}
+
 export function syncWorkOrderDeps(
   projectId: string,
   workOrderId: string,
@@ -4034,6 +4278,47 @@ export function listAllWorkOrderDeps(projectId: string): WorkOrderDepRow[] {
   return database
     .prepare("SELECT * FROM work_order_deps WHERE project_id = ?")
     .all(projectId) as WorkOrderDepRow[];
+}
+
+export function listWorkOrdersByTag(projectId: string, tag: string): TaggedWorkOrder[] {
+  const needle = tag.trim().toLowerCase();
+  if (!needle) return [];
+  const database = getDb();
+  const rows = database
+    .prepare("SELECT id, status, tags FROM work_orders WHERE project_id = ?")
+    .all(projectId) as Array<{ id: string; status: string; tags: string | null }>;
+
+  const selected: Array<{ id: string; status: string }> = [];
+  for (const row of rows) {
+    const tags = parseJsonStringArray(row.tags);
+    if (!tags.some((entry) => entry.toLowerCase() === needle)) continue;
+    selected.push({ id: row.id, status: row.status });
+  }
+
+  if (!selected.length) return [];
+
+  const selectedIds = new Set(selected.map((row) => row.id));
+  const depRows = database
+    .prepare("SELECT work_order_id, depends_on_id FROM work_order_deps WHERE project_id = ?")
+    .all(projectId) as Array<{ work_order_id: string; depends_on_id: string }>;
+
+  const depsByWorkOrder = new Map<string, Set<string>>();
+  for (const row of depRows) {
+    if (!selectedIds.has(row.work_order_id)) continue;
+    let deps = depsByWorkOrder.get(row.work_order_id);
+    if (!deps) {
+      deps = new Set<string>();
+      depsByWorkOrder.set(row.work_order_id, deps);
+    }
+    if (row.depends_on_id) deps.add(row.depends_on_id);
+  }
+
+  return selected.map((row) => ({
+    project_id: projectId,
+    work_order_id: row.id,
+    status: row.status,
+    depends_on: Array.from(depsByWorkOrder.get(row.id) ?? []),
+  }));
 }
 
 export function countReadyWorkOrders(projectId: string): number {
