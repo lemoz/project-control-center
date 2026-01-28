@@ -1,42 +1,44 @@
 ---
 id: WO-2026-223
-title: "Migrate voice features to cloud-only"
-goal: "Remove voice functionality from PCC core and replace with CTA to pcc-cloud for voice support"
+title: "Voice feature gating: cloud or BYOK"
+goal: "Voice features require either a pcc-cloud subscription or a user-provided ElevenLabs API key. Graceful degradation when neither is configured."
 context:
-  - Voice features (ElevenLabs integration, narration, voice commands) are moving to pcc-cloud
-  - PCC core keeps chat functionality
-  - Voice widgets in core should become promotional CTAs pointing users to cloud
-  - Surfaced during WO-2026-221 landing page migration review
+  - Voice is integral to the global canvas home page experience (WO-2026-235, WO-2026-236)
+  - ElevenLabs keys configured via env vars in `server/config.ts` (getElevenLabsApiKey, getElevenLabsAgentId)
+  - Voice session endpoint: `POST /api/voice/session` in `server/index.ts`
+  - VoiceWidget in `app/landing/components/VoiceWidget/`
+  - Cloud users get voice included; local users must provide their own ElevenLabs key
 acceptance_criteria:
-  - Remove ElevenLabs voice integration from PCC core
-  - Replace VoiceWidget components with a "Voice available in Cloud" CTA component
-  - CTA links to pcc-cloud signup/voice feature page
-  - Remove voice command integration from CanvasShell
-  - Keep all chat-related functionality intact
-  - Update any voice-related imports/dependencies
-  - Clean up unused voice utilities and hooks
+  - Voice availability check endpoint or flag in settings/health response
+  - VoiceWidget checks voice availability before rendering controls
+  - When no key configured: show "Configure ElevenLabs key" prompt with link to settings, or "Upgrade to Cloud" CTA
+  - When key is configured (env var or user-provided): voice works as normal
+  - Settings UI allows entering ElevenLabs API key and Agent ID for BYOK
+  - Key validation on save (test against ElevenLabs API)
+  - Canvas and session onboarding work without voice (text chat fallback)
 non_goals:
-  - Implementing voice in pcc-cloud (separate WO)
-  - Modifying chat functionality
-  - Removing voice code from pcc-cloud
+  - Removing voice code from core
+  - Changing ElevenLabs integration architecture
+  - Billing integration for cloud voice
 stop_conditions:
-  - If voice and chat are tightly coupled, document and escalate
+  - If ElevenLabs requires per-agent provisioning that can't work with BYOK, document limitations
 priority: 2
 tags:
   - voice
-  - migration
-  - cloud
-estimate_hours: 3
-status: backlog
+  - settings
+  - gating
+estimate_hours: 4
+status: ready
 created_at: 2026-01-27
 updated_at: 2026-01-28
 depends_on: []
 era: v2
 ---
 ## Notes
-- Voice files to update/remove:
-  - app/landing/components/VoiceWidget/*
-  - app/landing/NarrationPanel.tsx
-  - app/live/CollapsibleVoiceWidget.tsx
-  - app/playground/canvas/CanvasShell.tsx (voice command integration)
-- Keep: All chat components and functionality
+- Voice files affected:
+  - `server/config.ts` — getElevenLabsApiKey(), getElevenLabsAgentId()
+  - `server/index.ts` — POST /api/voice/session
+  - `app/landing/components/VoiceWidget/*` — gating UI
+  - `app/settings/page.tsx` — BYOK input fields
+- Cloud path: pcc-cloud provides keys via workspace env, no user action needed
+- Local path: user enters own ElevenLabs API key + Agent ID in settings
