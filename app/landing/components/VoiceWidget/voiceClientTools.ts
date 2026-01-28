@@ -253,7 +253,9 @@ function formatSessionTimestamp(value: string | null | undefined): string | null
   return new Date(parsed).toLocaleTimeString();
 }
 
-function summarizeSessionEvent(event: ActiveSessionResponse["events"][number] | undefined): string {
+type SessionEvent = NonNullable<ActiveSessionResponse["events"]>[number];
+
+function summarizeSessionEvent(event: SessionEvent | undefined): string {
   if (!event) return "";
   const payload = event.payload ?? {};
   const summary =
