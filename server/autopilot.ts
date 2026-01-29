@@ -61,6 +61,7 @@ const ACTIVE_STATUSES = new Set<RunRow["status"]>([
   "queued",
   "building",
   "waiting_for_input",
+  "security_hold",
   "ai_review",
   "testing",
   "you_review",

@@ -292,6 +292,7 @@ function shortWorkOrderLabel(woId: string): string {
 
 function resolveActivePhase(activeRuns: RunSummary[]): ActivePhase | undefined {
   if (!activeRuns.length) return undefined;
+  if (activeRuns.some((run) => run.status === "security_hold")) return "waiting";
   if (activeRuns.some((run) => run.status === "waiting_for_input")) return "waiting";
   if (activeRuns.some((run) => run.status === "testing")) return "testing";
   if (activeRuns.some((run) => run.status === "ai_review" || run.status === "you_review")) {

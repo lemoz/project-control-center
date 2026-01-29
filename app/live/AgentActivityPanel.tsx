@@ -25,6 +25,7 @@ const STATUS_LABELS: Record<RunStatus, string> = {
   baseline_failed: "Baseline failed",
   building: "Building",
   waiting_for_input: "Waiting for input",
+  security_hold: "Security hold",
   ai_review: "Reviewing",
   testing: "Testing",
   you_review: "Awaiting review",

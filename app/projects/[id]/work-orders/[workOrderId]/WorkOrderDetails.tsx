@@ -42,6 +42,7 @@ type RunStatus =
   | "baseline_failed"
   | "building"
   | "waiting_for_input"
+  | "security_hold"
   | "ai_review"
   | "testing"
   | "you_review"
@@ -176,6 +177,10 @@ export function WorkOrderDetails({
     return runs.slice().sort((a, b) => b.created_at.localeCompare(a.created_at))[0] || null;
   }, [runs]);
   const canSubmitSignal = !!workOrder && !!signalSummary.trim() && !signalSaving;
+  const latestRunStatusLabel =
+    latestRun?.status === "security_hold" ? "⚠️ security hold" : latestRun?.status ?? null;
+  const latestRunStatusTitle =
+    latestRun?.status === "security_hold" ? "Security hold - review required" : undefined;
 
   const [title, setTitle] = useState("");
   const [status, setStatus] = useState<WorkOrderStatus>("backlog");
@@ -424,7 +429,9 @@ export function WorkOrderDetails({
         <section className="card">
           <div style={{ fontWeight: 800 }}>Latest Run</div>
           <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <span className="badge">{latestRun.status}</span>
+            <span className="badge" title={latestRunStatusTitle}>
+              {latestRunStatusLabel}
+            </span>
             {latestRun.triggered_by === "autopilot" && (
               <span className="badge">autopilot</span>
             )}

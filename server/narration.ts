@@ -55,7 +55,14 @@ const MAX_PENDING_ESCALATIONS = 6;
 const MAX_BLOCKED_WOS = 6;
 const MAX_CHANGES = 8;
 const REPORTED_TOPIC_LIMIT = 10;
-const ACTIVE_RUN_STATUSES = ["queued", "building", "waiting_for_input", "ai_review", "testing"];
+const ACTIVE_RUN_STATUSES = [
+  "queued",
+  "building",
+  "waiting_for_input",
+  "security_hold",
+  "ai_review",
+  "testing",
+];
 const IN_PROGRESS_WO_STATUSES = new Set(["building", "ai_review", "you_review"]);
 const CHANGE_CATEGORY_ORDER = {
   escalation: 0,

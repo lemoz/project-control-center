@@ -38,6 +38,7 @@ const FOLLOW_ANIMATION_MS = 650;
 
 const FOCUS_RING_COLORS: Record<string, string> = {
   waiting_for_input: "#fbbf24",
+  security_hold: "#f97316",
   you_review: "#a855f7",
   ai_review: "#a855f7",
   testing: "#22d3ee",
@@ -124,6 +125,7 @@ export function LiveOrbitalCanvas({
   const [mode, setMode] = useState<CanvasMode>("follow");
   const [highlightedWorkOrderId, setHighlightedWorkOrderId] = useState<string | null>(null);
   const [showAllWOs, setShowAllWOs] = useState(false);
+  const [securityHoldFirst, setSecurityHoldFirst] = useState(false);
   const lastFrame = useRef<number | null>(null);
   const followAnimationRef = useRef<number | null>(null);
   const autoSelectRef = useRef<string | null>(null);
@@ -221,12 +223,24 @@ export function LiveOrbitalCanvas({
   const recentRuns = useMemo<RunSummary[]>(() => {
     if (!selectedWorkOrderNode) return [];
     const runs = data.runsByProject?.[selectedWorkOrderNode.projectId] ?? [];
-    return runs
+    const filtered = runs
       .filter((run) => run.work_order_id === selectedWorkOrderNode.workOrderId)
-      .slice()
-      .sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .slice(0, 5);
-  }, [data.runsByProject, selectedWorkOrderNode?.projectId, selectedWorkOrderNode?.workOrderId]);
+      .slice();
+    filtered.sort((a, b) => {
+      if (securityHoldFirst) {
+        const aHold = a.status === "security_hold";
+        const bHold = b.status === "security_hold";
+        if (aHold !== bHold) return aHold ? -1 : 1;
+      }
+      return b.created_at.localeCompare(a.created_at);
+    });
+    return filtered.slice(0, 5);
+  }, [
+    data.runsByProject,
+    securityHoldFirst,
+    selectedWorkOrderNode?.projectId,
+    selectedWorkOrderNode?.workOrderId,
+  ]);
 
   useEffect(() => {
     if (!selectedWorkOrderNode) {
@@ -846,13 +860,31 @@ export function LiveOrbitalCanvas({
           </div>
 
           <div className={styles.detailSection}>
-            <div className={styles.detailLabel}>Recent runs</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <div className={styles.detailLabel}>Recent runs</div>
+              <button
+                type="button"
+                className="btnSecondary"
+                style={{ fontSize: 11, padding: "3px 8px" }}
+                onClick={() => setSecurityHoldFirst((prev) => !prev)}
+                title="Sort security hold runs to the top"
+              >
+                {securityHoldFirst ? "Security hold first" : "Sort by recency"}
+              </button>
+            </div>
             {recentRuns.length ? (
               <div className={styles.runList}>
                 {recentRuns.map((run) => (
                   <div key={run.id} className={styles.runItem}>
                     <span className={styles.runId}>{run.id}</span>
-                    <span className="badge">{formatRunStatus(run.status)}</span>
+                    <span
+                      className="badge"
+                      title={run.status === "security_hold" ? "Security hold - review required" : undefined}
+                    >
+                      {run.status === "security_hold"
+                        ? `⚠️ ${formatRunStatus(run.status)}`
+                        : formatRunStatus(run.status)}
+                    </span>
                   </div>
                 ))}
               </div>

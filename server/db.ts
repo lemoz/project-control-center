@@ -60,6 +60,7 @@ export type RunRow = {
     | "baseline_failed"
     | "building"
     | "waiting_for_input"
+    | "security_hold"
     | "ai_review"
     | "testing"
     | "you_review"

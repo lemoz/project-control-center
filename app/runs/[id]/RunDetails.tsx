@@ -17,11 +17,36 @@ function stringToTags(input: string): string[] {
     .filter(Boolean);
 }
 
+const GEMINI_MODEL = "gemini-2.5-flash-lite";
+
+function formatIncidentCategory(value: string | null | undefined): string {
+  if (!value) return "Unknown";
+  return value
+    .split("_")
+    .map((part) => (part ? `${part[0].toUpperCase()}${part.slice(1)}` : part))
+    .join(" ");
+}
+
+function extractFileCandidates(items: string[]): string[] {
+  const files: string[] = [];
+  const pattern = /[A-Za-z0-9_./-]+\.[A-Za-z0-9]+/g;
+  for (const entry of items) {
+    if (!entry) continue;
+    const matches = entry.match(pattern);
+    if (!matches) continue;
+    for (const match of matches) {
+      files.push(match);
+    }
+  }
+  return Array.from(new Set(files));
+}
+
 type RunStatus =
   | "queued"
   | "baseline_failed"
   | "building"
   | "waiting_for_input"
+  | "security_hold"
   | "ai_review"
   | "testing"
   | "you_review"
@@ -83,9 +108,26 @@ type SecurityIncidentSummary = {
   pattern_category: string;
   pattern_matched: string;
   gemini_verdict: string;
+  gemini_reason: string | null;
   timestamp: string;
   false_positive: number;
   user_resolution: string | null;
+  trigger_content: string;
+  agent_output_snippet: string | null;
+  wo_id: string | null;
+  wo_goal: string | null;
+  action_taken: string;
+};
+
+type WorkOrderScope = {
+  goal: string | null;
+  context: string[];
+  acceptance_criteria: string[];
+  non_goals: string[];
+};
+
+type WorkOrderScopeResponse = {
+  work_order: WorkOrderScope;
 };
 
 type RunDetails = {
@@ -146,6 +188,8 @@ function resolveRunPhase(status: RunStatus): RunPhase | null {
     case "building":
     case "waiting_for_input":
       return "builder";
+    case "security_hold":
+      return "reviewer";
     case "testing":
       return "test";
     case "ai_review":
@@ -172,6 +216,14 @@ export function RunDetails({ runId }: { runId: string }) {
   const [canceling, setCanceling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [falsePositive, setFalsePositive] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+  const [aborting, setAborting] = useState(false);
+  const [abortError, setAbortError] = useState<string | null>(null);
+  const [workOrderScope, setWorkOrderScope] = useState<WorkOrderScope | null>(null);
+  const [workOrderScopeError, setWorkOrderScopeError] = useState<string | null>(null);
+  const [workOrderScopeLoading, setWorkOrderScopeLoading] = useState(false);
+  const [notifiedIncidentId, setNotifiedIncidentId] = useState<string | null>(null);
   const [signalSummary, setSignalSummary] = useState("");
   const [signalTags, setSignalTags] = useState("");
   const [signalType, setSignalType] = useState("outcome");
@@ -232,6 +284,66 @@ export function RunDetails({ runId }: { runId: string }) {
     setFalsePositive(false);
   }, [incidentId]);
 
+  useEffect(() => {
+    if (!run || run.status !== "security_hold") {
+      setWorkOrderScope(null);
+      setWorkOrderScopeError(null);
+      setWorkOrderScopeLoading(false);
+      return;
+    }
+    if (!run.project_id || !run.work_order_id) return;
+
+    let active = true;
+    setWorkOrderScopeLoading(true);
+    setWorkOrderScopeError(null);
+    fetch(
+      `/api/repos/${encodeURIComponent(run.project_id)}/work-orders/${encodeURIComponent(
+        run.work_order_id
+      )}`,
+      { cache: "no-store" }
+    )
+      .then(async (res) => {
+        const json = (await res.json().catch(() => null)) as
+          | WorkOrderScopeResponse
+          | { error?: string }
+          | null;
+        if (!res.ok) {
+          throw new Error((json as { error?: string } | null)?.error || "failed");
+        }
+        if (!active) return;
+        setWorkOrderScope((json as WorkOrderScopeResponse).work_order);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setWorkOrderScopeError(err instanceof Error ? err.message : "failed to load scope");
+      })
+      .finally(() => {
+        if (!active) return;
+        setWorkOrderScopeLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [run, run?.project_id, run?.status, run?.work_order_id]);
+
+  useEffect(() => {
+    if (!run || run.status !== "security_hold") return;
+    if (!run.security_incident?.id) return;
+    if (notifiedIncidentId === run.security_incident.id) return;
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+
+    try {
+      new Notification("Security hold", {
+        body: `Run ${run.id.slice(0, 8)} needs review before continuing.`,
+      });
+      setNotifiedIncidentId(run.security_incident.id);
+    } catch {
+      // ignore notification failures
+    }
+  }, [notifiedIncidentId, run]);
+
   const notes: string[] = (() => {
     if (!run?.reviewer_notes) return [];
     try {
@@ -254,6 +366,8 @@ export function RunDetails({ runId }: { runId: string }) {
     : [];
   const canSubmit = !!escalation && missingInputs.length === 0 && !submitting;
   const canCancel = !!run && isActiveRunStatus(run.status);
+  const canResumeSecurityHold = run?.status === "security_hold" && !resuming && !aborting;
+  const canAbortSecurityHold = run?.status === "security_hold" && !aborting && !resuming;
   const canSubmitSignal = !!run && !!signalSummary.trim() && !signalSaving;
 
   const cancelRun = useCallback(async () => {
@@ -273,6 +387,44 @@ export function RunDetails({ runId }: { runId: string }) {
       setCanceling(false);
     }
   }, [canCancel, load, runId]);
+
+  const resumeSecurityHold = useCallback(async () => {
+    if (run?.status !== "security_hold") return;
+    setResuming(true);
+    setResumeError(null);
+    try {
+      const res = await fetch(
+        `/api/runs/${encodeURIComponent(runId)}/security-hold/resume`,
+        { method: "POST" }
+      );
+      const json = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok) throw new Error(json?.error || "failed to resume run");
+      await load();
+    } catch (e) {
+      setResumeError(e instanceof Error ? e.message : "failed to resume run");
+    } finally {
+      setResuming(false);
+    }
+  }, [load, run?.status, runId]);
+
+  const abortSecurityHold = useCallback(async () => {
+    if (run?.status !== "security_hold") return;
+    setAborting(true);
+    setAbortError(null);
+    try {
+      const res = await fetch(
+        `/api/runs/${encodeURIComponent(runId)}/security-hold/abort`,
+        { method: "POST" }
+      );
+      const json = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok) throw new Error(json?.error || "failed to abort run");
+      await load();
+    } catch (e) {
+      setAbortError(e instanceof Error ? e.message : "failed to abort run");
+    } finally {
+      setAborting(false);
+    }
+  }, [load, run?.status, runId]);
 
   const submitInputs = useCallback(async () => {
     if (!escalation) return;
@@ -349,6 +501,17 @@ export function RunDetails({ runId }: { runId: string }) {
 
   const sourceBranchValue = run?.source_branch?.trim();
   const sourceBranchLabel = sourceBranchValue ? "explicit" : "auto-detected";
+  const showSecurityHold = run?.status === "security_hold";
+  const incidentGoal = workOrderScope?.goal ?? securityIncident?.wo_goal ?? null;
+  const incidentScopeNotes = workOrderScope?.context ?? [];
+  const incidentFiles = extractFileCandidates(incidentScopeNotes);
+  const incidentVerdict = securityIncident?.gemini_verdict || "UNKNOWN";
+  const incidentReason = securityIncident?.gemini_reason?.trim() || "No reason provided.";
+  const fullVerdictJson = securityIncident
+    ? JSON.stringify({ verdict: incidentVerdict, reason: incidentReason })
+    : "";
+  const statusBadgeLabel =
+    run?.status === "security_hold" ? "⚠️ security hold" : run?.status;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -379,7 +542,14 @@ export function RunDetails({ runId }: { runId: string }) {
                 {canceling ? "Canceling…" : "Cancel Run"}
               </button>
             )}
-            {run?.status && <span className="badge">{run.status}</span>}
+            {run?.status && (
+              <span
+                className="badge"
+                title={run.status === "security_hold" ? "Security hold - review required" : undefined}
+              >
+                {statusBadgeLabel}
+              </span>
+            )}
             {run?.triggered_by === "autopilot" && (
               <span className="badge">autopilot</span>
             )}
@@ -430,6 +600,162 @@ export function RunDetails({ runId }: { runId: string }) {
           iteration={run.builder_iteration ?? run.iteration ?? null}
           isActive={isActive}
         />
+      )}
+
+      {showSecurityHold && (
+        <section className="card" style={{ border: "1px solid #fca5a5", background: "#fff7ed" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 16 }}>⚠️ SECURITY HOLD</div>
+              <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>
+                This run was automatically stopped due to a potential security concern detected by the real-time monitor.
+              </div>
+            </div>
+            <span className="badge" title="Security hold - review required">security_hold</span>
+          </div>
+
+          {securityIncident ? (
+            <div
+              style={{
+                marginTop: 12,
+                display: "grid",
+                gridTemplateColumns: "110px 1fr",
+                gap: "6px 12px",
+                fontSize: 13,
+              }}
+            >
+              <div className="muted">Type</div>
+              <div>{formatIncidentCategory(securityIncident.pattern_category)}</div>
+              <div className="muted">Pattern</div>
+              <div>
+                <code>{securityIncident.pattern_matched}</code>
+              </div>
+              <div className="muted">Verdict</div>
+              <div>
+                <span className="badge">{incidentVerdict}</span>
+              </div>
+              <div className="muted">Reason</div>
+              <div>{incidentReason}</div>
+            </div>
+          ) : (
+            <div className="muted" style={{ marginTop: 10 }}>
+              Incident details unavailable.
+            </div>
+          )}
+
+          <details style={{ marginTop: 12 }}>
+            <summary className="muted" style={{ cursor: "pointer", userSelect: "none" }}>
+              View Full Context
+            </summary>
+            <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 12 }}>
+              <div>
+                <div style={{ fontWeight: 700 }}>Work Order Scope</div>
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  Goal: {incidentGoal ?? "(not provided)"}
+                </div>
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  Files in scope: {incidentFiles.length ? incidentFiles.join(", ") : "(none listed)"}
+                </div>
+                {incidentScopeNotes.length > 0 && (
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    Scope notes:
+                    <ul style={{ marginTop: 4, marginBottom: 0, paddingLeft: 18 }}>
+                      {incidentScopeNotes.map((note, idx) => (
+                        <li key={`${note}-${idx}`}>{note}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {workOrderScopeLoading && (
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    Loading scope...
+                  </div>
+                )}
+                {!!workOrderScopeError && (
+                  <div className="error" style={{ marginTop: 4 }}>
+                    {workOrderScopeError}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div style={{ fontWeight: 700 }}>Agent output (last 2000 chars before incident)</div>
+                <pre
+                  style={{
+                    marginTop: 6,
+                    whiteSpace: "pre-wrap",
+                    fontSize: 12,
+                    lineHeight: 1.35,
+                    maxHeight: 240,
+                    overflow: "auto",
+                  }}
+                >
+                  {securityIncident?.agent_output_snippet || "(no output captured)"}
+                </pre>
+              </div>
+
+              <div>
+                <div style={{ fontWeight: 700 }}>Monitor analysis</div>
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  Timestamp: <code>{securityIncident?.timestamp ?? "unknown"}</code>
+                </div>
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  Pattern: <code>{securityIncident?.pattern_matched ?? "unknown"}</code>
+                </div>
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  Gemini Model: <code>{GEMINI_MODEL}</code>
+                </div>
+                {securityIncident?.trigger_content && (
+                  <div style={{ marginTop: 6 }}>
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      Matched content
+                    </div>
+                    <pre
+                      style={{
+                        marginTop: 6,
+                        whiteSpace: "pre-wrap",
+                        fontSize: 12,
+                        lineHeight: 1.35,
+                        maxHeight: 200,
+                        overflow: "auto",
+                      }}
+                    >
+                      {securityIncident.trigger_content}
+                    </pre>
+                  </div>
+                )}
+                {fullVerdictJson && (
+                  <div style={{ marginTop: 6 }}>
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      Full verdict
+                    </div>
+                    <pre
+                      style={{
+                        marginTop: 6,
+                        whiteSpace: "pre-wrap",
+                        fontSize: 12,
+                        lineHeight: 1.35,
+                      }}
+                    >
+                      {fullVerdictJson}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            </div>
+          </details>
+
+          <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="btn" onClick={() => void resumeSecurityHold()} disabled={!canResumeSecurityHold}>
+              {resuming ? "Resuming…" : "Resume Run"}
+            </button>
+            <button className="btnSecondary" onClick={() => void abortSecurityHold()} disabled={!canAbortSecurityHold}>
+              {aborting ? "Aborting…" : "Abort Run"}
+            </button>
+          </div>
+          {!!resumeError && <div className="error" style={{ marginTop: 8 }}>{resumeError}</div>}
+          {!!abortError && <div className="error" style={{ marginTop: 8 }}>{abortError}</div>}
+        </section>
       )}
 
       {!!run && (

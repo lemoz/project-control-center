@@ -70,6 +70,7 @@ import { buildFailureContext, classifyRunFailure } from "./failure_analysis.js";
 import {
   StreamMonitor,
   type StreamMonitorContext,
+  type StreamMonitorIncident,
 } from "./stream_monitor.js";
 
 const DEFAULT_MAX_BUILDER_ITERATIONS = 10;
@@ -1353,6 +1354,16 @@ type CodexExecResult = {
   escalationResolved: EscalationRecord | null;
 };
 
+class SecurityHoldError extends Error {
+  incident: StreamMonitorIncident;
+
+  constructor(incident: StreamMonitorIncident) {
+    super(`Security hold: ${incident.pattern} (${incident.category})`);
+    this.name = "SecurityHoldError";
+    this.incident = incident;
+  }
+}
+
 function buildCodexExecArgs(params: {
   sandbox: SandboxMode;
   schemaPath: string;
@@ -1411,6 +1422,9 @@ async function runCodexExec(params: {
     skipGitRepoCheck: params.skipGitRepoCheck,
     model: params.model,
   });
+  const monitorStartIndex = params.streamMonitor
+    ? params.streamMonitor.getIncidents().length
+    : 0;
 
   const cmd = params.cliPath?.trim() || getCodexCliPath();
 
@@ -1543,6 +1557,14 @@ async function runCodexExec(params: {
   }
 
   if (exitCode !== 0) {
+    const killIncident =
+      params.streamMonitor
+        ?.getIncidents()
+        .slice(monitorStartIndex)
+        .find((incident) => incident.action === "killed") ?? null;
+    if (killIncident) {
+      throw new SecurityHoldError(killIncident);
+    }
     throw new Error(`codex exec failed (exit ${exitCode})`);
   }
 
@@ -2843,6 +2865,9 @@ export async function runRun(runId: string) {
         try {
           builderExecResult = await runLocalBuilder();
         } catch (err) {
+          if (err instanceof SecurityHoldError) {
+            throw err;
+          }
           log(`Builder failed: ${String(err)}`);
           recordPhaseMetric({
             runId,
@@ -3121,6 +3146,9 @@ export async function runRun(runId: string) {
       try {
         await runLocalReviewer();
       } catch (err) {
+        if (err instanceof SecurityHoldError) {
+          throw err;
+        }
         log(`Reviewer failed: ${String(err)}`);
         recordReviewerOutcome("failed");
         updateRun(runId, {
@@ -3438,6 +3466,9 @@ export async function runRun(runId: string) {
       try {
         await runLocalMergeBuilder();
       } catch (err) {
+        if (err instanceof SecurityHoldError) {
+          throw err;
+        }
         const message = `merge builder failed: ${String(err)}`;
         log(`Merge builder failed: ${String(err)}`);
         finishMergeConflict(message, conflictDetails.conflictingRunId, conflictFiles);
@@ -3566,6 +3597,9 @@ export async function runRun(runId: string) {
       try {
         await runLocalMergeReviewer();
       } catch (err) {
+        if (err instanceof SecurityHoldError) {
+          throw err;
+        }
         const message = `merge reviewer failed: ${String(err)}`;
         log(`Merge reviewer failed: ${String(err)}`);
         finishMergeConflict(message, conflictDetails.conflictingRunId, conflictFiles);
@@ -3857,6 +3891,24 @@ export async function runRun(runId: string) {
       }
     }
   } catch (err) {
+    if (err instanceof SecurityHoldError) {
+      const incident = err.incident;
+      const incidentSummary = incident.pattern
+        ? `${incident.pattern} (${incident.category})`
+        : incident.category;
+      const reason = incident.reason?.trim();
+      log(
+        `[security-hold] ${incident.timestamp} ${incident.verdict} ${incident.patternId} ${reason || incidentSummary}`
+      );
+      updateRun(runId, {
+        status: "security_hold",
+        error: reason
+          ? `Security hold: ${reason}`
+          : `Security hold triggered (${incidentSummary})`,
+        finished_at: nowIso(),
+      });
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     log(`Unhandled error: ${message}`);
     updateRun(runId, {
@@ -3943,7 +3995,15 @@ export function enqueueCodexRun(
   }
 
   // Check for existing active runs for this WO
-  const ACTIVE_RUN_STATUSES = new Set(["queued", "building", "testing", "ai_review", "you_review", "waiting_for_input"]);
+  const ACTIVE_RUN_STATUSES = new Set([
+    "queued",
+    "building",
+    "testing",
+    "ai_review",
+    "you_review",
+    "waiting_for_input",
+    "security_hold",
+  ]);
   const existingRuns = listRunsByProject(projectId, 100);
   const activeRunForWO = existingRuns.find(
     (r) => r.work_order_id === workOrderId && ACTIVE_RUN_STATUSES.has(r.status)
@@ -4049,7 +4109,19 @@ export type RunDetails = Omit<RunRow, "escalation" | "eta_history"> & {
   iteration_history: RunIterationHistoryEntry[];
   security_incident: Pick<
     SecurityIncidentRow,
-    "id" | "pattern_category" | "pattern_matched" | "gemini_verdict" | "timestamp" | "false_positive" | "user_resolution"
+    | "id"
+    | "pattern_category"
+    | "pattern_matched"
+    | "gemini_verdict"
+    | "gemini_reason"
+    | "timestamp"
+    | "false_positive"
+    | "user_resolution"
+    | "trigger_content"
+    | "agent_output_snippet"
+    | "wo_id"
+    | "wo_goal"
+    | "action_taken"
   > | null;
 };
 
@@ -4091,14 +4163,20 @@ export function getRun(runId: string): RunDetails | null {
     tests_log_tail: tailFile(testsLogPath),
     iteration_history: iterationHistory,
     security_incident: incident
-      ? {
+        ? {
           id: incident.id,
           pattern_category: incident.pattern_category,
           pattern_matched: incident.pattern_matched,
           gemini_verdict: incident.gemini_verdict,
+          gemini_reason: incident.gemini_reason,
           timestamp: incident.timestamp,
           false_positive: incident.false_positive,
           user_resolution: incident.user_resolution,
+          trigger_content: incident.trigger_content,
+          agent_output_snippet: incident.agent_output_snippet,
+          wo_id: incident.wo_id,
+          wo_goal: incident.wo_goal,
+          action_taken: incident.action_taken,
         }
       : null,
   };
@@ -4212,6 +4290,14 @@ const CANCELABLE_RUN_STATUSES = new Set<RunRow["status"]>([
   "testing",
 ]);
 
+type SecurityHoldActionResult =
+  | { ok: true; run: RunRow }
+  | {
+      ok: false;
+      error: string;
+      code: "not_found" | "invalid_status" | "resume_failed" | "abort_failed";
+    };
+
 function killTargetForPid(pid: number): number {
   return process.platform === "win32" ? pid : -pid;
 }
@@ -4308,6 +4394,95 @@ export async function cancelRun(runId: string): Promise<CancelRunResult> {
   clearRunnerPid(run.run_dir);
   const finishedAt = nowIso();
   updateRun(runId, { status: "canceled", finished_at: finishedAt, error: "canceled by user" });
+  try {
+    updateIncidentResolution({ run_id: runId, resolution: "aborted" });
+  } catch {
+    // Ignore incident resolution failures.
+  }
+  return { ok: true, run: getRunById(runId) ?? run };
+}
+
+export function resumeSecurityHoldRun(runId: string): SecurityHoldActionResult {
+  const run = getRunById(runId);
+  if (!run) return { ok: false, error: "run not found", code: "not_found" };
+  if (run.status !== "security_hold") {
+    return {
+      ok: false,
+      error: `run status is ${run.status}, expected security_hold`,
+      code: "invalid_status",
+    };
+  }
+
+  const log = (line: string) => appendLog(run.log_path, line);
+  const pid = readRunnerPid(run.run_dir);
+  if (pid && isProcessAlive(killTargetForPid(pid))) {
+    return {
+      ok: false,
+      error: "runner still active for this run",
+      code: "resume_failed",
+    };
+  }
+
+  clearRunnerPid(run.run_dir);
+
+  updateRun(runId, {
+    status: "queued",
+    error: null,
+    finished_at: null,
+    failure_category: null,
+    failure_reason: null,
+    failure_detail: null,
+  });
+
+  let worker: ChildProcess | null = null;
+  try {
+    worker = spawnRunWorker(runId);
+    if (!worker.pid) {
+      throw new Error("runner worker pid unavailable");
+    }
+    writeRunnerPid(run.run_dir, worker.pid);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(`Failed to resume security hold: ${message}`);
+    updateRun(runId, {
+      status: "security_hold",
+      error: `resume failed: ${message}`,
+    });
+    return {
+      ok: false,
+      error: `failed to resume run: ${message}`,
+      code: "resume_failed",
+    };
+  }
+  try {
+    updateIncidentResolution({ run_id: runId, resolution: "resumed" });
+  } catch {
+    // Ignore incident resolution failures.
+  }
+  log("Run resumed from security hold.");
+  return { ok: true, run: getRunById(runId) ?? run };
+}
+
+export function abortSecurityHoldRun(runId: string): SecurityHoldActionResult {
+  const run = getRunById(runId);
+  if (!run) return { ok: false, error: "run not found", code: "not_found" };
+  if (run.status !== "security_hold") {
+    return {
+      ok: false,
+      error: `run status is ${run.status}, expected security_hold`,
+      code: "invalid_status",
+    };
+  }
+
+  const log = (line: string) => appendLog(run.log_path, line);
+  const finishedAt = nowIso();
+  clearRunnerPid(run.run_dir);
+  updateRun(runId, {
+    status: "failed",
+    error: "Run aborted after security hold.",
+    finished_at: finishedAt,
+  });
+  log("Run aborted after security hold.");
   try {
     updateIncidentResolution({ run_id: runId, resolution: "aborted" });
   } catch {
