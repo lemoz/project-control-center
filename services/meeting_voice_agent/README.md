@@ -33,6 +33,10 @@ Optional:
 - `ELEVENLABS_TTS_FORMAT`
 - `VOICE_AGENT_HOST` (default: `0.0.0.0`)
 - `VOICE_AGENT_PORT` (default: `8765`)
+- `MEETING_PROJECT_ID` (project id for notes/summary defaults)
+- `MEETING_ID` (meeting identifier for linking notes/action items)
+- `MEETING_TITLE` (optional meeting title metadata)
+- `MEETING_STARTED_AT` (ISO timestamp when meeting started)
 
 Audio config (Recall.ai defaults):
 - `VOICE_AUDIO_SAMPLE_RATE` (default: `16000`)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
@@ -9,6 +10,10 @@ import httpx
 LOG = logging.getLogger("meeting_voice_agent")
 
 ToolCallback = Callable[[Mapping[str, object] | None], Awaitable[object]]
+
+COMMUNICATION_INTENTS = {"request", "message", "suggestion", "status"}
+COMMUNICATION_SCOPES = {"project", "global", "user"}
+ACTION_ITEM_TYPES = {"work_order", "communication"}
 
 
 class PccClientError(RuntimeError):
@@ -136,9 +141,42 @@ class PccClient:
             json=data,
         )
 
+    async def create_work_order(
+        self,
+        *,
+        project_id: str,
+        data: Mapping[str, object],
+    ) -> object:
+        if not project_id or not project_id.strip():
+            raise PccClientError("Project id is required.")
+        return await self._request_json(
+            "POST",
+            f"/repos/{project_id}/work-orders",
+            json=data,
+        )
+
+    async def patch_work_order(
+        self,
+        *,
+        project_id: str,
+        work_order_id: str,
+        data: Mapping[str, object],
+    ) -> object:
+        if not project_id or not project_id.strip():
+            raise PccClientError("Project id is required.")
+        if not work_order_id or not work_order_id.strip():
+            raise PccClientError("Work order id is required.")
+        return await self._request_json(
+            "PATCH",
+            f"/repos/{project_id}/work-orders/{work_order_id}",
+            json=data,
+        )
+
 
 BASE_SYSTEM_PROMPT = """You are the Project Control Center meeting voice agent.
 You have read-only access to PCC status and context via tools. For actions, send a communication to the global session.
+Use save_meeting_notes for timestamped notes, create_action_item for follow-ups, and send_meeting_summary with intent "status" when the meeting ends.
+Always include the meeting id so notes and action items stay linked.
 Keep replies short, confirm actions, and ask clarifying questions when needed.
 """
 
@@ -308,6 +346,118 @@ PCC_TOOL_DEFINITIONS = [
             "required": ["project_id", "summary"],
         },
     },
+    {
+        "name": "save_meeting_notes",
+        "description": "Save a timestamped meeting note to PCC communications.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project id."},
+                "meeting_id": {"type": "string", "description": "Meeting id."},
+                "note": {"type": "string", "description": "Note to store."},
+                "summary": {
+                    "type": "string",
+                    "description": "Optional short summary for the note.",
+                },
+                "meeting_title": {"type": "string", "description": "Meeting title."},
+                "meeting_started_at": {
+                    "type": "string",
+                    "description": "ISO timestamp when the meeting started.",
+                },
+                "timestamp": {
+                    "type": "string",
+                    "description": "ISO timestamp for the note; defaults to now.",
+                },
+                "to_scope": {
+                    "type": "string",
+                    "enum": ["project", "global", "user"],
+                },
+                "to_project_id": {
+                    "type": "string",
+                    "description": "Required when to_scope=project.",
+                },
+            },
+            "required": ["project_id", "meeting_id", "note"],
+        },
+    },
+    {
+        "name": "create_action_item",
+        "description": "Create a meeting action item as a Work Order or communication.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project id."},
+                "meeting_id": {"type": "string", "description": "Meeting id."},
+                "title": {"type": "string", "description": "Action item title."},
+                "description": {
+                    "type": "string",
+                    "description": "Optional details for the action item.",
+                },
+                "action_type": {
+                    "type": "string",
+                    "enum": ["work_order", "communication"],
+                    "default": "work_order",
+                },
+                "priority": {
+                    "type": "number",
+                    "description": "Optional work order priority (1-5).",
+                },
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "meeting_title": {"type": "string", "description": "Meeting title."},
+                "meeting_started_at": {
+                    "type": "string",
+                    "description": "ISO timestamp when the meeting started.",
+                },
+                "intent": {
+                    "type": "string",
+                    "enum": ["request", "message", "suggestion", "status"],
+                    "description": "Intent for communication action items.",
+                },
+                "to_scope": {
+                    "type": "string",
+                    "enum": ["project", "global", "user"],
+                },
+                "to_project_id": {
+                    "type": "string",
+                    "description": "Required when to_scope=project.",
+                },
+            },
+            "required": ["project_id", "meeting_id", "title"],
+        },
+    },
+    {
+        "name": "send_meeting_summary",
+        "description": "Send the post-meeting summary as a status communication.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project id."},
+                "meeting_id": {"type": "string", "description": "Meeting id."},
+                "summary": {"type": "string", "description": "Meeting summary text."},
+                "meeting_title": {"type": "string", "description": "Meeting title."},
+                "meeting_started_at": {
+                    "type": "string",
+                    "description": "ISO timestamp when the meeting started.",
+                },
+                "meeting_ended_at": {
+                    "type": "string",
+                    "description": "ISO timestamp when the meeting ended.",
+                },
+                "decisions": {"type": "array", "items": {"type": "string"}},
+                "action_items": {"type": "array", "items": {"type": "string"}},
+                "next_steps": {"type": "array", "items": {"type": "string"}},
+                "to_scope": {
+                    "type": "string",
+                    "enum": ["project", "global", "user"],
+                },
+                "to_project_id": {
+                    "type": "string",
+                    "description": "Required when to_scope=project.",
+                },
+            },
+            "required": ["project_id", "meeting_id", "summary"],
+        },
+    },
 ]
 
 
@@ -360,11 +510,290 @@ def create_tool_callbacks(client: PccClient) -> dict[str, ToolCallback]:
         except PccClientError as exc:
             return {"error": str(exc)}
 
+    async def save_meeting_notes_tool(params: Mapping[str, object] | None) -> object:
+        if not params:
+            return {"error": "Meeting note details are required."}
+        project_id = _coerce_str(_get_param(params, "project_id", "project"))
+        meeting_id = _coerce_str(_get_param(params, "meeting_id", "meeting"))
+        note = _coerce_str(_get_param(params, "note", "text"))
+        if not project_id or not meeting_id or not note:
+            return {"error": "project_id, meeting_id, and note are required."}
+
+        meeting_title = _coerce_str(
+            _get_param(params, "meeting_title", "meeting_name", "title")
+        )
+        meeting_started_at = _coerce_str(
+            _get_param(params, "meeting_started_at", "meeting_start")
+        )
+        timestamp = _coerce_str(_get_param(params, "timestamp", "note_timestamp"))
+        recorded_at = timestamp or _iso_now()
+
+        summary = _coerce_str(_get_param(params, "summary"))
+        if not summary:
+            snippet = _truncate_text(note.replace("\n", " ").strip(), 96)
+            if meeting_title:
+                summary = f"Meeting note: {meeting_title} - {snippet}"
+            else:
+                summary = f"Meeting note ({meeting_id}): {snippet}"
+
+        body_lines = [f"Meeting ID: {meeting_id}"]
+        if meeting_title:
+            body_lines.append(f"Meeting title: {meeting_title}")
+        if meeting_started_at:
+            body_lines.append(f"Meeting started: {meeting_started_at}")
+        body_lines.append(f"Note timestamp: {recorded_at}")
+        body_lines.append("")
+        body_lines.append(note)
+        body = "\n".join(body_lines)
+
+        payload = _build_meeting_payload(
+            meeting_id=meeting_id,
+            meeting_title=meeting_title,
+            meeting_started_at=meeting_started_at,
+            meeting_ended_at=None,
+            recorded_at=recorded_at,
+            kind="note",
+        )
+        payload["note"] = note
+        payload["note_timestamp"] = recorded_at
+
+        try:
+            to_scope, to_project_id = _resolve_to_scope(
+                params, default_scope="project", project_id=project_id
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+        try:
+            return await client.send_communication(
+                project_id=project_id,
+                intent="message",
+                summary=summary,
+                body=body,
+                to_scope=to_scope,
+                to_project_id=to_project_id,
+                payload=payload,
+            )
+        except PccClientError as exc:
+            return {"error": str(exc)}
+
+    async def create_action_item_tool(params: Mapping[str, object] | None) -> object:
+        if not params:
+            return {"error": "Action item details are required."}
+        project_id = _coerce_str(_get_param(params, "project_id", "project"))
+        meeting_id = _coerce_str(_get_param(params, "meeting_id", "meeting"))
+        title = _coerce_str(_get_param(params, "title", "summary"))
+        if not project_id or not meeting_id or not title:
+            return {"error": "project_id, meeting_id, and title are required."}
+
+        action_type = _coerce_str(_get_param(params, "action_type", "type", "mode"))
+        action_type = action_type or "work_order"
+        if action_type not in ACTION_ITEM_TYPES:
+            return {"error": "action_type must be work_order or communication."}
+
+        meeting_title = _coerce_str(_get_param(params, "meeting_title", "meeting_name"))
+        meeting_started_at = _coerce_str(
+            _get_param(params, "meeting_started_at", "meeting_start")
+        )
+        description = _coerce_str(_get_param(params, "description", "details", "body"))
+        recorded_at = _iso_now()
+
+        payload = _build_meeting_payload(
+            meeting_id=meeting_id,
+            meeting_title=meeting_title,
+            meeting_started_at=meeting_started_at,
+            meeting_ended_at=None,
+            recorded_at=recorded_at,
+            kind="action_item",
+        )
+        payload["action_title"] = title
+        if description:
+            payload["action_description"] = description
+
+        if action_type == "communication":
+            intent = _coerce_str(_get_param(params, "intent")) or "request"
+            if intent not in COMMUNICATION_INTENTS:
+                return {
+                    "error": "intent must be request, message, suggestion, or status."
+                }
+            summary = _coerce_str(_get_param(params, "summary"))
+            if not summary:
+                summary = f"Action item ({meeting_id}): {title}"
+            body_lines = [f"Meeting ID: {meeting_id}"]
+            if meeting_title:
+                body_lines.append(f"Meeting title: {meeting_title}")
+            if meeting_started_at:
+                body_lines.append(f"Meeting started: {meeting_started_at}")
+            body_lines.append(f"Action item: {title}")
+            if description:
+                body_lines.append(f"Details: {description}")
+            body = "\n".join(body_lines)
+
+            try:
+                to_scope, to_project_id = _resolve_to_scope(
+                    params, default_scope="global", project_id=project_id
+                )
+            except ValueError as exc:
+                return {"error": str(exc)}
+
+            try:
+                communication = await client.send_communication(
+                    project_id=project_id,
+                    intent=intent,
+                    summary=summary,
+                    body=body,
+                    to_scope=to_scope,
+                    to_project_id=to_project_id,
+                    payload=payload,
+                )
+                return {"action_type": "communication", "communication": communication}
+            except PccClientError as exc:
+                return {"error": str(exc)}
+
+        priority = _coerce_int(_get_param(params, "priority"))
+        tags = _coerce_str_list(_get_param(params, "tags"))
+        if "meeting-action-item" not in tags:
+            tags.append("meeting-action-item")
+
+        create_payload: dict[str, object] = {"title": title, "tags": tags}
+        if priority is not None:
+            create_payload["priority"] = priority
+
+        try:
+            created = await client.create_work_order(
+                project_id=project_id,
+                data=create_payload,
+            )
+        except PccClientError as exc:
+            return {"error": str(exc)}
+        if not isinstance(created, Mapping):
+            return {"error": "PCC response missing work order details."}
+        work_order_id = _coerce_str(created.get("id"))
+        if not work_order_id:
+            return {"error": "PCC response missing work order id."}
+
+        context_lines = [f"Origin: Meeting {meeting_id}"]
+        if meeting_title:
+            context_lines.append(f"Meeting title: {meeting_title}")
+        if meeting_started_at:
+            context_lines.append(f"Meeting started: {meeting_started_at}")
+        if description:
+            context_lines.append(f"Action detail: {description}")
+
+        patch_payload: dict[str, object] = {"context": context_lines}
+        if description:
+            patch_payload["goal"] = description
+
+        try:
+            updated = await client.patch_work_order(
+                project_id=project_id,
+                work_order_id=work_order_id,
+                data=patch_payload,
+            )
+            return {"action_type": "work_order", "work_order": updated}
+        except PccClientError as exc:
+            return {"error": str(exc)}
+
+    async def send_meeting_summary_tool(params: Mapping[str, object] | None) -> object:
+        if not params:
+            return {"error": "Meeting summary details are required."}
+        project_id = _coerce_str(_get_param(params, "project_id", "project"))
+        meeting_id = _coerce_str(_get_param(params, "meeting_id", "meeting"))
+        summary_text = _coerce_str(_get_param(params, "summary", "meeting_summary"))
+        if not project_id or not meeting_id or not summary_text:
+            return {"error": "project_id, meeting_id, and summary are required."}
+
+        meeting_title = _coerce_str(
+            _get_param(params, "meeting_title", "meeting_name", "title")
+        )
+        meeting_started_at = _coerce_str(
+            _get_param(params, "meeting_started_at", "meeting_start")
+        )
+        meeting_ended_at = _coerce_str(
+            _get_param(params, "meeting_ended_at", "meeting_end")
+        )
+        recorded_at = _iso_now()
+
+        decisions = _coerce_str_list(_get_param(params, "decisions"))
+        action_items = _coerce_str_list(_get_param(params, "action_items"))
+        next_steps = _coerce_str_list(_get_param(params, "next_steps"))
+
+        communication_summary = _coerce_str(_get_param(params, "summary_title"))
+        if not communication_summary:
+            if meeting_title:
+                communication_summary = f"Meeting summary: {meeting_title}"
+            else:
+                communication_summary = f"Meeting summary ({meeting_id})"
+
+        body_lines = [f"Meeting ID: {meeting_id}"]
+        if meeting_title:
+            body_lines.append(f"Meeting title: {meeting_title}")
+        if meeting_started_at:
+            body_lines.append(f"Meeting started: {meeting_started_at}")
+        if meeting_ended_at:
+            body_lines.append(f"Meeting ended: {meeting_ended_at}")
+        body_lines.append("")
+        body_lines.append("Summary:")
+        body_lines.append(summary_text)
+
+        if decisions:
+            body_lines.append("")
+            body_lines.append("Decisions:")
+            body_lines.extend([f"- {item}" for item in decisions])
+        if action_items:
+            body_lines.append("")
+            body_lines.append("Action items:")
+            body_lines.extend([f"- {item}" for item in action_items])
+        if next_steps:
+            body_lines.append("")
+            body_lines.append("Next steps:")
+            body_lines.extend([f"- {item}" for item in next_steps])
+        body = "\n".join(body_lines)
+
+        payload = _build_meeting_payload(
+            meeting_id=meeting_id,
+            meeting_title=meeting_title,
+            meeting_started_at=meeting_started_at,
+            meeting_ended_at=meeting_ended_at,
+            recorded_at=recorded_at,
+            kind="summary",
+        )
+        payload["summary"] = summary_text
+        if decisions:
+            payload["decisions"] = decisions
+        if action_items:
+            payload["action_items"] = action_items
+        if next_steps:
+            payload["next_steps"] = next_steps
+
+        try:
+            to_scope, to_project_id = _resolve_to_scope(
+                params, default_scope="global", project_id=project_id
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+        try:
+            return await client.send_communication(
+                project_id=project_id,
+                intent="status",
+                summary=communication_summary,
+                body=body,
+                to_scope=to_scope,
+                to_project_id=to_project_id,
+                payload=payload,
+            )
+        except PccClientError as exc:
+            return {"error": str(exc)}
+
     return {
         "get_global_context": get_global_context_tool,
         "get_project_status": get_project_status_tool,
         "get_shift_context": get_shift_context_tool,
         "send_communication": send_communication_tool,
+        "save_meeting_notes": save_meeting_notes_tool,
+        "create_action_item": create_action_item_tool,
+        "send_meeting_summary": send_meeting_summary_tool,
     }
 
 
@@ -518,11 +947,89 @@ def _normalize(value: str) -> str:
     return value.strip().lower()
 
 
+def _iso_now() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    clipped = text[: max(0, limit - 3)].rstrip()
+    return f"{clipped}..."
+
+
+def _coerce_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def _coerce_str(value: object) -> str | None:
     if isinstance(value, str):
         trimmed = value.strip()
         return trimmed if trimmed else None
     return None
+
+
+def _coerce_str_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [
+            item.strip()
+            for item in value
+            if isinstance(item, str) and item.strip()
+        ]
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return []
+
+
+def _build_meeting_payload(
+    *,
+    meeting_id: str,
+    meeting_title: str | None,
+    meeting_started_at: str | None,
+    meeting_ended_at: str | None,
+    recorded_at: str,
+    kind: str,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "meeting_id": meeting_id,
+        "recorded_at": recorded_at,
+        "kind": kind,
+    }
+    if meeting_title:
+        payload["meeting_title"] = meeting_title
+    if meeting_started_at:
+        payload["meeting_started_at"] = meeting_started_at
+    if meeting_ended_at:
+        payload["meeting_ended_at"] = meeting_ended_at
+    return payload
+
+
+def _resolve_to_scope(
+    params: Mapping[str, object] | None,
+    *,
+    default_scope: str,
+    project_id: str,
+) -> tuple[str, str | None]:
+    to_scope = _coerce_str(_get_param(params, "to_scope")) or default_scope
+    if to_scope not in COMMUNICATION_SCOPES:
+        raise ValueError("to_scope must be project, global, or user.")
+    to_project_id = _coerce_str(_get_param(params, "to_project_id"))
+    if to_scope == "project" and not to_project_id:
+        to_project_id = project_id
+    return to_scope, to_project_id
 
 
 def _get_param(params: Mapping[str, object] | None, *keys: str) -> object | None:
