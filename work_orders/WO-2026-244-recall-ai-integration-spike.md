@@ -25,7 +25,7 @@ tags:
   - voice
   - spike
 estimate_hours: 3
-status: parked
+status: ready
 created_at: 2026-01-29
 updated_at: 2026-01-29
 depends_on: []

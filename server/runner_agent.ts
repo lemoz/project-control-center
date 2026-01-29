@@ -320,6 +320,8 @@ function removePathIfExists(targetPath: string) {
 }
 
 function safeSymlink(target: string, linkPath: string) {
+  // Prevent self-referential symlinks (target === linkPath)
+  if (path.resolve(target) === path.resolve(linkPath)) return;
   removePathIfExists(linkPath);
   fs.symlinkSync(target, linkPath, "dir");
 }
@@ -990,6 +992,22 @@ function ensureNodeModulesSymlink(
   let linkedCount = 0;
   const source = path.join(repoPath, "node_modules");
   const dest = path.join(worktreePath, "node_modules");
+
+  // Repair self-referential node_modules symlink on the source repo
+  try {
+    const srcStat = fs.lstatSync(source);
+    if (srcStat.isSymbolicLink()) {
+      const linkTarget = fs.readlinkSync(source);
+      const resolved = path.resolve(path.dirname(source), linkTarget);
+      if (resolved === path.resolve(source)) {
+        log("Detected self-referential node_modules symlink in repo — removing.");
+        fs.rmSync(source, { force: true });
+      }
+    }
+  } catch {
+    // source doesn't exist or can't be read — fine, will skip linking
+  }
+
   if (fs.existsSync(source)) {
     safeSymlink(source, dest);
     linkedCount += 1;

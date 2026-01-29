@@ -9,7 +9,7 @@ context:
   - "Shift context endpoint: GET /projects/{id}/shift-context"
   - "Communications endpoint: POST /projects/{id}/communications"
   - "Repos endpoint: GET /repos"
-  - "Failed run has a working PccClient class to reference"
+  - Failed run has a working PccClient class to reference
 acceptance_criteria:
   - PccClient class with async methods: get_global_context, get_project_status, get_shift_context, send_communication
   - Tool definitions as structured dicts compatible with Claude tool_use format
@@ -25,7 +25,7 @@ tags:
   - voice
   - pipecat
 estimate_hours: 1
-status: ready
+status: you_review
 depends_on:
   - WO-2026-252
 created_at: 2026-01-29
