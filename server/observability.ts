@@ -281,6 +281,20 @@ export function listActiveShifts(limit = 10): ActiveShiftResponse[] {
   });
 }
 
+function pickLastAssistantLine(lines: string[]): string {
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const trimmed = lines[i]?.trim();
+    if (!trimmed) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      if (parsed.type === "assistant") return trimmed;
+    } catch {
+      continue;
+    }
+  }
+  return "";
+}
+
 function getActiveGlobalShiftActivity(): string {
   const shift = getActiveGlobalShift();
   if (!shift) return "";
@@ -291,8 +305,8 @@ function getActiveGlobalShiftActivity(): string {
     shift.id,
     "agent.log"
   );
-  const tail = tailLines(logPath, 8);
-  return pickLastActivity(tail.lines);
+  const tail = tailLines(logPath, 20);
+  return pickLastAssistantLine(tail.lines);
 }
 
 export function getHeartbeatResponse(limit = 20): HeartbeatResponse {

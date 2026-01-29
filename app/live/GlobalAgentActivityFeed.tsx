@@ -282,7 +282,7 @@ function formatCurrentActivity(rawLine: string): string {
       }
     }
 
-    // Assistant message with content blocks containing tool_use
+    // Assistant message with content blocks
     if (
       record.type === "assistant" &&
       typeof record.message === "object" &&
@@ -290,6 +290,7 @@ function formatCurrentActivity(rawLine: string): string {
     ) {
       const message = record.message as Record<string, unknown>;
       if (Array.isArray(message.content)) {
+        // Prefer tool_use blocks first
         for (const block of message.content) {
           if (
             typeof block === "object" &&
@@ -308,6 +309,20 @@ function formatCurrentActivity(rawLine: string): string {
                   ? (b.input as Record<string, unknown>)
                   : {};
               return extractToolSummary(toolName, input);
+            }
+          }
+        }
+        // Fall back to text content (agent thinking/reasoning)
+        for (const block of message.content) {
+          if (
+            typeof block === "object" &&
+            block !== null &&
+            !Array.isArray(block) &&
+            (block as Record<string, unknown>).type === "text"
+          ) {
+            const text = (block as Record<string, unknown>).text;
+            if (typeof text === "string" && text.trim()) {
+              return truncateStr(text.trim(), 80);
             }
           }
         }
