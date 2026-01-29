@@ -1,5 +1,31 @@
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import type { GlobalContextResponse, GlobalProjectSummary } from "../global_context.js";
 import { isWithinQuietHours } from "../user_preferences.js";
+
+function loadPccSkill(): string {
+  const skillPaths = [
+    path.join(process.env.HOME ?? "", ".claude", "skills", "pcc", "SKILL.md"),
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "prompts", "pcc_skill.md"),
+  ];
+  for (const p of skillPaths) {
+    try {
+      return fs.readFileSync(p, "utf8");
+    } catch {
+      continue;
+    }
+  }
+  return "";
+}
+
+let cachedPccSkill: string | null = null;
+function getPccSkill(): string {
+  if (cachedPccSkill === null) {
+    cachedPccSkill = loadPccSkill();
+  }
+  return cachedPccSkill;
+}
 
 const DEFAULT_MAX_PROJECTS = 6;
 const MAX_PROJECTS_CAP = 30;
@@ -247,6 +273,13 @@ export function buildGlobalDecisionPrompt(
   const lines: string[] = [];
   lines.push("You are the Global Agent managing multiple projects.");
   lines.push("");
+  const pccSkill = getPccSkill();
+  if (pccSkill) {
+    lines.push("## PCC Reference");
+    lines.push("Use the following API reference when you need to interact with PCC directly via curl:");
+    lines.push(pccSkill);
+    lines.push("");
+  }
   if (options.session) {
     lines.push("## Session Briefing");
     lines.push(`Session ID: ${options.session.session_id}`);
