@@ -316,10 +316,12 @@ export function buildGlobalDecisionPrompt(
   lines.push("3. CREATE_PROJECT - Spin up new project (specify details)");
   lines.push("4. REPORT - Surface something to user (specify message)");
   lines.push("5. WAIT - Nothing urgent, check back later");
+  lines.push("6. RETRY_RUN - Re-queue a failed/canceled run (specify project_id + work_order_id)");
+  lines.push("7. REVIEW_RUN - Approve or reject a run in ai_review (specify run_id + verdict: approve|reject)");
+  lines.push("8. ACKNOWLEDGE_COMM - Acknowledge or respond to a communication (specify communication_id, optional response)");
+  lines.push("9. UPDATE_WO - Change work order status (specify project_id + work_order_id + status)");
   lines.push("");
-  lines.push("Respond with JSON:");
-  lines.push("```json");
-  lines.push('{ "action": "DELEGATE|RESOLVE|CREATE_PROJECT|REPORT|WAIT", "project_id": "", "escalation_id": "", "resolution": {}, "project": {}, "message": "", "reason": "" }');
-  lines.push("```");
+  lines.push("Respond with ONLY a JSON object (no markdown, no explanation):");
+  lines.push('{ "action": "...", "project_id": "", "work_order_id": "", "run_id": "", "escalation_id": "", "resolution": {}, "communication_id": "", "response": "", "verdict": "", "status": "", "project": {}, "message": "", "reason": "" }');
   return lines.join("\n");
 }

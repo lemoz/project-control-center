@@ -7,11 +7,15 @@ import {
   expireStaleGlobalShifts,
   findProjectById,
   getEscalationById,
+  getProjectCommunicationById,
+  getRunById,
   startGlobalShift,
   startShift,
   updateEscalation,
   updateGlobalShift,
+  updateProjectCommunication,
   updateProjectLifecycleStatus,
+  updateRun,
   type CreateGlobalShiftHandoffInput,
   type GlobalShiftHandoff,
   type GlobalShiftRow,
@@ -29,8 +33,9 @@ import {
 } from "./prompts/global_decision.js";
 import { applyProjectTemplate, getProjectTemplate } from "./project_templates.js";
 import { syncAndListRepoSummaries, invalidateDiscoveryCache } from "./projects_catalog.js";
-import { provideRunInput } from "./runner_agent.js";
+import { enqueueCodexRun, provideRunInput } from "./runner_agent.js";
 import { stableRepoId } from "./utils.js";
+import { patchWorkOrder } from "./work_orders.js";
 import {
   getEscalationDeferral,
   getLastGlobalReportAt,
@@ -52,7 +57,32 @@ export type GlobalAgentDecision =
     }
   | { action: "CREATE_PROJECT"; project: CreateProjectInput; reason?: string }
   | { action: "REPORT"; message: string; reason?: string }
-  | { action: "WAIT"; reason?: string; retry_after_minutes?: number };
+  | { action: "WAIT"; reason?: string; retry_after_minutes?: number }
+  | {
+      action: "RETRY_RUN";
+      project_id: string;
+      work_order_id: string;
+      reason?: string;
+    }
+  | {
+      action: "REVIEW_RUN";
+      run_id: string;
+      verdict: "approve" | "reject";
+      reason?: string;
+    }
+  | {
+      action: "ACKNOWLEDGE_COMM";
+      communication_id: string;
+      response?: string;
+      reason?: string;
+    }
+  | {
+      action: "UPDATE_WO";
+      project_id: string;
+      work_order_id: string;
+      status: string;
+      reason?: string;
+    };
 
 export type CreateProjectInput = {
   path: string;
@@ -74,6 +104,9 @@ type GlobalAgentActionResult = {
     project_name?: string;
     escalation_id?: string;
     escalation_type?: string;
+    run_id?: string;
+    work_order_id?: string;
+    communication_id?: string;
   };
 };
 
@@ -217,6 +250,37 @@ function normalizeDecision(value: unknown): GlobalAgentDecision | null {
           ? Math.trunc(record.retry_after_minutes)
           : undefined;
       return { action: "WAIT", reason, retry_after_minutes: retryRaw };
+    }
+    case "RETRY_RUN": {
+      const projectId = readString(record, "project_id");
+      const workOrderId = readString(record, "work_order_id");
+      if (!projectId || !workOrderId) return null;
+      const reason = readString(record, "reason") ?? undefined;
+      return { action: "RETRY_RUN", project_id: projectId, work_order_id: workOrderId, reason };
+    }
+    case "REVIEW_RUN": {
+      const runId = readString(record, "run_id");
+      if (!runId) return null;
+      const verdictRaw = readString(record, "verdict")?.toLowerCase();
+      const verdict = verdictRaw === "approve" || verdictRaw === "reject" ? verdictRaw : null;
+      if (!verdict) return null;
+      const reason = readString(record, "reason") ?? undefined;
+      return { action: "REVIEW_RUN", run_id: runId, verdict, reason };
+    }
+    case "ACKNOWLEDGE_COMM": {
+      const communicationId = readString(record, "communication_id");
+      if (!communicationId) return null;
+      const response = readString(record, "response") ?? undefined;
+      const reason = readString(record, "reason") ?? undefined;
+      return { action: "ACKNOWLEDGE_COMM", communication_id: communicationId, response, reason };
+    }
+    case "UPDATE_WO": {
+      const projectId = readString(record, "project_id");
+      const workOrderId = readString(record, "work_order_id");
+      const status = readString(record, "status");
+      if (!projectId || !workOrderId || !status) return null;
+      const reason = readString(record, "reason") ?? undefined;
+      return { action: "UPDATE_WO", project_id: projectId, work_order_id: workOrderId, status, reason };
     }
     default:
       return null;
@@ -606,6 +670,171 @@ async function executeDecision(
         needsUserInput: true,
       });
       return { action: "REPORT", ok: true, detail: "reported to user" };
+    }
+    case "RETRY_RUN": {
+      const project = findProjectById(decision.project_id);
+      if (!project) {
+        return {
+          action: "RETRY_RUN",
+          ok: false,
+          detail: "project not found",
+          context: { project_id: decision.project_id },
+        };
+      }
+      try {
+        const run = enqueueCodexRun(
+          project.id,
+          decision.work_order_id,
+          undefined,
+          "autopilot"
+        );
+        return {
+          action: "RETRY_RUN",
+          ok: true,
+          detail: `queued run ${run.id} for ${decision.work_order_id} on ${project.name}`,
+          context: {
+            project_id: project.id,
+            project_name: project.name,
+            run_id: run.id,
+            work_order_id: decision.work_order_id,
+          },
+        };
+      } catch (err) {
+        return {
+          action: "RETRY_RUN",
+          ok: false,
+          detail: err instanceof Error ? err.message : "failed to enqueue run",
+          context: {
+            project_id: project.id,
+            project_name: project.name,
+            work_order_id: decision.work_order_id,
+          },
+        };
+      }
+    }
+    case "REVIEW_RUN": {
+      const run = getRunById(decision.run_id);
+      if (!run) {
+        return {
+          action: "REVIEW_RUN",
+          ok: false,
+          detail: "run not found",
+          context: { run_id: decision.run_id },
+        };
+      }
+      if (run.status !== "ai_review") {
+        return {
+          action: "REVIEW_RUN",
+          ok: false,
+          detail: `run not in ai_review (current: ${run.status})`,
+          context: { run_id: decision.run_id, project_id: run.project_id },
+        };
+      }
+      const newStatus = decision.verdict === "approve" ? "you_review" : "failed";
+      const updated = updateRun(decision.run_id, {
+        status: newStatus,
+        reviewer_verdict: decision.verdict === "approve" ? "approved" : "changes_requested",
+        reviewer_notes: decision.reason ?? undefined,
+      });
+      if (!updated) {
+        return {
+          action: "REVIEW_RUN",
+          ok: false,
+          detail: "failed to update run",
+          context: { run_id: decision.run_id, project_id: run.project_id },
+        };
+      }
+      const project = findProjectById(run.project_id);
+      return {
+        action: "REVIEW_RUN",
+        ok: true,
+        detail: `${decision.verdict}d run ${decision.run_id} → ${newStatus}`,
+        context: {
+          run_id: decision.run_id,
+          project_id: run.project_id,
+          project_name: project?.name,
+          work_order_id: run.work_order_id,
+        },
+      };
+    }
+    case "ACKNOWLEDGE_COMM": {
+      const comm = getProjectCommunicationById(decision.communication_id);
+      if (!comm) {
+        return {
+          action: "ACKNOWLEDGE_COMM",
+          ok: false,
+          detail: "communication not found",
+          context: { communication_id: decision.communication_id },
+        };
+      }
+      const now = new Date().toISOString();
+      const commPatch: Parameters<typeof updateProjectCommunication>[1] = {
+        read_at: comm.read_at ?? now,
+        acknowledged_at: now,
+      };
+      if (decision.response) {
+        commPatch.status = "resolved";
+        commPatch.resolution = decision.response;
+        commPatch.resolved_at = now;
+        commPatch.claimed_by = GLOBAL_ESCALATION_CLAIMANT;
+      }
+      const updated = updateProjectCommunication(decision.communication_id, commPatch);
+      if (!updated) {
+        return {
+          action: "ACKNOWLEDGE_COMM",
+          ok: false,
+          detail: "failed to update communication",
+          context: { communication_id: decision.communication_id },
+        };
+      }
+      return {
+        action: "ACKNOWLEDGE_COMM",
+        ok: true,
+        detail: decision.response
+          ? `resolved comm ${decision.communication_id}`
+          : `acknowledged comm ${decision.communication_id}`,
+        context: {
+          communication_id: decision.communication_id,
+          project_id: comm.project_id,
+        },
+      };
+    }
+    case "UPDATE_WO": {
+      const project = findProjectById(decision.project_id);
+      if (!project) {
+        return {
+          action: "UPDATE_WO",
+          ok: false,
+          detail: "project not found",
+          context: { project_id: decision.project_id },
+        };
+      }
+      try {
+        patchWorkOrder(project.path, decision.work_order_id, {
+          status: decision.status as any,
+        });
+        return {
+          action: "UPDATE_WO",
+          ok: true,
+          detail: `updated ${decision.work_order_id} → ${decision.status}`,
+          context: {
+            project_id: project.id,
+            project_name: project.name,
+            work_order_id: decision.work_order_id,
+          },
+        };
+      } catch (err) {
+        return {
+          action: "UPDATE_WO",
+          ok: false,
+          detail: err instanceof Error ? err.message : "failed to update WO",
+          context: {
+            project_id: project.id,
+            project_name: project.name,
+            work_order_id: decision.work_order_id,
+          },
+        };
+      }
     }
     case "WAIT": {
       return { action: "WAIT", ok: true, detail: decision.reason ?? "waiting" };
