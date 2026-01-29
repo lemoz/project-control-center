@@ -34,8 +34,19 @@ export const e2ePaths = {
 };
 
 export function resetTmpDir(): void {
-  if (fs.existsSync(tmpDir)) {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  const preservedDbFiles = new Set<string>();
+  for (const filePath of [dbPath, dbSnapshotPath]) {
+    const base = path.basename(filePath);
+    preservedDbFiles.add(base);
+    preservedDbFiles.add(`${base}-wal`);
+    preservedDbFiles.add(`${base}-shm`);
+    preservedDbFiles.add(`${base}-journal`);
+  }
+
+  fs.mkdirSync(tmpDir, { recursive: true });
+  for (const entry of fs.readdirSync(tmpDir, { withFileTypes: true })) {
+    if (entry.isFile() && preservedDbFiles.has(entry.name)) continue;
+    fs.rmSync(path.join(tmpDir, entry.name), { recursive: true, force: true });
   }
   fs.mkdirSync(reposRoot, { recursive: true });
 }
