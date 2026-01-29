@@ -55,6 +55,7 @@ export default defineConfig({
         ...process.env,
         CONTROL_CENTER_PORT: String(apiPort),
         CONTROL_CENTER_HOST: "127.0.0.1",
+        PCC_DATABASE_PATH: dbPath,
         CONTROL_CENTER_DB_PATH: dbPath,
         CONTROL_CENTER_SCAN_ROOTS: fixtureReposRoot,
         CONTROL_CENTER_SCAN_MAX_DEPTH: "2",
