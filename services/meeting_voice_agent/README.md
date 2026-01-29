@@ -20,9 +20,13 @@ python main.py
 Required for the pipeline (not enforced yet):
 - `CONTROL_CENTER_ELEVENLABS_API_KEY`
 - `ELEVENLABS_VOICE_ID`
+- `ANTHROPIC_API_KEY`
 
 Optional:
 - `PCC_BASE_URL` (default: `http://localhost:4010`)
+- `ANTHROPIC_MODEL` (default: `claude-3-5-sonnet-20240620`)
+- `ANTHROPIC_TEMPERATURE` (default: `0.2`)
+- `ANTHROPIC_MAX_TOKENS` (default: `256`)
 - `ELEVENLABS_STT_MODEL_ID`
 - `ELEVENLABS_TTS_MODEL_ID`
 - `ELEVENLABS_TTS_FORMAT`

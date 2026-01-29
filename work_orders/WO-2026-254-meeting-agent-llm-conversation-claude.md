@@ -6,9 +6,9 @@ context:
   - "Parent WO: WO-2026-245 (unpacked)"
   - "Service skeleton: WO-2026-252"
   - "PCC tools: WO-2026-253"
-  - "Must use Claude (Anthropic), NOT OpenAI — the failed run incorrectly used gpt-4o-mini"
+  - Must use Claude (Anthropic), NOT OpenAI — the failed run incorrectly used gpt-4o-mini
   - "Pipecat has anthropic integration: check pipecat.services.anthropic or similar"
-  - "System prompt should include portfolio summary from /global/context"
+  - System prompt should include portfolio summary from /global/context
   - "Existing voice agent system prompt pattern: app/landing/components/VoiceWidget/useVoiceAgent.ts"
 acceptance_criteria:
   - Pipecat LLM processor using Claude (anthropic SDK) not OpenAI
@@ -25,7 +25,7 @@ tags:
   - voice
   - pipecat
 estimate_hours: 1.5
-status: ready
+status: you_review
 depends_on:
   - WO-2026-252
 created_at: 2026-01-29
