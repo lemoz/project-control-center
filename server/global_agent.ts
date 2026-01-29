@@ -297,21 +297,49 @@ export function parseGlobalDecision(text: string): GlobalAgentDecision | null {
   }
 }
 
+function extractResultFromStreamJson(raw: string): string {
+  const lines = raw.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const trimmed = lines[i]?.trim();
+    if (!trimmed) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      if (parsed.type === "result" && typeof parsed.result === "string") {
+        return parsed.result;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return raw;
+}
+
 async function decideWithClaude(options: {
   prompt: string;
   claudePath?: string;
   cwd?: string;
   onLog?: (line: string) => void;
+  logPath?: string;
 }): Promise<string> {
   const command = options.claudePath?.trim() || "claude";
   const args = [
     "--dangerously-skip-permissions",
     "--allowedTools",
     "Read,Edit,Bash,Glob,Grep,WebFetch,WebSearch",
+    "--output-format",
+    "stream-json",
+    "--verbose",
     "-p",
     options.prompt,
   ];
   logLine(options.onLog, `global-agent: invoking ${command}`);
+
+  let logStream: fs.WriteStream | null = null;
+  if (options.logPath) {
+    fs.mkdirSync(path.dirname(options.logPath), { recursive: true });
+    logStream = fs.createWriteStream(options.logPath, { flags: "w" });
+  }
+
   return new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd ?? process.cwd(),
@@ -319,10 +347,17 @@ async function decideWithClaude(options: {
     });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
-    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdoutChunks.push(chunk);
+      if (logStream) logStream.write(chunk);
+    });
     child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-    child.on("error", (err) => reject(err));
+    child.on("error", (err) => {
+      if (logStream) logStream.end();
+      reject(err);
+    });
     child.on("close", (code) => {
+      if (logStream) logStream.end();
       const status = code ?? 1;
       if (status !== 0) {
         const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
@@ -330,7 +365,8 @@ async function decideWithClaude(options: {
         reject(new Error(`claude exited ${status}${detail}`));
         return;
       }
-      resolve(Buffer.concat(stdoutChunks).toString("utf8"));
+      const raw = Buffer.concat(stdoutChunks).toString("utf8");
+      resolve(extractResultFromStreamJson(raw));
     });
   });
 }
@@ -879,6 +915,14 @@ export async function runGlobalAgentShift(
     };
   }
   const shift = result.shift;
+  const logPath = path.join(
+    process.cwd(),
+    ".system",
+    "global-shifts",
+    shift.id,
+    "agent.log"
+  );
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
   const startedAt = new Date(shift.started_at);
   const actions: GlobalAgentActionResult[] = [];
   const decisions: ShiftHandoffDecision[] = [];
@@ -904,6 +948,7 @@ export async function runGlobalAgentShift(
               claudePath: options.claudePath,
               cwd: options.cwd,
               onLog: options.onLog,
+              logPath,
             });
       const decisionOutput = await decider(prompt);
       const decision =

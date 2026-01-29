@@ -1,7 +1,9 @@
 import fs from "fs";
+import path from "path";
 import { getGlobalBudget } from "./budgeting.js";
 import {
   findProjectById,
+  getActiveGlobalShift,
   getDb,
   getRunById,
   updateRun,
@@ -74,6 +76,7 @@ export type ActiveShiftResponse = {
 export type HeartbeatResponse = {
   active_runs: ActiveRunResponse[];
   active_shifts: ActiveShiftResponse[];
+  global_shift_activity: string;
   last_activity_at: string | null;
   last_activity: string | null;
 };
@@ -278,12 +281,27 @@ export function listActiveShifts(limit = 10): ActiveShiftResponse[] {
   });
 }
 
+function getActiveGlobalShiftActivity(): string {
+  const shift = getActiveGlobalShift();
+  if (!shift) return "";
+  const logPath = path.join(
+    process.cwd(),
+    ".system",
+    "global-shifts",
+    shift.id,
+    "agent.log"
+  );
+  const tail = tailLines(logPath, 8);
+  return pickLastActivity(tail.lines);
+}
+
 export function getHeartbeatResponse(limit = 20): HeartbeatResponse {
   const active_runs = listActiveRuns(limit, { includeActivity: true });
   const active_shifts = listActiveShifts();
   return {
     active_runs,
     active_shifts,
+    global_shift_activity: getActiveGlobalShiftActivity(),
     last_activity_at: fetchLastActivityAt(),
     last_activity: pickLastActivityMessage(active_runs),
   };

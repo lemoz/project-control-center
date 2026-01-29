@@ -20,6 +20,7 @@ type ActiveShiftHeartbeat = {
 export type HeartbeatData = {
   activeRuns: ActiveRunHeartbeat[];
   activeShifts: ActiveShiftHeartbeat[];
+  globalShiftActivity: string;
 };
 
 type RawHeartbeatResponse = {
@@ -37,6 +38,7 @@ type RawHeartbeatResponse = {
     project_name: string;
     current_activity: string;
   }>;
+  global_shift_activity?: string;
 };
 
 const HEARTBEAT_INTERVAL_MS = 4_000;
@@ -69,6 +71,7 @@ export function useHeartbeat(enabled: boolean): {
           project_name: s.project_name,
           current_activity: s.current_activity,
         })),
+        globalShiftActivity: json.global_shift_activity ?? "",
       });
     } catch {
       // Silently ignore heartbeat fetch errors

@@ -554,9 +554,13 @@ export function GlobalAgentActivityFeed({
     pulseState = "paused";
     pulseText = "Paused \u2014 guidance needed";
   } else if (heartbeat) {
+    const globalActivity = heartbeat.globalShiftActivity;
     const activeRun = heartbeat.activeRuns.find((r) => r.current_activity);
     const activeShift = heartbeat.activeShifts.find((s) => s.current_activity);
-    if (activeRun) {
+    if (globalActivity) {
+      pulseState = "active";
+      pulseText = formatCurrentActivity(globalActivity);
+    } else if (activeRun) {
       pulseState = "active";
       pulseText = formatCurrentActivity(activeRun.current_activity);
     } else if (activeShift) {
