@@ -319,7 +319,8 @@ export function buildGlobalDecisionPrompt(
   lines.push("- Runs in ai_review should be REVIEW_RUN approved (verdict: approve) to advance to user review, unless the run summary indicates clear problems");
   lines.push("- Failed or canceled runs on ready WOs should be retried with RETRY_RUN");
   lines.push("- Pending communications should be acknowledged (ACKNOWLEDGE_COMM) with a helpful response when possible");
-  lines.push("- Stale escalations for canceled/completed runs should be resolved (RESOLVE)");
+  lines.push("- Stale escalations in the Pending Communications section should be dismissed with ACKNOWLEDGE_COMM (not RESOLVE)")
+  lines.push("- RESOLVE is only for escalation records shown in the project escalations list, not for communications");
   lines.push("- Only DELEGATE (start shift) when a project has ready WOs and no active shift");
   lines.push("- Only REPORT when there is something the user genuinely needs to know and act on");
   lines.push("- Use WAIT when the portfolio is healthy and work is progressing normally");

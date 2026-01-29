@@ -594,12 +594,13 @@ async function executeDecision(
         };
       }
 
+      // No escalation record found — try as a run input fallback
       const inputs = normalizeRunInputResolution(decision.resolution);
       if (!inputs) {
         return {
           action: "RESOLVE",
           ok: false,
-          detail: "run input resolution must be a JSON object",
+          detail: `no escalation found for ${decision.escalation_id} — if this is a communication, use ACKNOWLEDGE_COMM instead`,
           context: escalationContext,
         };
       }
@@ -608,7 +609,7 @@ async function executeDecision(
         return {
           action: "RESOLVE",
           ok: false,
-          detail: provided.error,
+          detail: `${provided.error} — if this is a communication, use ACKNOWLEDGE_COMM instead`,
           context: escalationContext,
         };
       }

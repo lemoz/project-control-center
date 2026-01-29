@@ -970,27 +970,32 @@ async function runSessionLoop(sessionId: string): Promise<void> {
     });
     if (!updated) return;
 
-    const guidanceNeeded = shiftResult.actions.some((action) => !action.ok);
-    if (guidanceNeeded) {
+    const failedActions = shiftResult.actions.filter((action) => !action.ok);
+    if (failedActions.length > 0) {
+      // Log failed actions but only pause if ALL actions failed (nothing succeeded)
       createSessionEvent({
         sessionId,
-        type: "guidance",
+        type: failedActions.length === shiftResult.actions.length ? "guidance" : "check_in",
         payload: {
-          message: "Guidance needed on the last shift actions.",
+          message: failedActions.length === shiftResult.actions.length
+            ? "All actions failed — guidance needed."
+            : `${failedActions.length} action(s) failed, continuing.`,
           actions: shiftResult.actions,
         },
         touchCheckIn: true,
       });
-      if (updated.chat_thread_id) {
-        createChatMessage({
-          threadId: updated.chat_thread_id,
-          role: "assistant",
-          content: "Guidance needed before continuing autonomous mode. Resume or stop?",
-          needsUserInput: true,
-        });
+      if (failedActions.length === shiftResult.actions.length) {
+        if (updated.chat_thread_id) {
+          createChatMessage({
+            threadId: updated.chat_thread_id,
+            role: "assistant",
+            content: `All actions failed this iteration: ${failedActions.map((a) => a.detail).join("; ")}. Pausing for guidance.`,
+            needsUserInput: true,
+          });
+        }
+        pauseGlobalAgentSession(sessionId, "guidance_needed");
+        return;
       }
-      pauseGlobalAgentSession(sessionId, "guidance_needed");
-      return;
     }
 
     const actionSummary = shiftResult.actions.map((action) => action.detail).join("; ");
