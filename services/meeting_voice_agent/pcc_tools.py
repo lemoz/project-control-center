@@ -252,7 +252,7 @@ PCC_TOOL_DEFINITIONS = [
                     "description": "Project id or name to look up.",
                 },
             },
-            "anyOf": [{"required": ["project_id"]}, {"required": ["project"]}],
+            "required": ["project_id"],
         },
     },
     {
