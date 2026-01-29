@@ -47,28 +47,36 @@ export function ActiveRunsPanel({
 
       {!loading && data.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {data.map((run) => (
-            <button
-              key={run.id}
-              className="btnSecondary"
-              style={{ textAlign: "left", padding: 10, width: "100%" }}
-              type="button"
-              onClick={() => onSelectRun?.(run.id)}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ fontWeight: 600 }}>{run.work_order_id}</div>
-                <span className="badge">{run.status}</span>
-              </div>
-              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                Phase: {run.phase} - {formatDuration(run.duration_seconds)}
-              </div>
-              {run.current_activity && (
-                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-                  {run.current_activity}
+          {data.map((run) => {
+            const statusLabel =
+              run.status === "security_hold" ? "security hold" : run.status;
+            const statusTitle =
+              run.status === "security_hold" ? "Security hold - review required" : undefined;
+            return (
+              <button
+                key={run.id}
+                className="btnSecondary"
+                style={{ textAlign: "left", padding: 10, width: "100%" }}
+                type="button"
+                onClick={() => onSelectRun?.(run.id)}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ fontWeight: 600 }}>{run.work_order_id}</div>
+                  <span className="badge" title={statusTitle}>
+                    {statusLabel}
+                  </span>
                 </div>
-              )}
-            </button>
-          ))}
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  Phase: {run.phase} - {formatDuration(run.duration_seconds)}
+                </div>
+                {run.current_activity && (
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    {run.current_activity}
+                  </div>
+                )}
+              </button>
+            );
+          })}
         </div>
       )}
     </section>

@@ -1,7 +1,7 @@
 ---
 id: WO-2026-218
 title: Security incident UI
-status: ready
+status: you_review
 priority: 2
 tags:
   - ui
@@ -13,7 +13,7 @@ depends_on:
   - WO-2026-215
   - WO-2026-219
 era: v2
-updated_at: 2026-01-27
+updated_at: 2026-01-29
 goal: Show security incidents in the UI when monitor auto-kills a run, allowing user to review and take action.
 context:
   - Stream monitor (WO-2026-215) auto-kills on threat detection

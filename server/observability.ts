@@ -82,6 +82,7 @@ const ACTIVE_STATUSES = new Set([
   "queued",
   "building",
   "waiting_for_input",
+  "security_hold",
   "ai_review",
   "testing",
 ]);
@@ -105,6 +106,8 @@ function phaseForStatus(status: string): string {
       return "builder";
     case "waiting_for_input":
       return "blocked";
+    case "security_hold":
+      return "security_hold";
     case "ai_review":
       return "review";
     case "testing":

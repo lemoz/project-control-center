@@ -68,6 +68,7 @@ type RunStatus =
   | "baseline_failed"
   | "building"
   | "waiting_for_input"
+  | "security_hold"
   | "ai_review"
   | "testing"
   | "you_review"
@@ -295,7 +296,7 @@ export function KanbanBoard({ repoId }: { repoId: string }) {
       const latestRun = latestRunByWorkOrderId.get(wo.id);
       let effectiveStatus = wo.status;
       if (latestRun) {
-        if (latestRun.status === "waiting_for_input") {
+        if (latestRun.status === "waiting_for_input" || latestRun.status === "security_hold") {
           effectiveStatus = "blocked";
         } else if (
           latestRun.status === "queued" ||
@@ -761,6 +762,7 @@ function WorkOrderCard({
     latestRun?.status === "queued" ||
     latestRun?.status === "building" ||
     latestRun?.status === "waiting_for_input" ||
+    latestRun?.status === "security_hold" ||
     latestRun?.status === "ai_review" ||
     latestRun?.status === "testing";
   const trackBadges =
@@ -773,6 +775,10 @@ function WorkOrderCard({
           : [];
   const hasTags = workOrder.tags.length > 0;
   const showBadges = trackBadges.length > 0 || hasTags;
+  const runStatusLabel =
+    latestRun?.status === "security_hold" ? "⚠️ security hold" : latestRun?.status;
+  const runStatusTitle =
+    latestRun?.status === "security_hold" ? "Security hold - review required" : undefined;
 
   return (
     <div
@@ -851,7 +857,9 @@ function WorkOrderCard({
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           {latestRun && (
             <>
-              <span className="badge">run: {latestRun.status}</span>
+              <span className="badge" title={runStatusTitle}>
+                run: {runStatusLabel}
+              </span>
               {latestRun.triggered_by === "autopilot" && (
                 <span className="badge">autopilot</span>
               )}

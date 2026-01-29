@@ -49,6 +49,7 @@ type ShiftLogTail = {
 };
 
 const RUN_STATUS_PRIORITY: RunStatus[][] = [
+  ["security_hold"],
   ["waiting_for_input"],
   ["you_review", "ai_review"],
   ["testing"],

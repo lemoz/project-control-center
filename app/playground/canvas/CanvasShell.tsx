@@ -39,6 +39,7 @@ type CanvasMode = "follow" | "manual";
 
 const FOCUS_RING_COLORS: Record<string, string> = {
   waiting_for_input: "#fbbf24",
+  security_hold: "#f97316",
   you_review: "#a855f7",
   ai_review: "#a855f7",
   testing: "#22d3ee",

@@ -94,6 +94,7 @@ const RUN_STAGE_MAP: Record<RunStatus, StageId> = {
   baseline_failed: "done",
   building: "building",
   waiting_for_input: "review",
+  security_hold: "review",
   ai_review: "review",
   testing: "review",
   you_review: "review",

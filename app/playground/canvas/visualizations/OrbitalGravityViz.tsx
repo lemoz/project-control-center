@@ -377,6 +377,7 @@ function projectRingForNode(node: ProjectNode): ProjectRing {
 
 function resolveWorkOrderRunPhase(runs: RunSummary[]): WorkOrderRunPhase {
   if (!runs.length) return null;
+  if (runs.some((run) => run.status === "security_hold")) return "waiting";
   if (runs.some((run) => run.status === "waiting_for_input")) return "waiting";
   if (runs.some((run) => run.status === "testing")) return "testing";
   if (runs.some((run) => run.status === "ai_review")) return "ai_review";

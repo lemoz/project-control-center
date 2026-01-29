@@ -182,12 +182,14 @@ import {
 } from "./constitution_generation.js";
 import {
   autoCancelEscalationTimeouts,
+  abortSecurityHoldRun,
   cancelRun,
   enqueueCodexRun,
   finalizeManualRunResolution,
   getRun,
   getRunsForProject,
   provideRunInput,
+  resumeSecurityHoldRun,
 } from "./runner_agent.js";
 import {
   getBudgetSummary,
@@ -4823,6 +4825,26 @@ app.post("/runs/:runId/cancel", async (req, res) => {
   }
 });
 
+app.post("/runs/:runId/security-hold/resume", (req, res) => {
+  const result = resumeSecurityHoldRun(req.params.runId);
+  if (!result.ok) {
+    const status =
+      result.code === "not_found" ? 404 : result.code === "invalid_status" ? 400 : 500;
+    return res.status(status).json({ error: result.error });
+  }
+  return res.json(result.run);
+});
+
+app.post("/runs/:runId/security-hold/abort", (req, res) => {
+  const result = abortSecurityHoldRun(req.params.runId);
+  if (!result.ok) {
+    const status =
+      result.code === "not_found" ? 404 : result.code === "invalid_status" ? 400 : 500;
+    return res.status(status).json({ error: result.error });
+  }
+  return res.json(result.run);
+});
+
 // PATCH endpoint for updating run status (for cleaning up stale states)
 app.patch("/runs/:runId", (req, res) => {
   const run = getRunById(req.params.runId);
@@ -4834,9 +4856,19 @@ app.patch("/runs/:runId", (req, res) => {
   }
 
   const validStatuses = [
-    "queued", "baseline_failed", "building", "waiting_for_input",
-    "ai_review", "testing", "you_review", "merged", "merge_conflict",
-    "failed", "canceled", "superseded",
+    "queued",
+    "baseline_failed",
+    "building",
+    "waiting_for_input",
+    "security_hold",
+    "ai_review",
+    "testing",
+    "you_review",
+    "merged",
+    "merge_conflict",
+    "failed",
+    "canceled",
+    "superseded",
   ] as const;
   const validMergeStatuses = ["pending", "merged", "conflict"] as const;
 
