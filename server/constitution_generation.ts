@@ -21,7 +21,7 @@ import {
   type ConstitutionInsightInput,
   type ConstitutionInsightScope,
 } from "./constitution.js";
-import { resolveChatSettings } from "./settings.js";
+import { resolveChatSettings, resolveUtilitySettings } from "./settings.js";
 
 type ConstitutionSourceId = "claude" | "codex" | "pcc";
 
@@ -109,6 +109,28 @@ type ConversationMessage = {
   content: string;
 };
 
+type ConversationFilterPromptEntry = {
+  conversation: ConversationRecord;
+  summary: string;
+};
+
+type ConversationFilterStats = {
+  total: number;
+  scored: number;
+  selected: number;
+  filtered: number;
+  fallback: number;
+  latencyMs: number;
+};
+
+type ConversationFilterSelection = {
+  selected: ConversationRecord[];
+  sampled: boolean;
+  fallbackUsed: boolean;
+  stats: ConversationFilterStats;
+  warnings: string[];
+};
+
 type SourceLoadResult = {
   available: number;
   conversations: ConversationRecord[];
@@ -132,6 +154,12 @@ const MAX_PROMPT_CHARS = 140_000;
 const DEFAULT_MAX_SIGNALS = 24;
 const MAX_SIGNAL_SUMMARY_CHARS = 500;
 const DEFAULT_MAX_SUGGESTIONS = 6;
+const FILTER_BATCH_SIZE = 15;
+const FILTER_EDGE_MESSAGE_COUNT = 2;
+const FILTER_MESSAGE_MAX_CHARS = 280;
+const FILTER_SUMMARY_MAX_CHARS = 1200;
+const FILTER_DEFAULT_CODEX_MODEL = "gpt-4o-mini";
+const FILTER_LATENCY_WARN_MS = 30_000;
 
 const INSIGHT_CATEGORIES = ["decision", "style", "anti", "success", "communication"] as const;
 const INSIGHT_SCOPES = ["global", "project"] as const;
@@ -166,6 +194,20 @@ const SuggestionResponseSchema = z
           category: z.enum(INSIGHT_CATEGORIES),
           text: z.string().min(1),
           evidence_ids: z.array(z.string().min(1)).min(1),
+        })
+        .strict()
+    ),
+  })
+  .strict();
+
+const FilterResponseSchema = z
+  .object({
+    results: z.array(
+      z
+        .object({
+          index: z.number().int().min(1),
+          score: z.number().min(0).max(100),
+          relevant: z.boolean().optional(),
         })
         .strict()
     ),
@@ -224,6 +266,29 @@ function suggestionJsonSchema() {
             category: { type: "string", enum: INSIGHT_CATEGORIES },
             text: { type: "string" },
             evidence_ids: { type: "array", items: { type: "string" }, minItems: 1 },
+          },
+        },
+      },
+    },
+  };
+}
+
+function filterJsonSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["results"],
+    properties: {
+      results: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["index", "score"],
+          properties: {
+            index: { type: "integer", minimum: 1 },
+            score: { type: "number", minimum: 0, maximum: 100 },
+            relevant: { type: "boolean" },
           },
         },
       },
@@ -408,6 +473,53 @@ function truncateText(text: string, maxChars: number): string {
   return `${text.slice(0, Math.max(0, maxChars - 3))}...`;
 }
 
+function normalizeSummaryText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function selectEdgeMessages(
+  messages: ConversationMessage[],
+  edgeCount: number
+): { selected: ConversationMessage[]; truncated: boolean } {
+  if (messages.length <= edgeCount * 2) {
+    return { selected: messages, truncated: false };
+  }
+  return {
+    selected: [
+      ...messages.slice(0, edgeCount),
+      ...messages.slice(-edgeCount),
+    ],
+    truncated: true,
+  };
+}
+
+function buildConversationFilterSummary(conversation: ConversationRecord): string {
+  const messages =
+    conversation.messages && conversation.messages.length > 0
+      ? conversation.messages
+      : conversation.text
+        ? [{ role: "message", content: conversation.text }]
+        : [];
+  if (messages.length === 0) return "";
+  const { selected, truncated } = selectEdgeMessages(messages, FILTER_EDGE_MESSAGE_COUNT);
+  const lines = selected
+    .map((message) => {
+      const content = truncateText(normalizeSummaryText(message.content), FILTER_MESSAGE_MAX_CHARS);
+      if (!content) return "";
+      return `${message.role}: ${content}`;
+    })
+    .filter(Boolean);
+  if (truncated) {
+    lines.splice(
+      Math.min(FILTER_EDGE_MESSAGE_COUNT, lines.length),
+      0,
+      "... (middle omitted)"
+    );
+  }
+  const summary = lines.join("\n").trim();
+  return truncateText(summary, FILTER_SUMMARY_MAX_CHARS);
+}
+
 function compareByTimestampDesc(a: ConversationRecord, b: ConversationRecord): number {
   const aMs = a.timestamp ? Date.parse(a.timestamp) : 0;
   const bMs = b.timestamp ? Date.parse(b.timestamp) : 0;
@@ -463,6 +575,31 @@ function buildConversationPrompt(conversations: ConversationRecord[]): string {
     const source = convo.source.toUpperCase();
     const stamp = convo.timestamp ? ` (${convo.timestamp})` : "";
     const body = truncateText(convo.text.trim(), MAX_CONVERSATION_CHARS);
+    if (!body) continue;
+    bodies.push(`--- Conversation ${index + 1}: ${source}${stamp} ---\n${body}`);
+  }
+
+  const combined = `${header}\n\n${bodies.join("\n\n")}`.trim();
+  if (combined.length <= MAX_PROMPT_CHARS) return combined;
+  return truncateText(combined, MAX_PROMPT_CHARS);
+}
+
+function buildConversationFilterPrompt(entries: ConversationFilterPromptEntry[]): string {
+  const header = [
+    "Score each conversation for constitution relevance.",
+    "Focus on user preferences, style corrections, decision rationale, and anti-patterns.",
+    "Return a relevance score from 0 to 100 (0 = no signal, 100 = strong signal).",
+    "Format the output as JSON matching the provided schema.",
+    "",
+    "Conversations:",
+  ].join("\n");
+
+  const bodies: string[] = [];
+  for (const [index, entry] of entries.entries()) {
+    const convo = entry.conversation;
+    const source = convo.source.toUpperCase();
+    const stamp = convo.timestamp ? ` (${convo.timestamp})` : "";
+    const body = truncateText(entry.summary.trim(), FILTER_SUMMARY_MAX_CHARS);
     if (!body) continue;
     bodies.push(`--- Conversation ${index + 1}: ${source}${stamp} ---\n${body}`);
   }
@@ -1365,6 +1502,181 @@ function ensureConstitutionSuggestionSchema(): string {
   return suggestionSchemaPath;
 }
 
+function ensureConstitutionFilterSchema(): string {
+  const baseDir = path.join(process.cwd(), ".system", "constitution");
+  ensureDir(baseDir);
+  const filterSchemaPath = path.join(baseDir, "constitution_filter.schema.json");
+  fs.writeFileSync(
+    filterSchemaPath,
+    `${JSON.stringify(filterJsonSchema(), null, 2)}\n`,
+    "utf8"
+  );
+  return filterSchemaPath;
+}
+
+function formatFilterStats(stats: ConversationFilterStats): string {
+  const latencySeconds = (stats.latencyMs / 1000).toFixed(1);
+  return [
+    "Filter stats:",
+    `total=${stats.total}`,
+    `scored=${stats.scored}`,
+    `selected=${stats.selected}`,
+    `filtered_out=${stats.filtered}`,
+    `fallback=${stats.fallback}`,
+    `latency=${latencySeconds}s`,
+  ].join(" ");
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  if (size <= 0) return [items];
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function conversationKey(conversation: ConversationRecord): string {
+  return `${conversation.source}:${conversation.id}`;
+}
+
+async function scoreConversationsWithFilter(params: {
+  conversations: ConversationRecord[];
+  cwd: string;
+  model?: string;
+  cliPath?: string;
+}): Promise<Map<string, number>> {
+  const entries = params.conversations
+    .map((conversation) => ({
+      conversation,
+      summary: buildConversationFilterSummary(conversation),
+    }))
+    .filter((entry) => entry.summary);
+  if (entries.length === 0) return new Map();
+
+  const filterSchemaPath = ensureConstitutionFilterSchema();
+  const runId = crypto.randomUUID();
+  const runDir = path.join(process.cwd(), ".system", "constitution", "filter", runId);
+  ensureDir(runDir);
+
+  const batches = chunkArray(entries, FILTER_BATCH_SIZE);
+  const scores = new Map<string, number>();
+
+  for (const [batchIndex, batch] of batches.entries()) {
+    const prompt = buildConversationFilterPrompt(batch);
+    const outputPath = path.join(runDir, `filter-${batchIndex}.json`);
+    const logPath = path.join(runDir, `filter-${batchIndex}.codex.jsonl`);
+
+    await runCodexExecJson({
+      cwd: params.cwd,
+      prompt,
+      schemaPath: filterSchemaPath,
+      outputPath,
+      logPath,
+      sandbox: "read-only",
+      model: params.model,
+      cliPath: params.cliPath,
+      skipGitRepoCheck: true,
+    });
+
+    const raw = JSON.parse(fs.readFileSync(outputPath, "utf8")) as unknown;
+    const parsed = FilterResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new Error("filter response did not match schema");
+    }
+
+    for (const result of parsed.data.results) {
+      const index = result.index - 1;
+      const entry = batch[index];
+      if (!entry) continue;
+      const score = Math.max(0, Math.min(100, result.score));
+      const key = conversationKey(entry.conversation);
+      const existing = scores.get(key);
+      if (existing === undefined || score > existing) scores.set(key, score);
+    }
+  }
+
+  return scores;
+}
+
+async function selectConversationsWithFilter(params: {
+  conversations: ConversationRecord[];
+  maxConversations: number;
+  enable: boolean;
+  cwd: string;
+  model?: string;
+  cliPath?: string;
+}): Promise<ConversationFilterSelection> {
+  const total = params.conversations.length;
+  const warnings: string[] = [];
+  const start = Date.now();
+  let scored = 0;
+  let fallbackUsed = false;
+  let selected: ConversationRecord[] = [];
+
+  if (!params.enable) {
+    const fallback = sampleConversations(params.conversations, params.maxConversations);
+    selected = fallback.selected;
+    fallbackUsed = true;
+    warnings.push("Filter skipped; using recency sampling.");
+  } else if (total === 0) {
+    selected = [];
+  } else {
+    try {
+      const scores = await scoreConversationsWithFilter({
+        conversations: params.conversations,
+        cwd: params.cwd,
+        model: params.model,
+        cliPath: params.cliPath,
+      });
+      scored = scores.size;
+      if (scored === 0) throw new Error("filter returned no scores");
+
+      let maxScore = 0;
+      const scoredEntries = params.conversations.map((conversation) => {
+        const score = scores.get(conversationKey(conversation)) ?? 0;
+        if (score > maxScore) maxScore = score;
+        return { conversation, score };
+      });
+
+      if (maxScore <= 0) throw new Error("filter returned zero relevance scores");
+
+      scoredEntries.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return compareByTimestampDesc(a.conversation, b.conversation);
+      });
+      selected = scoredEntries
+        .slice(0, params.maxConversations)
+        .map((entry) => entry.conversation);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "filter failed";
+      warnings.push(`Filter failed: ${message}`);
+      const fallback = sampleConversations(params.conversations, params.maxConversations);
+      selected = fallback.selected;
+      fallbackUsed = true;
+    }
+  }
+
+  const latencyMs = Date.now() - start;
+  const filtered = Math.max(0, total - selected.length);
+  const fallbackCount = fallbackUsed ? selected.length : 0;
+  const sampled = selected.length < total;
+  return {
+    selected,
+    sampled,
+    fallbackUsed,
+    stats: {
+      total,
+      scored,
+      selected: selected.length,
+      filtered,
+      fallback: fallbackCount,
+      latencyMs,
+    },
+    warnings,
+  };
+}
+
 function conversationStats(insights: ConstitutionInsight[]): ConstitutionAnalysisStats {
   const patterns_found = insights.length;
   const preferences_found = insights.filter(
@@ -1524,7 +1836,32 @@ export async function analyzeConstitutionSources(params: {
     ...sourceResults.pcc.conversations,
   ];
 
-  const { selected, sampled: poolSampled } = sampleConversations(allConversations, maxConversations);
+  const settings = resolveChatSettings().effective;
+  const utilitySettings = resolveUtilitySettings().effective;
+  const filterModel =
+    utilitySettings.provider === "codex"
+      ? utilitySettings.model.trim() || FILTER_DEFAULT_CODEX_MODEL
+      : FILTER_DEFAULT_CODEX_MODEL;
+  const filterCliPath = utilitySettings.provider === "codex" ? utilitySettings.cliPath : undefined;
+  const filterEnabled = settings.provider === "codex";
+  const cwd = repoPath ?? ensurePortfolioWorkspace();
+
+  const filterResult = await selectConversationsWithFilter({
+    conversations: allConversations,
+    maxConversations,
+    enable: filterEnabled,
+    cwd,
+    model: filterModel,
+    cliPath: filterCliPath,
+  });
+  warnings.push(...filterResult.warnings);
+  warnings.push(formatFilterStats(filterResult.stats));
+  if (filterResult.stats.latencyMs > FILTER_LATENCY_WARN_MS) {
+    warnings.push("Filter latency exceeded 30s; consider reducing batch size or summary length.");
+  }
+
+  const selected = filterResult.selected;
+  const poolSampled = filterResult.sampled;
 
   const selectedBySource: Record<ConstitutionSourceId, number> = { claude: 0, codex: 0, pcc: 0 };
   for (const convo of selected) {
@@ -1556,7 +1893,6 @@ export async function analyzeConstitutionSources(params: {
     };
   }
 
-  const settings = resolveChatSettings().effective;
   if (settings.provider !== "codex") {
     warnings.push(
       "Only Codex CLI is supported for analysis right now. Update Chat Settings to use Codex."
@@ -1570,7 +1906,6 @@ export async function analyzeConstitutionSources(params: {
     };
   }
 
-  const cwd = repoPath ?? ensurePortfolioWorkspace();
   const { analysisSchemaPath } = ensureConstitutionSchemas();
   const runId = crypto.randomUUID();
   const runDir = path.join(process.cwd(), ".system", "constitution", "analysis", runId);
@@ -1580,7 +1915,7 @@ export async function analyzeConstitutionSources(params: {
 
   const prompt = buildConversationPrompt(selected);
   let parsedInsights: ConstitutionInsight[] = [];
-  let fallback = false;
+  let fallback = filterResult.fallbackUsed;
 
   try {
     await runCodexExecJson({
