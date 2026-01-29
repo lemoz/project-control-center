@@ -253,11 +253,16 @@ function extractToolSummary(toolName: string, input: Record<string, unknown>): s
   }
 }
 
+function stripTimestampPrefix(line: string): string {
+  // Strip leading ISO-8601 timestamps like "[2026-01-29T19:28:50.891Z] " or "2026-01-29T19:28:50.891Z "
+  return line.replace(/^\[?\d{4}-\d{2}-\d{2}T[\d:.]+Z\]?\s*/, "");
+}
+
 function formatCurrentActivity(rawLine: string): string {
   try {
     const parsed = JSON.parse(rawLine) as unknown;
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return truncateStr(rawLine, 80);
+      return truncateStr(stripTimestampPrefix(rawLine), 80);
     }
     const record = parsed as Record<string, unknown>;
 
@@ -309,9 +314,9 @@ function formatCurrentActivity(rawLine: string): string {
       }
     }
 
-    return truncateStr(rawLine, 80);
+    return truncateStr(stripTimestampPrefix(rawLine), 80);
   } catch {
-    return truncateStr(rawLine, 80);
+    return truncateStr(stripTimestampPrefix(rawLine), 80);
   }
 }
 
