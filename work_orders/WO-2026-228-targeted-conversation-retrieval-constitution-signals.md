@@ -28,7 +28,7 @@ tags:
   - retrieval
   - v2
 estimate_hours: 4
-status: ready
+status: you_review
 created_at: 2026-01-27
 updated_at: 2026-01-29
 depends_on:
