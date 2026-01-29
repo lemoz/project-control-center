@@ -1,8 +1,8 @@
-# Meeting Voice Agent (Pipecat skeleton)
+# Meeting Voice Agent (Pipecat)
 
-Minimal Python service skeleton for the meeting voice agent. It loads
-configuration from the environment, logs startup, and exits cleanly until the
-Pipecat pipeline is implemented in later work orders.
+Minimal Python service for the meeting voice agent. It loads configuration from
+the environment, wires the Pipecat pipeline (ElevenLabs STT -> Claude LLM ->
+ElevenLabs TTS), and runs a local audio transport when available.
 
 ## Setup
 ```
@@ -17,7 +17,7 @@ python main.py
 ```
 
 ## Environment
-Required for the pipeline (not enforced yet):
+Required for the pipeline:
 - `CONTROL_CENTER_ELEVENLABS_API_KEY`
 - `ELEVENLABS_VOICE_ID`
 - `ANTHROPIC_API_KEY`
