@@ -23,7 +23,7 @@ tags:
   - voice
   - pipecat
 estimate_hours: 1
-status: backlog
+status: ready
 depends_on:
   - WO-2026-255
 created_at: 2026-01-29
