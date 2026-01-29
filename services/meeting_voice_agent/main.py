@@ -2,7 +2,9 @@ import asyncio
 import inspect
 import logging
 import os
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from pcc_tools import (
@@ -39,6 +41,212 @@ class ServiceConfig:
     voice_agent_host: str
     voice_agent_port: int
     audio: AudioConfig
+    meeting_project_id: Optional[str]
+    meeting_id: Optional[str]
+    meeting_title: Optional[str]
+    meeting_started_at: Optional[str]
+
+
+@dataclass(frozen=True)
+class MeetingDefaults:
+    project_id: Optional[str]
+    meeting_id: Optional[str]
+    meeting_title: Optional[str]
+    meeting_started_at: Optional[str]
+
+
+class MeetingSummaryTracker:
+    def __init__(
+        self,
+        defaults: MeetingDefaults,
+        *,
+        max_notes: int = 5,
+        max_action_items: int = 5,
+    ) -> None:
+        self._project_id = defaults.project_id
+        self._meeting_id = defaults.meeting_id
+        self._meeting_title = defaults.meeting_title
+        self._meeting_started_at = defaults.meeting_started_at
+        self._notes: list[str] = []
+        self._action_items: list[str] = []
+        self._summary_sent = False
+        self._summary_blocked = False
+        self._max_notes = max_notes
+        self._max_action_items = max_action_items
+
+    @property
+    def summary_sent(self) -> bool:
+        return self._summary_sent
+
+    def update_from_params(self, params: Mapping[str, object] | None) -> None:
+        if not params:
+            return
+        self._assign_once(
+            "project_id",
+            _coerce_str(_get_param(params, "project_id", "project")),
+        )
+        self._assign_once(
+            "meeting_id",
+            _coerce_str(_get_param(params, "meeting_id", "meeting")),
+        )
+        self._assign_once(
+            "meeting_title",
+            _coerce_str(_get_param(params, "meeting_title", "meeting_name", "title")),
+        )
+        self._assign_once(
+            "meeting_started_at",
+            _coerce_str(_get_param(params, "meeting_started_at", "meeting_start")),
+        )
+
+    def record_tool_result(
+        self,
+        name: str,
+        params: Mapping[str, object] | None,
+        result: object,
+    ) -> None:
+        if _result_is_error(result):
+            return
+        if name == "save_meeting_notes":
+            note = _coerce_str(_get_param(params, "note", "text"))
+            if note:
+                self._add_note(note)
+        elif name == "create_action_item":
+            title = _coerce_str(_get_param(params, "title", "summary"))
+            if title:
+                self._add_action_item(title)
+        elif name == "send_meeting_summary":
+            self._summary_sent = True
+
+    def build_summary_params(self, *, ended_at: str) -> dict[str, object] | None:
+        if not self._meeting_id or not self._project_id:
+            if not self._summary_blocked:
+                LOG.warning(
+                    "Meeting summary skipped: missing meeting_id or project_id."
+                )
+                self._summary_blocked = True
+            return None
+
+        summary_text = self._build_summary_text()
+        params: dict[str, object] = {
+            "project_id": self._project_id,
+            "meeting_id": self._meeting_id,
+            "summary": summary_text,
+            "meeting_ended_at": ended_at,
+            "to_scope": "project",
+            "to_project_id": self._project_id,
+        }
+        if self._meeting_title:
+            params["meeting_title"] = self._meeting_title
+        if self._meeting_started_at:
+            params["meeting_started_at"] = self._meeting_started_at
+        if self._action_items:
+            params["action_items"] = list(self._action_items)
+        return params
+
+    def _assign_once(self, field_name: str, value: Optional[str]) -> None:
+        if not value:
+            return
+        current = getattr(self, f"_{field_name}")
+        if current is None:
+            setattr(self, f"_{field_name}", value)
+            return
+        if current != value:
+            LOG.warning(
+                "Meeting summary tracker saw multiple %s values: %s vs %s",
+                field_name,
+                current,
+                value,
+            )
+
+    def _add_note(self, note: str) -> None:
+        if len(self._notes) >= self._max_notes:
+            return
+        self._notes.append(_truncate_text(note, 140))
+
+    def _add_action_item(self, title: str) -> None:
+        if len(self._action_items) >= self._max_action_items:
+            return
+        self._action_items.append(_truncate_text(title, 140))
+
+    def _build_summary_text(self) -> str:
+        if not self._notes and not self._action_items:
+            return "No notes or action items were captured during the meeting."
+
+        lines: list[str] = []
+        if self._notes:
+            lines.append("Notes captured:")
+            lines.extend([f"- {note}" for note in self._notes])
+        if not self._notes and self._action_items:
+            lines.append("No notes were captured; see action items for follow-ups.")
+        return "\n".join(lines)
+
+
+class MeetingSummaryDispatcher:
+    def __init__(
+        self,
+        tracker: MeetingSummaryTracker,
+        send_summary: Callable[[Mapping[str, object] | None], Awaitable[object]],
+    ) -> None:
+        self._tracker = tracker
+        self._send_summary = send_summary
+        self._lock = asyncio.Lock()
+
+    async def send_if_needed(self, reason: str) -> None:
+        async with self._lock:
+            if self._tracker.summary_sent:
+                return
+            params = self._tracker.build_summary_params(ended_at=_iso_now())
+            if params is None:
+                return
+            result = await self._send_summary(params)
+            if not _result_is_error(result):
+                LOG.info("Meeting summary sent (%s).", reason)
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _coerce_str(value: object) -> Optional[str]:
+    if isinstance(value, str):
+        trimmed = value.strip()
+        return trimmed if trimmed else None
+    return None
+
+
+def _get_param(params: Mapping[str, object] | None, *keys: str) -> object | None:
+    if not params:
+        return None
+    for key in keys:
+        if key in params:
+            return params.get(key)
+    return None
+
+
+def _merge_tool_params(
+    params: Mapping[str, object] | None, kwargs: Mapping[str, object]
+) -> Mapping[str, object] | None:
+    if params is None:
+        return dict(kwargs) if kwargs else None
+    if not kwargs:
+        return params
+    merged = dict(params)
+    merged.update(kwargs)
+    return merged
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    clipped = text[: max(0, limit - 3)].rstrip()
+    return f"{clipped}..."
+
+
+def _result_is_error(result: object) -> bool:
+    if isinstance(result, Mapping):
+        error = result.get("error")
+        return isinstance(error, str) and bool(error.strip())
+    return False
 
 
 def env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -131,6 +339,10 @@ def load_config() -> ServiceConfig:
         voice_agent_host=env("VOICE_AGENT_HOST", "0.0.0.0") or "0.0.0.0",
         voice_agent_port=parse_int_env("VOICE_AGENT_PORT", 8765),
         audio=load_audio_config(),
+        meeting_project_id=env("MEETING_PROJECT_ID"),
+        meeting_id=env("MEETING_ID"),
+        meeting_title=env("MEETING_TITLE"),
+        meeting_started_at=env("MEETING_STARTED_AT"),
     )
 
 
@@ -347,7 +559,10 @@ def log_ws_disconnected(*_args, **_kwargs) -> None:
 
 
 def build_websocket_audio_transport(
-    config: ServiceConfig, params: Optional[Any]
+    config: ServiceConfig,
+    params: Optional[Any],
+    *,
+    on_disconnect: Optional[Callable[[], None]] = None,
 ) -> Optional[Any]:
     try:
         WebSocketTransport = load_any_symbol(
@@ -368,6 +583,11 @@ def build_websocket_audio_transport(
     except ImportError:
         return None
 
+    def handle_disconnect(*_args: object, **_kwargs: object) -> None:
+        log_ws_disconnected()
+        if on_disconnect:
+            on_disconnect()
+
     kwargs = {
         "host": config.voice_agent_host,
         "port": config.voice_agent_port,
@@ -384,11 +604,11 @@ def build_websocket_audio_transport(
         "audio_format": config.audio.audio_format,
         "format": config.audio.audio_format,
         "on_connect": log_ws_connected,
-        "on_disconnect": log_ws_disconnected,
+        "on_disconnect": handle_disconnect,
         "on_client_connected": log_ws_connected,
-        "on_client_disconnected": log_ws_disconnected,
+        "on_client_disconnected": handle_disconnect,
         "on_connection_open": log_ws_connected,
-        "on_connection_closed": log_ws_disconnected,
+        "on_connection_closed": handle_disconnect,
     }
     try:
         return WebSocketTransport(**kwargs)
@@ -519,7 +739,12 @@ async def run_pipeline_task(task: Any) -> None:
         await result
 
 
-async def run_pipeline(config: ServiceConfig, llm_processor: Any) -> None:
+async def run_pipeline(
+    config: ServiceConfig,
+    llm_processor: Any,
+    tool_callbacks: dict[str, Callable[..., Awaitable[object]]],
+    tracker: MeetingSummaryTracker,
+) -> None:
     if not config.elevenlabs_api_key:
         LOG.info("Missing CONTROL_CENTER_ELEVENLABS_API_KEY; ElevenLabs pipeline not started.")
         return
@@ -537,7 +762,26 @@ async def run_pipeline(config: ServiceConfig, llm_processor: Any) -> None:
     stt_processor = build_stt_processor(stt_service)
     tts_processor = build_tts_processor(tts_service)
     transport_params = build_transport_params(config.audio)
-    transport = build_websocket_audio_transport(config, transport_params)
+    summary_sender = tool_callbacks.get("send_meeting_summary")
+    dispatcher = (
+        MeetingSummaryDispatcher(tracker, summary_sender)
+        if summary_sender is not None
+        else None
+    )
+    loop = asyncio.get_running_loop()
+
+    def schedule_summary(reason: str) -> None:
+        if dispatcher is None:
+            return
+        loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(dispatcher.send_if_needed(reason))
+        )
+
+    transport = build_websocket_audio_transport(
+        config,
+        transport_params,
+        on_disconnect=lambda: schedule_summary("disconnect"),
+    )
     transport_label = "websocket"
     if transport is None:
         transport = build_local_audio_transport(config, transport_params)
@@ -575,6 +819,9 @@ async def run_pipeline(config: ServiceConfig, llm_processor: Any) -> None:
         await run_pipeline_task(task)
     except ImportError as exc:
         LOG.error("Pipecat pipeline modules not available: %s", exc)
+    finally:
+        if dispatcher is not None:
+            await dispatcher.send_if_needed("pipeline_end")
 
 
 async def main() -> None:
@@ -589,6 +836,12 @@ async def main() -> None:
         config.voice_agent_port,
     )
     LOG.info("Audio config: %s", config.audio)
+    if config.meeting_id or config.meeting_project_id:
+        LOG.info(
+            "Meeting context: project=%s meeting=%s",
+            config.meeting_project_id,
+            config.meeting_id,
+        )
 
     if not config.anthropic_api_key:
         LOG.info("Missing ANTHROPIC_API_KEY; Claude LLM not started.")
@@ -599,6 +852,33 @@ async def main() -> None:
         system_prompt = await build_system_prompt(pcc)
         tool_defs = build_tool_definitions()
         tool_callbacks = build_tool_callbacks(pcc)
+        tracker = MeetingSummaryTracker(
+            MeetingDefaults(
+                project_id=config.meeting_project_id,
+                meeting_id=config.meeting_id,
+                meeting_title=config.meeting_title,
+                meeting_started_at=config.meeting_started_at,
+            )
+        )
+
+        def instrument_tool_callback(
+            name: str, callback: Callable[..., Awaitable[object]]
+        ) -> Callable[..., Awaitable[object]]:
+            async def _wrapped(
+                params: Mapping[str, object] | None = None, **kwargs: object
+            ) -> object:
+                merged = _merge_tool_params(params, kwargs)
+                tracker.update_from_params(merged)
+                result = await callback(merged)
+                tracker.record_tool_result(name, merged, result)
+                return result
+
+            return _wrapped
+
+        tool_callbacks = {
+            name: instrument_tool_callback(name, callback)
+            for name, callback in tool_callbacks.items()
+        }
 
         try:
             llm_service = build_claude_service(config, system_prompt, tool_defs)
@@ -612,7 +892,7 @@ async def main() -> None:
             "Claude LLM processor ready: %s",
             llm_processor.__class__.__name__,
         )
-        await run_pipeline(config, llm_processor)
+        await run_pipeline(config, llm_processor, tool_callbacks, tracker)
     finally:
         await pcc.close()
 
