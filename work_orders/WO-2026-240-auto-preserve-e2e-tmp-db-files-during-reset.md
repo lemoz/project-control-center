@@ -15,7 +15,7 @@ tags:
   - auto-generated
   - from-scope-creep
 estimate_hours: 0.5
-status: backlog
+status: you_review
 created_at: 2026-01-29
 updated_at: 2026-01-29
 depends_on: []
