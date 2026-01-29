@@ -10,9 +10,6 @@ import {
   getAllowedOrigins,
   getAppVersion,
   getCorsAllowAllRequested,
-  getElevenLabsAgentId,
-  getElevenLabsApiKey,
-  getElevenLabsSignedUrlTtlSeconds,
   getElevenLabsWebhookSecret,
   getEscalationTimeoutHours,
   getFailRunsOnRestart,
@@ -151,6 +148,16 @@ import {
   patchUtilitySettings,
   upsertNetworkWhitelistEntry,
 } from "./settings.js";
+import {
+  getSavedVoiceSettings,
+  getVoiceSettingsResponse,
+  getVoiceStatus,
+  mergeVoiceSettings,
+  parseVoiceSettingsPatch,
+  requestElevenLabsSignedUrl,
+  resolveElevenLabsCredentials,
+  saveVoiceSettings,
+} from "./voice_settings.js";
 import {
   getEscalationDeferral,
   getExplicitPreferences,
@@ -504,63 +511,6 @@ function hasValidHealthToken(req: Request): boolean {
   return queryToken === healthToken || headerToken === healthToken;
 }
 
-async function requestElevenLabsSignedUrl(): Promise<string> {
-  const agentId = getElevenLabsAgentId();
-  if (!agentId) {
-    throw new Error("ElevenLabs agent ID not configured.");
-  }
-
-  const apiKey = getElevenLabsApiKey();
-  if (!apiKey) {
-    throw new Error("ElevenLabs API key not configured.");
-  }
-
-  const ttlSeconds = getElevenLabsSignedUrlTtlSeconds();
-  const includeTtl = ttlSeconds !== null;
-  const baseUrl = new URL(
-    "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url"
-  );
-  baseUrl.searchParams.set("agent_id", agentId);
-
-  const requestUrl = async (url: URL): Promise<string> => {
-    const response = await fetch(url.toString(), {
-      headers: {
-        "xi-api-key": apiKey,
-      },
-    });
-
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new Error(
-        `Failed to mint ElevenLabs signed URL (${response.status}). ${detail}`.trim()
-      );
-    }
-
-    const payload = (await response.json().catch(() => null)) as {
-      signed_url?: string;
-      signedUrl?: string;
-    } | null;
-    const signedUrl = payload?.signed_url ?? payload?.signedUrl;
-    if (!signedUrl) {
-      throw new Error("ElevenLabs signed URL missing from response.");
-    }
-
-    return signedUrl;
-  };
-
-  if (includeTtl) {
-    const urlWithTtl = new URL(baseUrl.toString());
-    urlWithTtl.searchParams.set("ttl", String(ttlSeconds));
-    try {
-      return await requestUrl(urlWithTtl);
-    } catch {
-      return await requestUrl(baseUrl);
-    }
-  }
-
-  return await requestUrl(baseUrl);
-}
-
 function cleanupThreadWorktree(thread: {
   id: string;
   scope: string;
@@ -697,16 +647,13 @@ app.get("/subscribers", (req, res) => {
 });
 
 app.get("/api/voice/status", (_req, res) => {
-  const apiKey = getElevenLabsApiKey();
-  const agentId = getElevenLabsAgentId();
-  const available = !!apiKey && !!agentId;
-  const reason = !apiKey ? "api_key_missing" : !agentId ? "agent_id_missing" : undefined;
-  return res.json({ available, reason });
+  return res.json(getVoiceStatus());
 });
 
 app.post("/api/voice/session", async (_req, res) => {
   try {
-    const signedUrl = await requestElevenLabsSignedUrl();
+    const { apiKey, agentId } = resolveElevenLabsCredentials();
+    const signedUrl = await requestElevenLabsSignedUrl({ apiKey, agentId });
     res.setHeader("Cache-Control", "no-store");
     return res.json({ signedUrl });
   } catch (err) {
@@ -1019,6 +966,33 @@ app.patch("/settings/utility", (req, res) => {
   } catch (err) {
     return res.status(400).json({
       error: err instanceof Error ? err.message : "invalid utility settings",
+    });
+  }
+});
+
+app.get("/settings/voice", (_req, res) => {
+  return res.json(getVoiceSettingsResponse());
+});
+
+app.patch("/settings/voice", async (req, res) => {
+  try {
+    const patch = parseVoiceSettingsPatch(req.body ?? {});
+    const saved = getSavedVoiceSettings();
+    const merged = mergeVoiceSettings(saved, patch);
+    const hasUpdate = patch.apiKey !== undefined || patch.agentId !== undefined;
+    if (hasUpdate && merged.apiKey && merged.agentId) {
+      await requestElevenLabsSignedUrl({
+        apiKey: merged.apiKey,
+        agentId: merged.agentId,
+      });
+    }
+    if (hasUpdate) {
+      saveVoiceSettings(merged);
+    }
+    return res.json(getVoiceSettingsResponse());
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "invalid voice settings",
     });
   }
 });
