@@ -51,7 +51,7 @@ export function useHeartbeat(enabled: boolean): {
 
   const poll = useCallback(async () => {
     try {
-      const res = await fetch("/heartbeat", { cache: "no-store" });
+      const res = await fetch("/api/heartbeat", { cache: "no-store" });
       if (!res.ok) return;
       const json = (await res.json()) as RawHeartbeatResponse;
       if (!mountedRef.current) return;
