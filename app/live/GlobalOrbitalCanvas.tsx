@@ -85,6 +85,10 @@ const PULSE_COLORS: Record<string, string> = {
   DELEGATE: "#38bdf8",
   RESOLVE: "#22c55e",
   CREATE_PROJECT: "#2dd4bf",
+  RETRY_RUN: "#f59e0b",
+  REVIEW_RUN: "#a855f7",
+  ACKNOWLEDGE_COMM: "#2dd4bf",
+  UPDATE_WO: "#f59e0b",
   REPORT: "#cbd5f5",
   WAIT: "#94a3b8",
 };
@@ -714,6 +718,7 @@ export function GlobalOrbitalCanvas({
       <GlobalAgentActivityFeed
         projectNodes={projectNodes}
         onProjectPulse={triggerProjectPulse}
+        onFocusProject={focusProjectNode}
       />
 
       {/* Zoom controls */}

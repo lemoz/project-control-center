@@ -42,6 +42,9 @@ type GlobalAgentActionContext = {
   project_name?: string;
   escalation_id?: string;
   escalation_type?: string;
+  run_id?: string;
+  work_order_id?: string;
+  communication_id?: string;
 };
 
 type GlobalAgentActionResult = {
@@ -67,12 +70,16 @@ type ActivityItem = {
   projectId?: string;
   projectName?: string;
   escalationId?: string;
+  runId?: string;
+  workOrderId?: string;
+  communicationId?: string;
   highlight?: "guidance" | "alert";
 };
 
 type GlobalAgentActivityFeedProps = {
   projectNodes: ProjectNode[];
   onProjectPulse?: (projectId: string, action?: string) => void;
+  onFocusProject?: (projectId: string) => void;
 };
 
 const POLL_INTERVAL_MS = 8_000;
@@ -107,6 +114,12 @@ function parseActionContext(value: unknown): GlobalAgentActionContext | undefine
   if (escalationId) context.escalation_id = escalationId;
   const escalationType = readString(value.escalation_type);
   if (escalationType) context.escalation_type = escalationType;
+  const runId = readString(value.run_id);
+  if (runId) context.run_id = runId;
+  const workOrderId = readString(value.work_order_id);
+  if (workOrderId) context.work_order_id = workOrderId;
+  const communicationId = readString(value.communication_id);
+  if (communicationId) context.communication_id = communicationId;
   if (Object.keys(context).length === 0) return undefined;
   return context;
 }
@@ -182,6 +195,28 @@ function formatDecisionDetail(action: GlobalAgentActionResult): string {
     }
     case "REPORT":
       return action.detail || "Reported update";
+    case "RETRY_RUN": {
+      const wo = action.context?.work_order_id;
+      const project = action.context?.project_name;
+      if (wo && project) return `Retried ${wo} on ${project}`;
+      if (wo) return `Retried ${wo}`;
+      return action.detail || "Retried run";
+    }
+    case "REVIEW_RUN": {
+      const runId = action.context?.run_id;
+      if (runId) return `Reviewed run ${runId}`;
+      return action.detail || "Reviewed run";
+    }
+    case "ACKNOWLEDGE_COMM": {
+      const commId = action.context?.communication_id;
+      if (commId) return `Acknowledged comm ${commId}`;
+      return action.detail || "Acknowledged communication";
+    }
+    case "UPDATE_WO": {
+      const wo = action.context?.work_order_id;
+      if (wo) return `Updated ${wo}`;
+      return action.detail || "Updated work order";
+    }
     case "WAIT":
       return action.detail || "Waiting";
     default:
@@ -189,9 +224,12 @@ function formatDecisionDetail(action: GlobalAgentActionResult): string {
   }
 }
 
+const AUTO_FOCUS_COOLDOWN_MS = 5_000;
+
 export function GlobalAgentActivityFeed({
   projectNodes,
   onProjectPulse,
+  onFocusProject,
 }: GlobalAgentActivityFeedProps) {
   const [session, setSession] = useState<GlobalAgentSession | null>(null);
   const [events, setEvents] = useState<GlobalAgentSessionEvent[]>([]);
@@ -199,9 +237,11 @@ export function GlobalAgentActivityFeed({
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [expandedItemId, setExpandedItemId] = useState<string | null>(null);
 
   const logRef = useRef<HTMLDivElement | null>(null);
   const seenItemsRef = useRef<Set<string>>(new Set());
+  const lastFocusRef = useRef<Map<string, number>>(new Map());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -359,6 +399,9 @@ export function GlobalAgentActivityFeed({
           projectId,
           projectName,
           escalationId,
+          runId: action.context?.run_id,
+          workOrderId: action.context?.work_order_id,
+          communicationId: action.context?.communication_id,
         });
       });
     }
@@ -368,22 +411,30 @@ export function GlobalAgentActivityFeed({
   }, [events, projectById, projectByName]);
 
   useEffect(() => {
-    if (!onProjectPulse) return;
     const seen = seenItemsRef.current;
     const nextSeen = new Set(seen);
+    const now = Date.now();
     for (const item of activityItems) {
       nextSeen.add(item.id);
       if (item.kind !== "decision") continue;
       if (!item.projectId) continue;
       if (seen.has(item.id)) continue;
-      onProjectPulse(item.projectId, item.label);
+      onProjectPulse?.(item.projectId, item.label);
+      // Auto-focus on non-WAIT decisions with debounce
+      if (onFocusProject && item.label !== "WAIT") {
+        const lastFocus = lastFocusRef.current.get(item.projectId) ?? 0;
+        if (now - lastFocus > AUTO_FOCUS_COOLDOWN_MS) {
+          lastFocusRef.current.set(item.projectId, now);
+          onFocusProject(item.projectId);
+        }
+      }
     }
     if (nextSeen.size > 500) {
       seenItemsRef.current = new Set(activityItems.map((item) => item.id));
       return;
     }
     seenItemsRef.current = nextSeen;
-  }, [activityItems, onProjectPulse]);
+  }, [activityItems, onProjectPulse, onFocusProject]);
 
   useEffect(() => {
     if (collapsed) return;
@@ -442,10 +493,17 @@ export function GlobalAgentActivityFeed({
                   const decisionClass =
                     item.kind === "decision" ? styles.activityFeedDecision : "";
                   const failedClass = item.ok === false ? styles.activityFeedFailed : "";
+                  const isExpanded = expandedItemId === item.id;
+                  const actionType = item.kind === "decision" ? item.label : undefined;
                   return (
                     <div
                       key={item.id}
                       className={`${styles.activityFeedItem} ${highlightClass} ${decisionClass} ${failedClass}`}
+                      data-action={actionType}
+                      onClick={() =>
+                        setExpandedItemId((prev) => (prev === item.id ? null : item.id))
+                      }
+                      style={{ cursor: "pointer" }}
                     >
                       <div className={styles.activityFeedHeader}>
                         <span className={styles.activityFeedTag}>{item.label}</span>
@@ -453,15 +511,32 @@ export function GlobalAgentActivityFeed({
                           {formatTimestamp(item.createdAt)}
                         </span>
                       </div>
-                      <div className={styles.activityFeedDetail}>{item.detail}</div>
-                      {(item.projectName || item.projectId || item.escalationId) && (
+                      <div
+                        className={`${styles.activityFeedDetail} ${isExpanded ? styles.activityFeedDetailExpanded : ""}`}
+                      >
+                        {item.detail}
+                      </div>
+                      {(item.projectName || item.projectId || item.escalationId || item.runId || item.workOrderId || item.communicationId) && (
                         <div className={styles.activityFeedContext}>
                           {item.projectName || item.projectId ? (
                             <span>
                               Project{" "}
-                              <span className={styles.activityFeedContextValue}>
-                                {item.projectName ?? item.projectId}
-                              </span>
+                              {onFocusProject && item.projectId ? (
+                                <button
+                                  type="button"
+                                  className={`${styles.activityFeedContextValue} ${styles.activityFeedContextClickable}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onFocusProject(item.projectId!);
+                                  }}
+                                >
+                                  {item.projectName ?? item.projectId}
+                                </button>
+                              ) : (
+                                <span className={styles.activityFeedContextValue}>
+                                  {item.projectName ?? item.projectId}
+                                </span>
+                              )}
                             </span>
                           ) : null}
                           {item.escalationId ? (
@@ -469,6 +544,30 @@ export function GlobalAgentActivityFeed({
                               Escalation{" "}
                               <span className={styles.activityFeedContextValue}>
                                 {item.escalationId}
+                              </span>
+                            </span>
+                          ) : null}
+                          {item.workOrderId ? (
+                            <span>
+                              WO{" "}
+                              <span className={styles.activityFeedContextValue}>
+                                {item.workOrderId}
+                              </span>
+                            </span>
+                          ) : null}
+                          {item.runId ? (
+                            <span>
+                              Run{" "}
+                              <span className={styles.activityFeedContextValue}>
+                                {item.runId}
+                              </span>
+                            </span>
+                          ) : null}
+                          {item.communicationId ? (
+                            <span>
+                              Comm{" "}
+                              <span className={styles.activityFeedContextValue}>
+                                {item.communicationId}
                               </span>
                             </span>
                           ) : null}
