@@ -6,8 +6,8 @@ import {
   getGlobalAgentSessionMaxDurationMinutes,
   getGlobalAgentSessionMaxIterations,
 } from "./config.js";
-import { getDb } from "./db.js";
-import { runGlobalAgentShift } from "./global_agent.js";
+import { getDb, updateGlobalShift } from "./db.js";
+import { runGlobalAgentShift, type GlobalAgentRunResult } from "./global_agent.js";
 import type { GlobalDecisionSessionContext } from "./prompts/global_decision.js";
 
 export type GlobalAgentSessionState =
@@ -945,9 +945,25 @@ async function runSessionLoop(sessionId: string): Promise<void> {
     }
 
     const sessionContext = buildSessionContext(session);
-    const shiftResult = await runGlobalAgentShift({
+    let shiftResult: GlobalAgentRunResult = await runGlobalAgentShift({
       session: sessionContext,
     });
+
+    // If a stale shift is blocking, force-expire it and retry once
+    if (
+      !shiftResult.ok &&
+      shiftResult.error === "shift already active"
+    ) {
+      const staleShift = shiftResult.activeShift;
+      updateGlobalShift(staleShift.id, {
+        status: "expired",
+        completed_at: new Date().toISOString(),
+        error: "force-expired: stale shift on resume",
+      });
+      shiftResult = await runGlobalAgentShift({
+        session: sessionContext,
+      });
+    }
 
     if (!shiftResult.ok) {
       createSessionEvent({
