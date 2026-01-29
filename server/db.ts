@@ -1,4 +1,6 @@
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 import Database from "better-sqlite3";
 import { getDatabasePath } from "./config.js";
 
@@ -787,11 +789,18 @@ let db: Database.Database | null = null;
 export function getDb() {
   if (db) return db;
   const dbPath = getDatabasePath();
+  ensureDatabaseDirectory(dbPath);
   db = new Database(dbPath);
   db.pragma("foreign_keys = ON");
   db.pragma("journal_mode = WAL");
   initSchema(db);
   return db;
+}
+
+function ensureDatabaseDirectory(dbPath: string): void {
+  const dir = path.dirname(dbPath);
+  if (!dir || dir === ".") return;
+  fs.mkdirSync(dir, { recursive: true });
 }
 
 function initSchema(database: Database.Database) {

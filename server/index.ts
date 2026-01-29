@@ -39,6 +39,7 @@ import {
   decideConstitutionSuggestion,
   findProjectById,
   findGlobalPatternById,
+  getDb,
   getConstitutionSuggestionById,
   getInitiativeById,
   getActiveShift,
@@ -300,6 +301,9 @@ const allowLan = getAllowLan();
 const allowRemoteHealth = getAllowRemoteHealth();
 const healthToken = getHealthToken();
 const ESCALATION_TIMEOUT_SWEEP_MS = 10 * 60 * 1000;
+
+// Initialize the SQLite database on boot to surface path/schema errors early.
+getDb();
 
 function resolveEscalationTimeoutHours(): number {
   return getEscalationTimeoutHours();
