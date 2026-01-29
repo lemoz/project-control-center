@@ -277,21 +277,10 @@ export function useCanvasInteraction({
   }, [canvasRef, nodes, onNodeDragEnd]);
 
   const onWheel = useCallback<WheelEventHandler<HTMLCanvasElement>>(
-    (event) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      event.preventDefault();
-      const zoomFactor = event.deltaY > 0 ? 0.9 : 1.1;
-      const point = getCanvasPoint(event, canvas);
-      setTransform((prev) => {
-        const nextScale = clamp(prev.scale * zoomFactor, MIN_SCALE, MAX_SCALE);
-        const worldPoint = screenToWorld(point, prev);
-        const offsetX = point.x - worldPoint.x * nextScale;
-        const offsetY = point.y - worldPoint.y * nextScale;
-        return { ...prev, scale: nextScale, offsetX, offsetY };
-      });
+    () => {
+      // Scroll-to-zoom disabled — use +/- buttons instead
     },
-    [canvasRef]
+    []
   );
 
   return {
