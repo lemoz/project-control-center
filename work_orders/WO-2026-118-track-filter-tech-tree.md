@@ -30,9 +30,9 @@ tags:
   - tech-tree
   - visualization
 estimate_hours: 3
-status: you_review
+status: done
 created_at: 2026-01-15
-updated_at: 2026-01-28
+updated_at: 2026-01-29
 depends_on:
   - WO-2026-114
   - WO-2026-117
