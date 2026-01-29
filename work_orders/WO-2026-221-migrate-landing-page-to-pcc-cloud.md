@@ -1,7 +1,7 @@
 ---
 id: WO-2026-221
 title: Migrate landing page to pcc-cloud
-status: you_review
+status: done
 priority: 1
 tags:
   - migration
@@ -12,7 +12,7 @@ depends_on:
   - WO-2026-177
 era: v2
 created_at: 2026-01-27
-updated_at: 2026-01-27
+updated_at: 2026-01-29
 goal: Move the public landing page from project-control-center to pcc-cloud repo.
 context:
   - MIGRATION.md documents this as a MOVE item

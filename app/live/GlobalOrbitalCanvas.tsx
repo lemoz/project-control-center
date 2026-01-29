@@ -122,7 +122,7 @@ function pulseColor(action?: string): string {
 // ---------------------------------------------------------------------------
 
 type GlobalOrbitalCanvasProps = {
-  onSelectProject?: (projectId: string | null) => void;
+  onSelectProject?: (projectId: string | null, node?: ProjectNode | null) => void;
   selectedProjectId?: string | null;
   globalSession?: GlobalAgentSession | null;
 };
@@ -238,9 +238,9 @@ export function GlobalOrbitalCanvas({
   useEffect(() => {
     if (!onSelectProject) return;
     if (selectedNode && selectedNode.type === "project") {
-      onSelectProject(selectedNode.id);
+      onSelectProject(selectedNode.id, selectedNode as ProjectNode);
     } else if (!selectedNode) {
-      onSelectProject(null);
+      onSelectProject(null, null);
     }
   }, [selectedNode, onSelectProject]);
 
@@ -569,7 +569,7 @@ export function GlobalOrbitalCanvas({
       const target = projectNodes.find((node) => node.id === projectId);
       if (!target) return false;
       if (selectedProjectNode?.id === target.id) {
-        onSelectProject?.(target.id);
+        onSelectProject?.(target.id, target);
       } else {
         selectNode(target.id);
       }

@@ -116,6 +116,7 @@ export type ShiftContext = {
       backlog: number;
       done: number;
       in_progress: number;
+      blocked: number;
     };
     ready: WorkOrderSummary[];
     backlog: WorkOrderSummary[];
@@ -395,13 +396,21 @@ function buildWorkOrderState(
     backlog: 0,
     done: 0,
     in_progress: 0,
+    blocked: 0,
   };
 
   for (const wo of workOrders) {
-    if (wo.status === "ready" && depsSatisfied(wo)) summary.ready += 1;
-    else if (wo.status === "backlog") summary.backlog += 1;
-    else if (wo.status === "done") summary.done += 1;
-    else if (isInProgressStatus(wo.status)) summary.in_progress += 1;
+    if (wo.status === "done") {
+      summary.done += 1;
+    } else if (wo.status === "blocked" || (wo.depends_on.length > 0 && !depsSatisfied(wo))) {
+      summary.blocked += 1;
+    } else if (wo.status === "ready") {
+      summary.ready += 1;
+    } else if (wo.status === "backlog") {
+      summary.backlog += 1;
+    } else if (isInProgressStatus(wo.status)) {
+      summary.in_progress += 1;
+    }
   }
 
   const ready = workOrders

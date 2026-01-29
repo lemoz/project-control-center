@@ -1,17 +1,20 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import Link from "next/link";
 import { GlobalOrbitalCanvas } from "./live/GlobalOrbitalCanvas";
 import { GlobalSessionOverlay } from "./live/GlobalSessionOverlay";
 import { CollapsibleVoiceWidget } from "./live/CollapsibleVoiceWidget";
 import { ProjectDetailPanel } from "./live/ProjectDetailPanel";
+import type { ProjectNode } from "./playground/canvas/types";
 import type { GlobalAgentSession } from "./live/globalSessionTypes";
 
 export function HomeCanvas() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [globalSession, setGlobalSession] = useState<GlobalAgentSession | null>(null);
-  const handleSelectProject = useCallback((id: string | null) => {
+  const selectedNodeRef = useRef<ProjectNode | null>(null);
+  const handleSelectProject = useCallback((id: string | null, node?: ProjectNode | null) => {
+    selectedNodeRef.current = node ?? null;
     setSelectedProjectId(id);
   }, []);
 
@@ -26,6 +29,7 @@ export function HomeCanvas() {
       {selectedProjectId && (
         <ProjectDetailPanel
           projectId={selectedProjectId}
+          initialNode={selectedNodeRef.current}
           onClose={() => setSelectedProjectId(null)}
         />
       )}

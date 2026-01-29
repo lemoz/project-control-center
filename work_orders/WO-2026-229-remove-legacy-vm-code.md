@@ -35,9 +35,9 @@ tags:
   - migration
   - local-first
 estimate_hours: 3
-status: you_review
+status: done
 created_at: 2026-01-28
-updated_at: 2026-01-28
+updated_at: 2026-01-29
 depends_on: []
 era: v2
 ---

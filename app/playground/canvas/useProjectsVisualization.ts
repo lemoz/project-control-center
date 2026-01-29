@@ -479,10 +479,19 @@ export function useProjectsVisualization(): {
     setLoading(true);
     setError(null);
     try {
-      const nextProjects = await fetchRepos();
+      // Phase 1: Fetch repos + global context (fast) — render nodes immediately
+      const [nextProjects, contextResult] = await Promise.all([
+        fetchRepos(),
+        fetchGlobalContext().catch(() => null),
+      ]);
       setProjects(nextProjects);
+      if (contextResult) {
+        setGlobalContext(contextResult);
+      }
+      setLoading(false);
 
-      const [workOrderResults, runResults, contextResult, shiftResults, costResults] = await Promise.all([
+      // Phase 2: Fetch per-project details in background — nodes update progressively
+      const [workOrderResults, runResults, shiftResults, costResults] = await Promise.all([
         Promise.allSettled(
           nextProjects.map(async (project) => {
             const workOrders = await fetchWorkOrders(project.id);
@@ -495,7 +504,6 @@ export function useProjectsVisualization(): {
             return { projectId: project.id, runs };
           })
         ),
-        fetchGlobalContext().catch(() => null),
         Promise.allSettled(
           nextProjects.map(async (project) => {
             const context = await fetchShiftContext(project.id);
@@ -526,10 +534,6 @@ export function useProjectsVisualization(): {
       }
       setRunsByProject(runsMap);
 
-      if (contextResult) {
-        setGlobalContext(contextResult);
-      }
-
       const shiftMap: Record<string, ShiftContext> = {};
       for (const result of shiftResults) {
         if (result.status === "fulfilled" && result.value.context) {
@@ -549,7 +553,6 @@ export function useProjectsVisualization(): {
       setLastUpdated(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : "failed to load visualization data");
-    } finally {
       setLoading(false);
     }
   }, []);

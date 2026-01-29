@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import styles from "./live.module.css";
+import type { ProjectNode } from "../playground/canvas/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -48,6 +49,7 @@ function formatDateTime(value?: string | null): string {
 
 type ProjectDetailPanelProps = {
   projectId: string;
+  initialNode?: ProjectNode | null;
   onClose: () => void;
 };
 
@@ -69,11 +71,12 @@ type ShiftContextResponse = {
   economy?: {
     budget_remaining_usd: number;
     daily_drip_usd: number;
+    burn_rate_daily_usd: number;
     runway_days: number;
     budget_status: string;
   };
   work_orders?: {
-    summary: { ready: number; backlog: number; done: number; in_progress: number };
+    summary: { ready: number; backlog: number; done: number; in_progress: number; blocked: number };
   };
   recent_runs?: Array<{
     id: string;
@@ -101,7 +104,7 @@ type PanelData = {
   status: string | null;
   priority: number | null;
   health: string;
-  budget: { remaining_usd: number; daily_drip_usd: number; runway_days: number } | null;
+  budget: { remaining_usd: number; burn_rate_daily_usd: number; runway_days: number } | null;
   woCounts: { ready: number; building: number; blocked: number; done: number };
   escalations: Array<{ id: string; type: string; summary: string }>;
   recentRuns: Array<{ id: string; status: string; outcome: string | null }>;
@@ -164,14 +167,14 @@ function buildPanelData(
     budget: ctx.economy
       ? {
           remaining_usd: ctx.economy.budget_remaining_usd,
-          daily_drip_usd: ctx.economy.daily_drip_usd,
+          burn_rate_daily_usd: ctx.economy.burn_rate_daily_usd,
           runway_days: ctx.economy.runway_days,
         }
       : null,
     woCounts: {
       ready: woSummary?.ready ?? 0,
       building: woSummary?.in_progress ?? 0,
-      blocked: 0,
+      blocked: woSummary?.blocked ?? 0,
       done: woSummary?.done ?? 0,
     },
     escalations: escalations.map((c) => ({ id: c.id, type: c.type, summary: c.summary })),
@@ -188,8 +191,31 @@ function buildPanelData(
 // Component
 // ---------------------------------------------------------------------------
 
-export function ProjectDetailPanel({ projectId, onClose }: ProjectDetailPanelProps) {
-  const [data, setData] = useState<PanelData | null>(null);
+function buildInitialFromNode(node: ProjectNode): PanelData {
+  const healthStatus = node.healthStatus ?? "healthy";
+  return {
+    name: node.name,
+    stage: "...",
+    status: node.status ?? null,
+    priority: node.priority ?? null,
+    health: healthStatus,
+    budget: null,
+    woCounts: {
+      ready: node.workOrders.ready,
+      building: node.workOrders.building,
+      blocked: node.workOrders.blocked,
+      done: node.workOrders.done,
+    },
+    escalations: [],
+    recentRuns: [],
+    activeShift: null,
+  };
+}
+
+export function ProjectDetailPanel({ projectId, initialNode, onClose }: ProjectDetailPanelProps) {
+  const [data, setData] = useState<PanelData | null>(
+    initialNode ? buildInitialFromNode(initialNode) : null
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -227,6 +253,53 @@ export function ProjectDetailPanel({ projectId, onClose }: ProjectDetailPanelPro
   const healthStatus = data?.health ?? null;
   const healthColor = healthStatus ? HEALTH_COLORS[healthStatus] ?? "#a9b0c2" : "#a9b0c2";
 
+  const skeletonBar = (width: string | number, height = 14) => (
+    <div
+      style={{
+        width,
+        height,
+        borderRadius: 4,
+        background: "rgba(255,255,255,0.06)",
+        animation: "pulse 1.2s ease-in-out infinite",
+      }}
+    />
+  );
+
+  if (loading) {
+    return (
+      <div className={styles.detailPanelOverlay} role="presentation">
+        <aside className={`card ${styles.detailPanel} ${styles.detailPanelSlideIn}`}>
+          <div className={styles.detailHeader}>
+            <div>
+              <div className="muted" style={{ fontSize: 12 }}>{projectId}</div>
+              <div className={styles.detailTitle}>{skeletonBar(180, 18)}</div>
+            </div>
+            <button
+              className="btnSecondary"
+              onClick={onClose}
+              style={{ padding: "4px 8px", fontSize: 12 }}
+              aria-label="Close project details"
+            >
+              X
+            </button>
+          </div>
+          <div className={styles.detailMeta}>
+            {skeletonBar(80, 22)}
+            {skeletonBar(32, 22)}
+            {skeletonBar(56, 22)}
+          </div>
+          {[100, 120, 140, 100, 80].map((w, i) => (
+            <div key={i} className={styles.detailSection}>
+              {skeletonBar(70, 11)}
+              <div style={{ marginTop: 6 }}>{skeletonBar(w)}</div>
+            </div>
+          ))}
+          <style>{`@keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.8; } }`}</style>
+        </aside>
+      </div>
+    );
+  }
+
   return (
     <div className={styles.detailPanelOverlay} role="presentation">
       <aside
@@ -238,7 +311,7 @@ export function ProjectDetailPanel({ projectId, onClose }: ProjectDetailPanelPro
               {projectId}
             </div>
             <div className={styles.detailTitle}>
-              {loading ? "Loading..." : projectName}
+              {projectName}
             </div>
           </div>
           <button
@@ -257,11 +330,6 @@ export function ProjectDetailPanel({ projectId, onClose }: ProjectDetailPanelPro
           {statusLabel && <span className="badge">{formatLabel(statusLabel)}</span>}
         </div>
 
-        {loading && (
-          <div className="muted" style={{ fontSize: 12 }}>
-            Loading project details...
-          </div>
-        )}
         {error && (
           <div className="error" style={{ fontSize: 12 }}>
             {error}
@@ -336,7 +404,7 @@ export function ProjectDetailPanel({ projectId, onClose }: ProjectDetailPanelPro
           {budget ? (
             <div style={{ fontSize: 12, display: "flex", flexDirection: "column", gap: 6 }}>
               <div>Remaining: {formatCurrency(budget.remaining_usd)}</div>
-              <div>Burn rate: {formatCurrency(budget.daily_drip_usd)} / day</div>
+              <div>Burn rate: {formatCurrency(budget.burn_rate_daily_usd)} / day</div>
               <div>Runway: {Math.round(budget.runway_days)} days</div>
             </div>
           ) : (
