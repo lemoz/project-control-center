@@ -24,7 +24,7 @@ tags:
   - voice
   - pipecat
 estimate_hours: 1
-status: ready
+status: done
 depends_on: []
 created_at: 2026-01-29
 updated_at: 2026-01-29

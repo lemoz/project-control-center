@@ -4,9 +4,9 @@ title: "Voice feature gating: cloud or BYOK"
 goal: "Voice features require either a pcc-cloud subscription or a user-provided ElevenLabs API key. Graceful degradation when neither is configured."
 context:
   - Voice is integral to the global canvas home page experience (WO-2026-235, WO-2026-236)
-  - ElevenLabs keys configured via env vars in `server/config.ts` (getElevenLabsApiKey, getElevenLabsAgentId)
-  - Voice session endpoint: `POST /api/voice/session` in `server/index.ts`
-  - VoiceWidget in `app/landing/components/VoiceWidget/`
+  - "ElevenLabs keys configured via env vars in server/config.ts (getElevenLabsApiKey, getElevenLabsAgentId)"
+  - "Voice session endpoint: POST /api/voice/session in server/index.ts"
+  - "VoiceWidget in app/landing/components/VoiceWidget/"
   - Cloud users get voice included; local users must provide their own ElevenLabs key
 acceptance_criteria:
   - Voice availability check endpoint or flag in settings/health response
