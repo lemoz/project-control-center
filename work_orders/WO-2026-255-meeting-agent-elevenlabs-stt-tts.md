@@ -9,7 +9,7 @@ context:
   - "ElevenLabs API key: CONTROL_CENTER_ELEVENLABS_API_KEY"
   - "Voice ID: ELEVENLABS_VOICE_ID"
   - "Existing TTS reference: server/narration_tts.ts (eleven_turbo_v2 model)"
-  - "Pipecat has native ElevenLabs modules"
+  - Pipecat has native ElevenLabs modules
 acceptance_criteria:
   - ElevenLabs STT processor in pipeline (before LLM)
   - ElevenLabs TTS processor in pipeline (after LLM)
@@ -28,7 +28,7 @@ tags:
   - voice
   - pipecat
 estimate_hours: 1.5
-status: backlog
+status: you_review
 depends_on:
   - WO-2026-252
   - WO-2026-254
