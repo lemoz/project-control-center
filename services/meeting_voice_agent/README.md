@@ -2,7 +2,8 @@
 
 Minimal Python service for the meeting voice agent. It loads configuration from
 the environment, wires the Pipecat pipeline (ElevenLabs STT -> Claude LLM ->
-ElevenLabs TTS), and runs a local audio transport when available.
+ElevenLabs TTS), and runs a WebSocket audio transport (falling back to local
+audio when needed).
 
 ## Setup
 ```
@@ -30,6 +31,8 @@ Optional:
 - `ELEVENLABS_STT_MODEL_ID`
 - `ELEVENLABS_TTS_MODEL_ID`
 - `ELEVENLABS_TTS_FORMAT`
+- `VOICE_AGENT_HOST` (default: `0.0.0.0`)
+- `VOICE_AGENT_PORT` (default: `8765`)
 
 Audio config (Recall.ai defaults):
 - `VOICE_AUDIO_SAMPLE_RATE` (default: `16000`)

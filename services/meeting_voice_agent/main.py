@@ -36,6 +36,8 @@ class ServiceConfig:
     elevenlabs_stt_model_id: Optional[str]
     elevenlabs_tts_model_id: Optional[str]
     elevenlabs_tts_format: Optional[str]
+    voice_agent_host: str
+    voice_agent_port: int
     audio: AudioConfig
 
 
@@ -126,6 +128,8 @@ def load_config() -> ServiceConfig:
         elevenlabs_stt_model_id=env("ELEVENLABS_STT_MODEL_ID"),
         elevenlabs_tts_model_id=env("ELEVENLABS_TTS_MODEL_ID"),
         elevenlabs_tts_format=env("ELEVENLABS_TTS_FORMAT"),
+        voice_agent_host=env("VOICE_AGENT_HOST", "0.0.0.0") or "0.0.0.0",
+        voice_agent_port=parse_int_env("VOICE_AGENT_PORT", 8765),
         audio=load_audio_config(),
     )
 
@@ -334,6 +338,64 @@ def build_transport_params(audio: AudioConfig) -> Optional[Any]:
     )
 
 
+def log_ws_connected(*_args, **_kwargs) -> None:
+    LOG.info("WebSocket client connected.")
+
+
+def log_ws_disconnected(*_args, **_kwargs) -> None:
+    LOG.info("WebSocket client disconnected.")
+
+
+def build_websocket_audio_transport(
+    config: ServiceConfig, params: Optional[Any]
+) -> Optional[Any]:
+    try:
+        WebSocketTransport = load_any_symbol(
+            [
+                "WebSocketServerTransport",
+                "WebsocketServerTransport",
+                "WebSocketTransport",
+                "WebsocketTransport",
+            ],
+            [
+                "pipecat.transports.websocket",
+                "pipecat.transports.websocket_server",
+                "pipecat.transports.websocket_transport",
+                "pipecat.transports.websockets",
+                "pipecat.transports",
+            ],
+        )
+    except ImportError:
+        return None
+
+    kwargs = {
+        "host": config.voice_agent_host,
+        "port": config.voice_agent_port,
+        "params": params,
+        "audio_params": params,
+        "sample_rate": config.audio.sample_rate,
+        "sample_rate_hz": config.audio.sample_rate,
+        "channels": config.audio.channels,
+        "num_channels": config.audio.channels,
+        "sample_width": config.audio.sample_width,
+        "sample_width_bytes": config.audio.sample_width,
+        "frame_duration_ms": config.audio.frame_duration_ms,
+        "frame_ms": config.audio.frame_duration_ms,
+        "audio_format": config.audio.audio_format,
+        "format": config.audio.audio_format,
+        "on_connect": log_ws_connected,
+        "on_disconnect": log_ws_disconnected,
+        "on_client_connected": log_ws_connected,
+        "on_client_disconnected": log_ws_disconnected,
+        "on_connection_open": log_ws_connected,
+        "on_connection_closed": log_ws_disconnected,
+    }
+    try:
+        return WebSocketTransport(**kwargs)
+    except TypeError:
+        return init_with_supported_kwargs(WebSocketTransport, **kwargs)
+
+
 def build_local_audio_transport(
     config: ServiceConfig, params: Optional[Any]
 ) -> Optional[Any]:
@@ -475,10 +537,20 @@ async def run_pipeline(config: ServiceConfig, llm_processor: Any) -> None:
     stt_processor = build_stt_processor(stt_service)
     tts_processor = build_tts_processor(tts_service)
     transport_params = build_transport_params(config.audio)
-    transport = build_local_audio_transport(config, transport_params)
+    transport = build_websocket_audio_transport(config, transport_params)
+    transport_label = "websocket"
     if transport is None:
-        LOG.error("Pipecat local audio transport not available; cannot start pipeline.")
+        transport = build_local_audio_transport(config, transport_params)
+        transport_label = "local audio"
+    if transport is None:
+        LOG.error("Pipecat audio transport not available; cannot start pipeline.")
         return
+    if transport_label == "websocket":
+        LOG.info(
+            "WebSocket audio server listening on %s:%s",
+            config.voice_agent_host,
+            config.voice_agent_port,
+        )
 
     input_processor, output_processor = get_transport_processors(transport)
     processors = []
@@ -511,6 +583,11 @@ async def main() -> None:
 
     LOG.info("Meeting voice agent starting.")
     LOG.info("PCC base URL: %s", config.pcc_base_url)
+    LOG.info(
+        "Voice agent WebSocket: %s:%s",
+        config.voice_agent_host,
+        config.voice_agent_port,
+    )
     LOG.info("Audio config: %s", config.audio)
 
     if not config.anthropic_api_key:

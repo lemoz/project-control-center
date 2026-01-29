@@ -7,7 +7,7 @@ context:
   - "Full pipeline: WO-2026-255"
   - "Recall.ai integration spike: WO-2026-244"
   - "Audio format: 16kHz mono PCM s16le, 20ms frames"
-  - "WebSocket endpoint that Recall.ai bot connects to for bidirectional audio streaming"
+  - WebSocket endpoint that Recall.ai bot connects to for bidirectional audio streaming
 acceptance_criteria:
   - WebSocket server transport wrapping the Pipecat pipeline
   - Configurable host/port via VOICE_AGENT_HOST and VOICE_AGENT_PORT env vars
@@ -23,7 +23,7 @@ tags:
   - voice
   - pipecat
 estimate_hours: 1
-status: ready
+status: you_review
 depends_on:
   - WO-2026-255
 created_at: 2026-01-29
