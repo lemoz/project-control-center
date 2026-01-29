@@ -1,4 +1,4 @@
-import { spawnSync } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { getGlobalAttentionMaxProjects } from "./config.js";
@@ -248,18 +248,27 @@ async function decideWithClaude(options: {
     options.prompt,
   ];
   logLine(options.onLog, `global-agent: invoking ${command}`);
-  const result = spawnSync(command, args, {
-    cwd: options.cwd ?? process.cwd(),
-    encoding: "utf8",
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd ?? process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+    child.on("error", (err) => reject(err));
+    child.on("close", (code) => {
+      const status = code ?? 1;
+      if (status !== 0) {
+        const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
+        const detail = stderr ? `: ${stderr}` : "";
+        reject(new Error(`claude exited ${status}${detail}`));
+        return;
+      }
+      resolve(Buffer.concat(stdoutChunks).toString("utf8"));
+    });
   });
-  if (result.error) throw result.error;
-  const status = result.status ?? 1;
-  if (status !== 0) {
-    const stderr = result.stderr ? String(result.stderr).trim() : "";
-    const detail = stderr ? `: ${stderr}` : "";
-    throw new Error(`claude exited ${status}${detail}`);
-  }
-  return result.stdout ? String(result.stdout) : "";
 }
 
 function toResolutionPayload(

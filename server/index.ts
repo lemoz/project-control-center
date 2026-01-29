@@ -235,6 +235,7 @@ import {
   listGlobalAgentSessionEvents,
   pauseAutonomousSessionForUserMessage,
   pauseGlobalAgentSession,
+  recoverAutonomousSessionLoop,
   startGlobalAgentSessionAutonomous,
   stopGlobalAgentSession,
   updateGlobalAgentSessionDetails,
@@ -5489,4 +5490,5 @@ app.listen(port, host, () => {
   startEscalationTimeoutSweep();
   startShiftScheduler();
   startAutopilotScheduler();
+  recoverAutonomousSessionLoop();
 });

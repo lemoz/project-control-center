@@ -898,6 +898,19 @@ export function pauseAutonomousSessionForUserMessage(): void {
   pauseGlobalAgentSession(session.id, "user_interruption");
 }
 
+/**
+ * Recover an autonomous session whose loop died (e.g. after server restart).
+ * Call from server startup to resume any session stuck in "autonomous" state.
+ */
+export function recoverAutonomousSessionLoop(): void {
+  const session = getActiveGlobalAgentSession();
+  if (!session || session.state !== "autonomous") return;
+  if (ACTIVE_SESSION_LOOPS.has(session.id)) return;
+  // eslint-disable-next-line no-console
+  console.log(`Recovering autonomous session loop for ${session.id}`);
+  void startSessionLoop(session.id);
+}
+
 async function startSessionLoop(sessionId: string): Promise<void> {
   if (ACTIVE_SESSION_LOOPS.has(sessionId)) return;
   ACTIVE_SESSION_LOOPS.add(sessionId);
