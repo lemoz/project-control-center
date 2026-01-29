@@ -160,6 +160,11 @@ import {
   saveVoiceSettings,
 } from "./voice_settings.js";
 import {
+  joinMeeting,
+  leaveMeeting,
+  refreshMeetingStatus,
+} from "./meeting_connector.js";
+import {
   getEscalationDeferral,
   getExplicitPreferences,
   getLastEscalationAt,
@@ -765,6 +770,27 @@ app.post("/api/voice/run-status", verifyElevenLabsWebhook, (req, res) => {
   const run = getRun(runId);
   if (!run) return res.status(404).json({ error: "run not found" });
   return res.json(run);
+});
+
+app.post("/meetings/join", async (req, res) => {
+  const result = await joinMeeting(req.body);
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.status(201).json({ meeting: result.meeting });
+});
+
+app.get("/meetings/active", async (_req, res) => {
+  const meeting = await refreshMeetingStatus();
+  return res.json({ meeting });
+});
+
+app.post("/meetings/leave", async (_req, res) => {
+  const result = await leaveMeeting();
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.json({ meeting: result.meeting });
 });
 
 app.post("/narration", async (req, res) => {
