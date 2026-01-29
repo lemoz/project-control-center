@@ -27,9 +27,9 @@ tags:
   - infra
   - agent-os
 estimate_hours: 4
-status: ready
+status: backlog
 created_at: 2026-01-08
-updated_at: 2026-01-26
+updated_at: 2026-01-29
 archived_reason: Superseded by DB-first approach. Budget/pricing in 101-103, agent notes in constitution (024-026), policies hardcoded. File-based config would create two sources of truth.
 depends_on:
   - WO-2025-002
