@@ -190,6 +190,8 @@ type StartShiftArgs = { projectId: string };
 
 type AskGlobalAgentArgs = { question: string };
 
+type GetProjectStatusArgs = { project: string };
+
 type EscalationInput = { key: string; label: string };
 
 type ActiveSessionResponse = {
@@ -219,6 +221,38 @@ type GlobalContextResponse = {
   }>;
 };
 
+type ShiftContextResponse = {
+  project?: {
+    id?: string;
+    name?: string;
+    status?: string;
+  };
+  lifecycle?: { status?: string };
+  work_orders?: {
+    summary?: {
+      ready?: number;
+      backlog?: number;
+      done?: number;
+      in_progress?: number;
+      blocked?: number;
+    };
+  };
+  active_runs?: Array<{
+    id?: string;
+    work_order_id?: string;
+    status?: string;
+  }>;
+  economy?: {
+    budget_status?: string;
+    budget_remaining_usd?: number;
+    runway_days?: number;
+  };
+  last_handoff?: {
+    summary?: string;
+    work_completed?: string[];
+  } | null;
+};
+
 type GlobalSessionState = "onboarding" | "briefing" | "autonomous" | "debrief" | "ended";
 
 type GlobalSessionSummary = {
@@ -228,7 +262,7 @@ type GlobalSessionSummary = {
 };
 
 function normalizeMatch(value: string): string {
-  return value.trim().toLowerCase();
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function resolveNode(nodes: CanvasVoiceNode[], query: string): CanvasVoiceNode | null {
@@ -246,11 +280,125 @@ function resolveNode(nodes: CanvasVoiceNode[], query: string): CanvasVoiceNode |
   return match ?? null;
 }
 
+type ProjectMatchResult = {
+  match: GlobalContextResponse["projects"][number] | null;
+  candidates: GlobalContextResponse["projects"][number][];
+};
+
+function resolveProjectMatch(
+  projects: GlobalContextResponse["projects"],
+  query: string
+): ProjectMatchResult {
+  const normalized = normalizeMatch(query);
+  if (!normalized) return { match: null, candidates: [] };
+  const exactId = projects.find((project) => normalizeMatch(project.id) === normalized);
+  if (exactId) return { match: exactId, candidates: [exactId] };
+  const exactName = projects.find((project) => normalizeMatch(project.name) === normalized);
+  if (exactName) return { match: exactName, candidates: [exactName] };
+
+  const candidates = new Map<string, GlobalContextResponse["projects"][number]>();
+  for (const project of projects) {
+    const idMatch = normalizeMatch(project.id).includes(normalized);
+    const nameMatch = normalizeMatch(project.name).includes(normalized);
+    if (idMatch || nameMatch) {
+      candidates.set(project.id, project);
+    }
+  }
+  const list = Array.from(candidates.values());
+  if (list.length === 1) {
+    return { match: list[0], candidates: list };
+  }
+  return { match: null, candidates: list };
+}
+
 function formatSessionTimestamp(value: string | null | undefined): string | null {
   if (!value) return null;
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return value;
   return new Date(parsed).toLocaleTimeString();
+}
+
+function formatUsd(value: number): string {
+  if (!Number.isFinite(value)) return "$0.00";
+  const sign = value < 0 ? "-" : "";
+  return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
+function formatDays(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  return value.toFixed(1);
+}
+
+function truncateText(value: string, maxLength: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function formatShiftContextSummary(context: ShiftContextResponse): string {
+  const projectName = context.project?.name ?? "Project";
+  const projectId = context.project?.id ?? "";
+  const label = projectId ? `${projectName} (${projectId})` : projectName;
+  const parts: string[] = [];
+  const statusParts = [
+    context.project?.status ? `status ${context.project.status}` : "",
+    context.lifecycle?.status ? `lifecycle ${context.lifecycle.status}` : "",
+  ].filter(Boolean);
+  if (statusParts.length) {
+    parts.push(statusParts.join(", "));
+  }
+
+  const summary = context.work_orders?.summary;
+  if (summary) {
+    const ready = summary.ready ?? 0;
+    const inProgress = summary.in_progress ?? 0;
+    const blocked = summary.blocked ?? 0;
+    const backlog = summary.backlog ?? 0;
+    const woParts = [`ready ${ready}`, `in progress ${inProgress}`, `blocked ${blocked}`];
+    if (backlog > 0) woParts.push(`backlog ${backlog}`);
+    parts.push(`WOs ${woParts.join(", ")}`);
+  }
+
+  const activeRuns = context.active_runs ?? [];
+  if (activeRuns.length) {
+    const listed = activeRuns.slice(0, 3).map((run) => {
+      const woLabel = run.work_order_id || run.id || "run";
+      const statusLabel = run.status ? `:${run.status}` : "";
+      return `${woLabel}${statusLabel}`;
+    });
+    const overflow =
+      activeRuns.length > 3 ? ` (+${activeRuns.length - 3} more)` : "";
+    parts.push(`Active runs: ${listed.join(", ")}${overflow}`);
+  } else {
+    parts.push("Active runs: none");
+  }
+
+  const economy = context.economy;
+  if (economy) {
+    const remaining = economy.budget_remaining_usd ?? 0;
+    const runway = economy.runway_days ?? 0;
+    const budgetStatus = economy.budget_status ?? "unknown";
+    parts.push(
+      `Budget ${budgetStatus} ${formatUsd(remaining)} remaining, runway ${formatDays(
+        runway
+      )} days`
+    );
+  }
+
+  const handoffSummary = context.last_handoff?.summary ?? "";
+  const completed = context.last_handoff?.work_completed ?? [];
+  if (handoffSummary) {
+    parts.push(`Last handoff: ${truncateText(handoffSummary, 140)}`);
+  } else if (completed.length) {
+    const listed = completed.slice(0, 3).join(", ");
+    const overflow = completed.length > 3 ? ` (+${completed.length - 3} more)` : "";
+    parts.push(`Last handoff: ${listed}${overflow}`);
+  }
+
+  if (!parts.length) {
+    return `${label} status unavailable.`;
+  }
+  return `${label} status: ${parts.join(". ")}.`;
 }
 
 type SessionEvent = NonNullable<ActiveSessionResponse["events"]>[number];
@@ -487,6 +635,62 @@ export function createVoiceClientTools() {
         return parts.join(" ");
       } catch {
         return "Unable to load the global session status.";
+      }
+    },
+    getProjectStatus: async ({ project }: GetProjectStatusArgs) => {
+      if (!project || typeof project !== "string") {
+        return "Project name or id is required.";
+      }
+      const trimmed = project.trim();
+      if (!trimmed) return "Project name or id is required.";
+
+      let resolvedId = trimmed;
+      let resolvedName = trimmed;
+      let didLookup = false;
+      let foundMatch = false;
+      try {
+        const res = await fetch("/api/global/context", { cache: "no-store" });
+        const json = (await res.json().catch(() => null)) as GlobalContextResponse | null;
+        if (res.ok && json?.projects?.length) {
+          didLookup = true;
+          const matchResult = resolveProjectMatch(json.projects, trimmed);
+          if (matchResult.match) {
+            resolvedId = matchResult.match.id;
+            resolvedName = matchResult.match.name;
+            foundMatch = true;
+          } else if (matchResult.candidates.length > 1) {
+            const listed = matchResult.candidates
+              .slice(0, 5)
+              .map((candidate) => `${candidate.name} (${candidate.id})`)
+              .join(", ");
+            const overflow =
+              matchResult.candidates.length > 5
+                ? ` (+${matchResult.candidates.length - 5} more)`
+                : "";
+            return `Multiple projects match "${trimmed}": ${listed}${overflow}. Please specify the project id or exact name.`;
+          }
+        }
+      } catch {
+        // ignore lookup failures
+      }
+
+      if (didLookup && !foundMatch) {
+        return `Project "${trimmed}" not found. Try the project id.`;
+      }
+
+      try {
+        const res = await fetch(
+          `/api/projects/${encodeURIComponent(resolvedId)}/shift-context`,
+          { cache: "no-store" }
+        );
+        const json = (await res.json().catch(() => null)) as ShiftContextResponse | null;
+        if (!res.ok) {
+          return extractErrorMessage(json, `Unable to load status for ${resolvedName}.`);
+        }
+        if (!json) return `Unable to load status for ${resolvedName}.`;
+        return formatShiftContextSummary(json);
+      } catch {
+        return `Unable to load status for ${resolvedName}.`;
       }
     },
     updateSessionPriority: async ({ project, note }: UpdateSessionPriorityArgs) => {

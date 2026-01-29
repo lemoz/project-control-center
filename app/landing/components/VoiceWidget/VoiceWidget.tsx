@@ -18,12 +18,15 @@ import {
 const MAX_CONTEXT_ITEMS = 8;
 const CONTEXT_THROTTLE_MS = 600;
 const MAX_GLOBAL_CONTEXT_ITEMS = 6;
+const MEETING_BRIEFING_POLL_MS = 60_000;
 const SESSION_POLL_MS = 10_000;
 const SESSION_IDLE_POLL_MS = 30_000;
 const ESCALATION_POLL_MS = 20_000;
 const SHIFT_POLL_MS = 30_000;
 const MAX_SHIFT_PROJECTS = 6;
 const MAX_ANNOUNCEMENTS = 6;
+const MAX_BRIEFING_PROJECTS = 6;
+const MAX_BRIEFING_ESCALATIONS = 6;
 
 function formatNodeLabel(node: CanvasVoiceNode): string {
   if (node.type === "work_order" && node.title) {
@@ -128,6 +131,166 @@ function formatShiftUpdate(update: CanvasVoiceShiftUpdate | null): string {
         : "shift finished";
   return `Latest shift: ${update.projectName} ${label}.`;
 }
+
+type GlobalContextProject = GlobalContextResponse["projects"][number];
+type MeetingBriefing = { summary: string; key: string };
+
+function formatUsd(value: number): string {
+  if (!Number.isFinite(value)) return "$0.00";
+  const sign = value < 0 ? "-" : "";
+  return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
+function formatDays(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  return value.toFixed(1);
+}
+
+function formatBriefingTimestamp(value?: string | null): string | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  return new Date(parsed).toLocaleTimeString();
+}
+
+function truncateText(value: string, maxLength: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function formatPortfolioHealthSummary(projects: GlobalContextProject[]): string {
+  if (!projects.length) return "Portfolio health: none.";
+  const counts = {
+    healthy: 0,
+    attention_needed: 0,
+    stalled: 0,
+    failing: 0,
+    blocked: 0,
+  };
+  for (const project of projects) {
+    const health = project.health as keyof typeof counts;
+    if (health in counts) {
+      counts[health] += 1;
+    }
+  }
+  const parts = Object.entries(counts).map(
+    ([key, value]) => `${key.replace("_", " ")} ${value}`
+  );
+  return `Portfolio health: ${parts.join(", ")}.`;
+}
+
+function formatPortfolioBudget(context: GlobalContextResponse): string {
+  const economy = context.economy;
+  if (!economy) return "Budget: unavailable.";
+  const usedToday =
+    typeof context.resources?.budget_used_today === "number"
+      ? context.resources.budget_used_today
+      : null;
+  const usedLabel = usedToday !== null ? `; used today ${formatUsd(usedToday)}` : "";
+  return `Budget: ${formatUsd(economy.total_remaining_usd)} remaining of ${formatUsd(
+    economy.monthly_budget_usd
+  )}; burn ${formatUsd(economy.portfolio_burn_rate_daily_usd)}/day; runway ${formatDays(
+    economy.portfolio_runway_days
+  )} days${usedLabel}.`;
+}
+
+function formatEscalationBrief(projects: GlobalContextProject[]): string {
+  const escalated = projects.filter((project) => project.escalations.length > 0);
+  if (!escalated.length) return "Escalations: none.";
+  const listed = escalated.slice(0, MAX_BRIEFING_ESCALATIONS).map((project) => {
+    const count = project.escalations.length;
+    const countLabel = count > 1 ? ` (${count})` : "";
+    const first = project.escalations[0];
+    const typeLabel = first?.type ? ` ${first.type}` : "";
+    const summary = first?.summary ? ` - ${truncateText(first.summary, 80)}` : "";
+    return `${project.name}${countLabel}${typeLabel}${summary}`;
+  });
+  const overflow =
+    escalated.length > MAX_BRIEFING_ESCALATIONS
+      ? ` (+${escalated.length - MAX_BRIEFING_ESCALATIONS} more)`
+      : "";
+  return `Escalations: ${listed.join("; ")}${overflow}.`;
+}
+
+function formatActiveShiftsBrief(projects: GlobalContextProject[]): string {
+  const active = projects.filter((project) => project.active_shift);
+  if (!active.length) return "Active shifts: none.";
+  const listed = active
+    .slice(0, MAX_BRIEFING_PROJECTS)
+    .map((project) => project.name)
+    .join(", ");
+  const overflow =
+    active.length > MAX_BRIEFING_PROJECTS
+      ? ` (+${active.length - MAX_BRIEFING_PROJECTS} more)`
+      : "";
+  return `Active shifts: ${listed}${overflow}.`;
+}
+
+function formatProjectBriefingLine(project: GlobalContextProject): string {
+  const segments: string[] = [];
+  if (project.status && project.status !== "active") {
+    segments.push(`status ${project.status}`);
+  }
+  if (project.health) {
+    segments.push(`health ${project.health}`);
+  }
+  const workOrders = project.work_orders;
+  if (workOrders) {
+    segments.push(
+      `WOs ${workOrders.ready}/${workOrders.building}/${workOrders.blocked}`
+    );
+  }
+  if (project.budget) {
+    segments.push(
+      `budget ${project.budget.status} ${formatUsd(project.budget.remaining_usd)}`
+    );
+  }
+  if (project.escalations.length) {
+    segments.push(`esc ${project.escalations.length}`);
+  }
+  if (project.active_shift) {
+    segments.push("shift active");
+  }
+  return `- ${project.name} (${project.id}): ${segments.join("; ")}`;
+}
+
+function buildMeetingBriefing(context: GlobalContextResponse): MeetingBriefing {
+  const projects = context.projects ?? [];
+  const timestamp = formatBriefingTimestamp(context.assembled_at);
+  const header = timestamp
+    ? `Portfolio briefing (${timestamp}).`
+    : "Portfolio briefing.";
+  const lines: string[] = [
+    header,
+    formatPortfolioHealthSummary(projects),
+    formatPortfolioBudget(context),
+    formatEscalationBrief(projects),
+    formatActiveShiftsBrief(projects),
+  ];
+
+  if (projects.length) {
+    lines.push("Projects (WOs ready/building/blocked):");
+    const listed = projects.slice(0, MAX_BRIEFING_PROJECTS);
+    for (const project of listed) {
+      lines.push(formatProjectBriefingLine(project));
+    }
+    if (projects.length > listed.length) {
+      lines.push(`- ...and ${projects.length - listed.length} more`);
+    }
+  } else {
+    lines.push("Projects: none.");
+  }
+
+  lines.push(
+    "Status lookups: call getProjectStatus with project name or id for shift context."
+  );
+
+  const keyLines = [...lines];
+  keyLines[0] = "Portfolio briefing.";
+  return { summary: lines.join("\n"), key: keyLines.join("\n") };
+}
+
 function buildCanvasSummary(state: CanvasVoiceState): string {
   const contextLabel = state.contextLabel ?? "Canvas";
   const focusLabel = state.focusedNode ? formatNodeLabel(state.focusedNode) : "none";
@@ -158,6 +321,15 @@ function buildCanvasSummary(state: CanvasVoiceState): string {
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+function mergeMeetingBriefing(
+  summary: string,
+  meetingBriefingSummary: string | null
+): string {
+  const briefing = meetingBriefingSummary?.trim();
+  if (!briefing) return summary;
+  return `${summary}\n\n${briefing}`;
 }
 
 function statusLabel(
@@ -224,9 +396,33 @@ type GlobalContextResponse = {
   projects: Array<{
     id: string;
     name: string;
+    status: string;
+    health: string;
+    budget: {
+      status: "healthy" | "warning" | "critical" | "exhausted";
+      remaining_usd: number;
+      allocation_usd: number;
+      daily_drip_usd: number;
+      runway_days: number;
+    };
+    work_orders: {
+      ready: number;
+      building: number;
+      blocked: number;
+    };
     escalations: Array<{ id: string; type: string; summary: string }>;
     active_shift?: { started_at?: string | null } | null;
   }>;
+  economy?: {
+    monthly_budget_usd: number;
+    total_allocated_usd: number;
+    total_spent_usd: number;
+    total_remaining_usd: number;
+    portfolio_burn_rate_daily_usd: number;
+    portfolio_runway_days: number;
+  };
+  resources?: { budget_used_today?: number };
+  assembled_at?: string;
 };
 
 type ShiftContextResponse = {
@@ -293,6 +489,11 @@ export function VoiceWidget() {
   const [textInput, setTextInput] = useState("");
   const lastContextRef = useRef<string>("");
   const contextTimerRef = useRef<number | null>(null);
+  const meetingBriefingKeyRef = useRef<string>("");
+  const meetingBriefingInFlightRef = useRef(false);
+  const [meetingBriefingSummary, setMeetingBriefingSummary] = useState<string | null>(
+    null
+  );
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatusResponse | null>(null);
   const [voiceStatusLoading, setVoiceStatusLoading] = useState(true);
   const [sessionSnapshot, setSessionSnapshot] = useState<GlobalAgentSession | null>(null);
@@ -470,6 +671,39 @@ export function VoiceWidget() {
     return () => window.clearInterval(timer);
   }, [loadEscalations]);
 
+  const loadMeetingBriefing = useCallback(async () => {
+    if (meetingBriefingInFlightRef.current) return;
+    meetingBriefingInFlightRef.current = true;
+    try {
+      const res = await fetch("/api/global/context", { cache: "no-store" });
+      const json = (await res.json().catch(() => null)) as GlobalContextResponse | null;
+      if (!res.ok || !json?.projects) return;
+      const briefing = buildMeetingBriefing(json);
+      if (briefing.key === meetingBriefingKeyRef.current) return;
+      meetingBriefingKeyRef.current = briefing.key;
+      setMeetingBriefingSummary(briefing.summary);
+    } catch {
+      // ignore meeting briefing failures
+    } finally {
+      meetingBriefingInFlightRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (status === "connected") return;
+    meetingBriefingKeyRef.current = "";
+    setMeetingBriefingSummary(null);
+  }, [status]);
+
+  useEffect(() => {
+    if (status !== "connected") return;
+    void loadMeetingBriefing();
+    const timer = window.setInterval(() => {
+      void loadMeetingBriefing();
+    }, MEETING_BRIEFING_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [loadMeetingBriefing, status]);
+
   const loadShiftUpdates = useCallback(async () => {
     const projects = canvasState.visibleProjects.slice(0, MAX_SHIFT_PROJECTS);
     if (!projects.length) return;
@@ -557,7 +791,10 @@ export function VoiceWidget() {
 
   useEffect(() => {
     if (status !== "connected") return;
-    const summary = buildCanvasSummary(canvasState);
+    const summary = mergeMeetingBriefing(
+      buildCanvasSummary(canvasState),
+      meetingBriefingSummary
+    );
     if (summary === lastContextRef.current) return;
 
     if (contextTimerRef.current) {
@@ -575,7 +812,7 @@ export function VoiceWidget() {
         window.clearTimeout(contextTimerRef.current);
       }
     };
-  }, [canvasState, sendContextualUpdate, status]);
+  }, [canvasState, meetingBriefingSummary, sendContextualUpdate, status]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
