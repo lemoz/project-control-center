@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectNode } from "../playground/canvas/types";
 import styles from "./live.module.css";
+import { useHeartbeat } from "./useHeartbeat";
 
 type GlobalAgentSessionState =
   | "onboarding"
@@ -224,6 +225,96 @@ function formatDecisionDetail(action: GlobalAgentActionResult): string {
   }
 }
 
+function truncateStr(str: string, maxLen: number): string {
+  if (str.length <= maxLen) return str;
+  return str.slice(0, maxLen - 3) + "...";
+}
+
+function extractToolSummary(toolName: string, input: Record<string, unknown>): string {
+  switch (toolName) {
+    case "Read":
+      return typeof input.file_path === "string" ? `Read ${input.file_path}` : "Read";
+    case "Edit":
+      return typeof input.file_path === "string" ? `Edit ${input.file_path}` : "Edit";
+    case "Write":
+      return typeof input.file_path === "string" ? `Write ${input.file_path}` : "Write";
+    case "Bash":
+      return typeof input.command === "string"
+        ? `Bash: ${truncateStr(input.command, 60)}`
+        : "Bash";
+    case "Grep":
+      return typeof input.pattern === "string" ? `Grep: ${input.pattern}` : "Grep";
+    case "Glob":
+      return typeof input.pattern === "string" ? `Glob: ${input.pattern}` : "Glob";
+    case "WebFetch":
+      return typeof input.url === "string" ? `Fetch: ${truncateStr(input.url, 60)}` : "WebFetch";
+    default:
+      return `\u2192 ${toolName}`;
+  }
+}
+
+function formatCurrentActivity(rawLine: string): string {
+  try {
+    const parsed = JSON.parse(rawLine) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return truncateStr(rawLine, 80);
+    }
+    const record = parsed as Record<string, unknown>;
+
+    // Top-level tool_use block
+    if (record.type === "tool_use" || record.type === "tool") {
+      const toolName =
+        (typeof record.name === "string" && record.name) ||
+        (typeof record.tool_name === "string" && record.tool_name) ||
+        (typeof record.toolName === "string" && record.toolName) ||
+        null;
+      if (toolName) {
+        const input =
+          typeof record.input === "object" && record.input !== null
+            ? (record.input as Record<string, unknown>)
+            : {};
+        return extractToolSummary(toolName, input);
+      }
+    }
+
+    // Assistant message with content blocks containing tool_use
+    if (
+      record.type === "assistant" &&
+      typeof record.message === "object" &&
+      record.message !== null
+    ) {
+      const message = record.message as Record<string, unknown>;
+      if (Array.isArray(message.content)) {
+        for (const block of message.content) {
+          if (
+            typeof block === "object" &&
+            block !== null &&
+            !Array.isArray(block) &&
+            (block as Record<string, unknown>).type === "tool_use"
+          ) {
+            const b = block as Record<string, unknown>;
+            const toolName =
+              (typeof b.name === "string" && b.name) ||
+              (typeof b.tool_name === "string" && b.tool_name) ||
+              null;
+            if (toolName) {
+              const input =
+                typeof b.input === "object" && b.input !== null
+                  ? (b.input as Record<string, unknown>)
+                  : {};
+              return extractToolSummary(toolName, input);
+            }
+          }
+        }
+      }
+    }
+
+    return truncateStr(rawLine, 80);
+  } catch {
+    return truncateStr(rawLine, 80);
+  }
+}
+
 const AUTO_FOCUS_COOLDOWN_MS = 5_000;
 
 export function GlobalAgentActivityFeed({
@@ -242,6 +333,9 @@ export function GlobalAgentActivityFeed({
   const logRef = useRef<HTMLDivElement | null>(null);
   const seenItemsRef = useRef<Set<string>>(new Set());
   const lastFocusRef = useRef<Map<string, number>>(new Map());
+
+  const heartbeatEnabled = !!session && !session.paused_at;
+  const { data: heartbeat } = useHeartbeat(heartbeatEnabled);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -447,6 +541,33 @@ export function GlobalAgentActivityFeed({
   const subtitle = `${formatStateLabel(session.state)} • ${session.decisions_count} decisions`;
   const statusLine = session.paused_at ? "Paused" : "Live";
 
+  // Derive pulse state and text
+  let pulseState: "active" | "paused" | "idle" = "idle";
+  let pulseText = "";
+
+  if (session.paused_at) {
+    pulseState = "paused";
+    pulseText = "Paused \u2014 guidance needed";
+  } else if (heartbeat) {
+    const activeRun = heartbeat.activeRuns.find((r) => r.current_activity);
+    const activeShift = heartbeat.activeShifts.find((s) => s.current_activity);
+    if (activeRun) {
+      pulseState = "active";
+      pulseText = formatCurrentActivity(activeRun.current_activity);
+    } else if (activeShift) {
+      pulseState = "active";
+      pulseText = `${activeShift.project_name}: ${formatCurrentActivity(activeShift.current_activity)}`;
+    } else if (session.state === "autonomous") {
+      pulseState = "active";
+      pulseText = "Monitoring portfolio...";
+    }
+  } else if (session.state === "autonomous") {
+    pulseState = "active";
+    pulseText = "Monitoring portfolio...";
+  }
+
+  const showPulse = pulseState !== "idle";
+
   return (
     <div className={styles.activityOverlay}>
       <div className={styles.activityOverlayHeader}>
@@ -473,6 +594,13 @@ export function GlobalAgentActivityFeed({
               {loading ? "Loading..." : statusLine}
             </span>
           </div>
+
+          {showPulse && (
+            <div className={styles.activityPulse} data-state={pulseState}>
+              <span className={styles.activityPulseIndicator} />
+              <span className={styles.activityPulseText}>{pulseText}</span>
+            </div>
+          )}
 
           <div className={styles.activityOverlayLog} ref={logRef}>
             {error ? (

@@ -1,13 +1,16 @@
 import fs from "fs";
 import { getGlobalBudget } from "./budgeting.js";
 import {
+  findProjectById,
   getDb,
   getRunById,
   updateRun,
   type RunFailureCategory,
   type RunRow,
+  type ShiftRow,
 } from "./db.js";
 import { buildFailureContext, classifyRunFailure } from "./failure_analysis.js";
+import { resolveShiftLogPaths } from "./shift_agent.js";
 
 export type ActiveRunResponse = {
   id: string;
@@ -60,8 +63,17 @@ export type BudgetSummaryResponse = {
   status: "healthy" | "warning" | "critical";
 };
 
+export type ActiveShiftResponse = {
+  shift_id: string;
+  project_id: string;
+  project_name: string;
+  started_at: string;
+  current_activity: string;
+};
+
 export type HeartbeatResponse = {
   active_runs: ActiveRunResponse[];
+  active_shifts: ActiveShiftResponse[];
   last_activity_at: string | null;
   last_activity: string | null;
 };
@@ -239,10 +251,39 @@ function pickLastActivityMessage(activeRuns: ActiveRunResponse[]): string | null
   return null;
 }
 
+export function listActiveShifts(limit = 10): ActiveShiftResponse[] {
+  const database = getDb();
+  const rows = database
+    .prepare(
+      "SELECT * FROM shifts WHERE status = 'active' ORDER BY started_at DESC LIMIT ?"
+    )
+    .all(limit) as ShiftRow[];
+
+  return rows.map((shift) => {
+    const project = findProjectById(shift.project_id);
+    const projectName = project?.name ?? shift.project_id;
+    let currentActivity = "";
+    if (project) {
+      const { absolutePath } = resolveShiftLogPaths(project.path, shift.id);
+      const tail = tailLines(absolutePath, 8);
+      currentActivity = pickLastActivity(tail.lines);
+    }
+    return {
+      shift_id: shift.id,
+      project_id: shift.project_id,
+      project_name: projectName,
+      started_at: shift.started_at,
+      current_activity: currentActivity,
+    };
+  });
+}
+
 export function getHeartbeatResponse(limit = 20): HeartbeatResponse {
   const active_runs = listActiveRuns(limit, { includeActivity: true });
+  const active_shifts = listActiveShifts();
   return {
     active_runs,
+    active_shifts,
     last_activity_at: fetchLastActivityAt(),
     last_activity: pickLastActivityMessage(active_runs),
   };

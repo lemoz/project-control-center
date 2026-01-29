@@ -226,6 +226,53 @@
   color: #a9b0c2;
 }
 
+.activityPulse {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(15, 19, 32, 0.6);
+  border-radius: 8px;
+  min-height: 28px;
+}
+
+.activityPulseIndicator {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Active: spinning arc */
+.activityPulse[data-state="active"] .activityPulseIndicator {
+  border: 2px solid rgba(56, 189, 248, 0.2);
+  border-top-color: rgba(56, 189, 248, 0.9);
+  animation: pulseSpinner 0.8s linear infinite;
+}
+
+/* Paused: static dim dot */
+.activityPulse[data-state="paused"] .activityPulseIndicator {
+  background: rgba(148, 163, 184, 0.5);
+}
+
+@keyframes pulseSpinner {
+  to { transform: rotate(360deg); }
+}
+
+.activityPulseText {
+  font-size: 12px;
+  color: #a9b0c2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.activityPulse[data-state="active"] .activityPulseText {
+  color: #cbd5f5;
+}
+
 .activityOverlayLog {
   max-height: 340px;
   overflow: auto;
