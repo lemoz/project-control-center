@@ -181,6 +181,12 @@ function transcriptLabel(entry: TranscriptEntry): string {
 type VoiceStatusResponse = {
   available: boolean;
   reason?: string;
+  source?: "env" | "settings" | "mixed" | "missing";
+  mode?: "local" | "cloud";
+  apiKeyConfigured?: boolean;
+  agentIdConfigured?: boolean;
+  apiKeySource?: "env" | "settings";
+  agentIdSource?: "env" | "settings";
 };
 
 type GlobalAgentSessionState =
@@ -602,16 +608,39 @@ export function VoiceWidget() {
     [status, isConnecting, isSpeaking, error]
   );
 
-  if (!voiceStatusLoading && !voiceStatus?.available) {
+  const missingLabel =
+    voiceStatus?.reason === "agent_id_missing"
+      ? "ElevenLabs agent ID missing."
+      : voiceStatus?.reason === "api_key_missing"
+        ? "ElevenLabs API key missing."
+        : voiceStatus?.reason === "server_unreachable"
+          ? "Voice status unavailable."
+          : "Voice requires an ElevenLabs API key and agent ID.";
+
+  if (voiceStatusLoading) {
     return (
       <section className="card voice-widget">
         <div className="voice-widget-header">
           <div style={{ fontWeight: 600 }}>Voice guide</div>
         </div>
-        <div className="notice">
-          Voice requires an ElevenLabs API key. Configure in Settings or upgrade to PCC Cloud.
+        <div className="muted" style={{ fontSize: 12 }}>
+          Checking voice availability...
         </div>
+      </section>
+    );
+  }
+
+  if (!voiceStatus?.available) {
+    return (
+      <section className="card voice-widget">
+        <div className="voice-widget-header">
+          <div style={{ fontWeight: 600 }}>Voice guide</div>
+        </div>
+        <div className="notice">{missingLabel} Configure your key in Settings to enable voice.</div>
         <div className="voice-widget-controls">
+          <Link href="/settings" className="btn">
+            Configure ElevenLabs key
+          </Link>
           <Link href="/chat" className="btnSecondary">
             Open text chat
           </Link>
