@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
+LOG = logging.getLogger("meeting_voice_agent")
 
 ToolCallback = Callable[[Mapping[str, object] | None], Awaitable[object]]
 
@@ -135,8 +137,14 @@ class PccClient:
         )
 
 
+BASE_SYSTEM_PROMPT = """You are the Project Control Center meeting voice agent.
+You have read-only access to PCC status and context via tools. For actions, send a communication to the global session.
+Keep replies short, confirm actions, and ask clarifying questions when needed.
+"""
+
+
 def summarize_global_context(context: Mapping[str, object]) -> str:
-    projects_value = context.get("projects")
+    projects_value = context.get("projects") if isinstance(context, Mapping) else None
     if not isinstance(projects_value, list):
         return "Global context is unavailable."
 
@@ -196,9 +204,7 @@ def summarize_global_context(context: Mapping[str, object]) -> str:
         parts.append(work_order_line)
 
     if escalations or active_shifts:
-        parts.append(
-            f"Escalations {escalations}; active shifts {active_shifts}."
-        )
+        parts.append(f"Escalations {escalations}; active shifts {active_shifts}.")
 
     budget_line = _format_budget_line(context.get("economy"))
     if budget_line:
@@ -208,7 +214,21 @@ def summarize_global_context(context: Mapping[str, object]) -> str:
     if session_line:
         parts.append(session_line)
 
-    return " ".join(parts)
+    summary = " ".join(parts)
+    samples = _format_project_samples(projects_value)
+    if samples:
+        return f"{summary}\n{samples}"
+    return summary
+
+
+async def build_system_prompt(pcc: PccClient) -> str:
+    try:
+        context = await pcc.get_global_context()
+        summary = summarize_global_context(context)
+    except Exception as exc:
+        LOG.warning("Failed to fetch global context: %s", exc)
+        summary = "Global context is unavailable."
+    return f"{BASE_SYSTEM_PROMPT}\nPortfolio summary:\n{summary}\n"
 
 
 PCC_TOOL_DEFINITIONS = [
@@ -226,9 +246,13 @@ PCC_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": "Project id or name to look up.",
-                }
+                },
+                "project": {
+                    "type": "string",
+                    "description": "Project id or name to look up.",
+                },
             },
-            "required": ["project_id"],
+            "anyOf": [{"required": ["project_id"]}, {"required": ["project"]}],
         },
     },
     {
@@ -252,6 +276,7 @@ PCC_TOOL_DEFINITIONS = [
                 "intent": {
                     "type": "string",
                     "enum": ["escalation", "request", "message", "suggestion", "status"],
+                    "default": "request",
                 },
                 "summary": {"type": "string", "description": "Short summary line."},
                 "body": {"type": "string", "description": "Optional detail body."},
@@ -280,7 +305,7 @@ PCC_TOOL_DEFINITIONS = [
                 "shift_id": {"type": "string"},
                 "payload": {"type": "object", "additionalProperties": True},
             },
-            "required": ["project_id", "intent", "summary"],
+            "required": ["project_id", "summary"],
         },
     },
 ]
@@ -296,7 +321,7 @@ def create_tool_callbacks(client: PccClient) -> dict[str, ToolCallback]:
     async def get_project_status_tool(params: Mapping[str, object] | None) -> object:
         project_id = _coerce_str(_get_param(params, "project_id", "project"))
         if not project_id:
-            return {"error": "project_id is required."}
+            return {"error": "project_id or project is required."}
         try:
             return await client.get_project_status(project_id)
         except PccClientError as exc:
@@ -315,10 +340,10 @@ def create_tool_callbacks(client: PccClient) -> dict[str, ToolCallback]:
         if not params:
             return {"error": "Communication details are required."}
         project_id = _coerce_str(params.get("project_id"))
-        intent = _coerce_str(params.get("intent"))
+        intent = _coerce_str(params.get("intent")) or "request"
         summary = _coerce_str(params.get("summary"))
-        if not project_id or not intent or not summary:
-            return {"error": "project_id, intent, and summary are required."}
+        if not project_id or not summary:
+            return {"error": "project_id and summary are required."}
         try:
             return await client.send_communication(
                 project_id=project_id,
@@ -341,6 +366,27 @@ def create_tool_callbacks(client: PccClient) -> dict[str, ToolCallback]:
         "get_shift_context": get_shift_context_tool,
         "send_communication": send_communication_tool,
     }
+
+
+def build_tool_definitions() -> list[dict[str, Any]]:
+    return PCC_TOOL_DEFINITIONS
+
+
+def build_tool_callbacks(
+    client: PccClient,
+) -> dict[str, Callable[..., Awaitable[object]]]:
+    callbacks = create_tool_callbacks(client)
+
+    def wrap(callback: ToolCallback) -> Callable[..., Awaitable[object]]:
+        async def _wrapped(
+            params: Mapping[str, object] | None = None, **kwargs: object
+        ) -> object:
+            merged = _merge_tool_params(params, kwargs)
+            return await callback(merged)
+
+        return _wrapped
+
+    return {name: wrap(callback) for name, callback in callbacks.items()}
 
 
 def _select_project_summary(
@@ -426,6 +472,32 @@ def _format_global_session(session_value: object) -> str:
     return f"Global session {state}{suffix}."
 
 
+def _format_project_samples(projects: Sequence[object], limit: int = 5) -> str:
+    lines: list[str] = []
+    for project in projects[:limit]:
+        if not isinstance(project, Mapping):
+            continue
+        work_orders_value = project.get("work_orders")
+        work_orders = (
+            work_orders_value
+            if isinstance(work_orders_value, Mapping)
+            else {}
+        )
+        ready = work_orders.get("ready", 0)
+        blocked = work_orders.get("blocked", 0)
+        health = project.get("health", "unknown")
+        status = project.get("status", "unknown")
+        name = project.get("name", "unknown")
+        project_id = project.get("id", "unknown")
+        lines.append(
+            f"- {name} ({project_id}): status {status}, "
+            f"health {health}, ready {ready}, blocked {blocked}."
+        )
+    if not lines:
+        return ""
+    return "Sample projects:\n" + "\n".join(lines)
+
+
 def _format_usd(value: object) -> str:
     if isinstance(value, (int, float)):
         if abs(value) >= 100:
@@ -460,3 +532,15 @@ def _get_param(params: Mapping[str, object] | None, *keys: str) -> object | None
         if key in params:
             return params.get(key)
     return None
+
+
+def _merge_tool_params(
+    params: Mapping[str, object] | None, kwargs: Mapping[str, object]
+) -> Mapping[str, object] | None:
+    if params is None:
+        return dict(kwargs) if kwargs else None
+    if not kwargs:
+        return params
+    merged = dict(params)
+    merged.update(kwargs)
+    return merged
