@@ -36,6 +36,7 @@ import {
   createPerson,
   createPersonIdentifier,
   createPersonProject,
+  CONVERSATION_CHANNELS,
   deleteInitiative,
   deletePerson,
   deletePersonIdentifier,
@@ -58,6 +59,7 @@ import {
   getLatestConstitutionSuggestionCreatedAt,
   getEstimationContextSummary,
   getRunPhaseMetricsSummary,
+  getConversationSummary,
   updateRun,
   getPersonById,
   getPersonDetails,
@@ -80,6 +82,7 @@ import {
   listShifts,
   listProjects,
   listPeople,
+  listConversationEvents,
   listSubscribers,
   markSecurityIncidentFalsePositive,
   markInProgressRunsFailed,
@@ -116,6 +119,7 @@ import {
   type InitiativeMilestone,
   type InitiativePatch,
   type InitiativeStatus,
+  type ConversationChannel,
   type ProjectCommunicationIntent,
   type ProjectCommunicationScope,
   type ProjectRow,
@@ -195,6 +199,10 @@ import {
   listPendingCalls,
   proposeCall,
 } from "./calling.js";
+import {
+  startConversationBackgroundSync,
+  syncPersonConversations,
+} from "./conversation_sync.js";
 import {
   buildSlackInstallUrl,
   exchangeSlackOAuthCode,
@@ -491,6 +499,8 @@ const COST_PERIOD_SET = new Set<string>(COST_PERIODS);
 const COST_CATEGORY_SET = new Set<string>(COST_CATEGORIES);
 const PEOPLE_IDENTIFIER_TYPE_SET = new Set<string>(PEOPLE_IDENTIFIER_TYPES);
 const PEOPLE_PROJECT_RELATIONSHIP_SET = new Set<string>(PEOPLE_PROJECT_RELATIONSHIPS);
+const CONVERSATION_CHANNEL_SET = new Set<string>(CONVERSATION_CHANNELS);
+const CONVERSATION_SYNC_CHANNEL_SET = new Set<string>(["imessage", "meeting"]);
 const VOICE_SIGNATURE_HEADERS = [
   "x-elevenlabs-signature",
   "x-elevenlabs-hmac",
@@ -2297,6 +2307,111 @@ app.delete("/people/:id/projects/:pid", (req, res) => {
   const deleted = deletePersonProject(id, pid);
   if (!deleted) return res.status(404).json({ error: "project association not found" });
   return res.json({ ok: true });
+});
+
+app.get("/people/:id/conversations", (req, res) => {
+  const { id } = req.params;
+  const person = getPersonById(id);
+  if (!person) return res.status(404).json({ error: "person not found" });
+
+  if (req.query.channel !== undefined && typeof req.query.channel !== "string") {
+    return res.status(400).json({ error: "`channel` must be a string" });
+  }
+  if (req.query.since !== undefined && typeof req.query.since !== "string") {
+    return res.status(400).json({ error: "`since` must be a string" });
+  }
+  if (req.query.until !== undefined && typeof req.query.until !== "string") {
+    return res.status(400).json({ error: "`until` must be a string" });
+  }
+  if (req.query.limit !== undefined && typeof req.query.limit !== "string") {
+    return res.status(400).json({ error: "`limit` must be a string" });
+  }
+  if (req.query.offset !== undefined && typeof req.query.offset !== "string") {
+    return res.status(400).json({ error: "`offset` must be a string" });
+  }
+
+  const channelRaw =
+    typeof req.query.channel === "string" ? req.query.channel.trim().toLowerCase() : "";
+  if (channelRaw && !CONVERSATION_CHANNEL_SET.has(channelRaw)) {
+    return res.status(400).json({ error: "`channel` is invalid" });
+  }
+
+  const sinceRaw = typeof req.query.since === "string" ? req.query.since.trim() : "";
+  const untilRaw = typeof req.query.until === "string" ? req.query.until.trim() : "";
+  let since: string | null = null;
+  let until: string | null = null;
+
+  if (sinceRaw) {
+    const parsed = Date.parse(sinceRaw);
+    if (!Number.isFinite(parsed)) {
+      return res.status(400).json({ error: "`since` must be an ISO timestamp" });
+    }
+    since = new Date(parsed).toISOString();
+  }
+  if (untilRaw) {
+    const parsed = Date.parse(untilRaw);
+    if (!Number.isFinite(parsed)) {
+      return res.status(400).json({ error: "`until` must be an ISO timestamp" });
+    }
+    until = new Date(parsed).toISOString();
+  }
+
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const offsetRaw = typeof req.query.offset === "string" ? Number(req.query.offset) : NaN;
+  const limit = Number.isFinite(limitRaw) ? Math.trunc(limitRaw) : undefined;
+  const offset = Number.isFinite(offsetRaw) ? Math.trunc(offsetRaw) : undefined;
+
+  const events = listConversationEvents({
+    person_id: id,
+    channel: channelRaw ? (channelRaw as ConversationChannel) : null,
+    since,
+    until,
+    limit,
+    offset,
+  });
+
+  return res.json({ events });
+});
+
+app.get("/people/:id/conversations/summary", (req, res) => {
+  const { id } = req.params;
+  const person = getPersonById(id);
+  if (!person) return res.status(404).json({ error: "person not found" });
+
+  const summary = getConversationSummary(id);
+  return res.json({ summary });
+});
+
+app.post("/people/:id/conversations/sync", async (req, res) => {
+  const { id } = req.params;
+  const person = getPersonById(id);
+  if (!person) return res.status(404).json({ error: "person not found" });
+
+  let channels: ConversationChannel[] | undefined;
+  if (req.body && typeof req.body === "object" && "channels" in req.body) {
+    const value = (req.body as Record<string, unknown>).channels;
+    if (!Array.isArray(value)) {
+      return res.status(400).json({ error: "`channels` must be an array" });
+    }
+    const parsed: ConversationChannel[] = [];
+    for (const entry of value) {
+      if (typeof entry !== "string") {
+        return res.status(400).json({ error: "`channels` must be an array of strings" });
+      }
+      const normalized = entry.trim().toLowerCase();
+      if (!CONVERSATION_SYNC_CHANNEL_SET.has(normalized)) {
+        return res.status(400).json({ error: `unknown channel: ${entry}` });
+      }
+      parsed.push(normalized as ConversationChannel);
+    }
+    channels = parsed;
+  }
+
+  const result = await syncPersonConversations(id, {
+    channels,
+    reason: "on_demand",
+  });
+  return res.json(result);
 });
 
 function normalizeStringArrayField(value: unknown): string[] | undefined {
@@ -6358,5 +6473,6 @@ app.listen(port, host, () => {
   startSmsConversationSweep();
   startShiftScheduler();
   startAutopilotScheduler();
+  startConversationBackgroundSync();
   recoverAutonomousSessionLoop();
 });

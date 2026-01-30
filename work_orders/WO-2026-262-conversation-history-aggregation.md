@@ -7,13 +7,13 @@ context:
   - server/mac_connector.ts (iMessage read, from WO-2026-261)
   - "People model: WO-2026-260"
   - server/index.ts (route registration)
-  - "meeting notes already stored in PCC (meeting_connector.ts)"
+  - meeting notes already stored in PCC (meeting_connector.ts)
   - "Hybrid sync: background for starred/active project contacts, on-demand for rest"
 acceptance_criteria:
   - "conversation_events table: id, person_id, channel (imessage|email|meeting|call|note), direction (inbound|outbound|bidirectional), summary, content, external_id, metadata (JSON), occurred_at, synced_at"
   - iMessage sync pulls from chat.db via mac_connector, matched to people via identifier resolution
   - Meeting note linkage — existing meeting notes linked to people who attended
-  - "Dedup via external_id per channel (e.g., imessage:rowid, meeting:id)"
+  - Dedup via external_id per channel (e.g., imessage:rowid, meeting:id)
   - "Hybrid sync strategy: background polling for starred contacts every 5 min, on-demand for others"
   - "API: GET /people/:id/conversations (paginated, filterable by channel and date range)"
   - "API: GET /people/:id/conversations/summary (recent activity count, last interaction per channel)"
@@ -32,7 +32,7 @@ tags:
   - sync
   - aggregation
 estimate_hours: 5
-status: ready
+status: you_review
 created_at: 2026-01-30
 updated_at: 2026-01-30
 depends_on:

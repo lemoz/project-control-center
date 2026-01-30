@@ -236,6 +236,12 @@ export type PersonDetails = Person & {
   projects: PersonProject[];
 };
 
+export const CONVERSATION_CHANNELS = CONVERSATION_EVENT_CHANNELS;
+export type ConversationChannel = ConversationEventChannel;
+
+export const CONVERSATION_DIRECTIONS = CONVERSATION_EVENT_DIRECTIONS;
+export type ConversationDirection = ConversationEventDirection;
+
 export type ConversationEventRow = {
   id: string;
   person_id: string;
@@ -255,6 +261,18 @@ export type ConversationEvent = Omit<ConversationEventRow, "metadata"> & {
   metadata: ConversationEventMetadata;
 };
 
+export type ConversationEventInsert = {
+  person_id: string;
+  channel: ConversationChannel;
+  direction: ConversationDirection;
+  summary?: string | null;
+  content?: string | null;
+  external_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+  occurred_at: string;
+  synced_at: string;
+};
+
 export type CreateConversationEventInput = {
   person_id: string;
   channel: ConversationEventChannel;
@@ -265,6 +283,45 @@ export type CreateConversationEventInput = {
   metadata?: ConversationEventMetadata | null;
   occurred_at: string;
   synced_at?: string;
+};
+
+export type ConversationEventQuery = {
+  person_id: string;
+  channel?: ConversationChannel | null;
+  since?: string | null;
+  until?: string | null;
+  limit?: number;
+  offset?: number;
+};
+
+export type ConversationSummary = {
+  person_id: string;
+  recent_activity_count: number;
+  recent_window_days: number;
+  last_interaction: ConversationEvent | null;
+  last_interaction_by_channel: Record<ConversationChannel, ConversationEvent | null>;
+  sync_status: PeopleSyncStatus[];
+};
+
+export type PeopleSyncStatusRow = {
+  person_id: string;
+  channel: ConversationChannel;
+  last_synced_at: string;
+  last_external_id: string | null;
+};
+
+export type PeopleSyncStatusInput = {
+  person_id: string;
+  channel: ConversationChannel;
+  last_synced_at: string;
+  last_external_id?: string | null;
+};
+
+export type PeopleSyncStatus = {
+  person_id: string;
+  channel: ConversationChannel;
+  last_synced_at: string;
+  last_external_id: string | null;
 };
 
 export type CreatePersonInput = {
@@ -300,35 +357,6 @@ export type CreatePersonProjectInput = {
   project_id: string;
   relationship?: PeopleProjectRelationship;
   notes?: string | null;
-};
-
-export type ConversationEventRow = {
-  id: string;
-  person_id: string;
-  channel: ConversationEventChannel;
-  direction: ConversationEventDirection;
-  summary: string | null;
-  content: string | null;
-  external_id: string | null;
-  metadata: string;
-  occurred_at: string;
-  synced_at: string;
-};
-
-export type ConversationEvent = Omit<ConversationEventRow, "metadata"> & {
-  metadata: Record<string, unknown>;
-};
-
-export type CreateConversationEventInput = {
-  person_id: string;
-  channel: ConversationEventChannel;
-  direction: ConversationEventDirection;
-  summary?: string | null;
-  content?: string | null;
-  external_id?: string | null;
-  metadata?: Record<string, unknown> | null;
-  occurred_at?: string;
-  synced_at?: string;
 };
 
 export type ConstitutionSuggestionStatus = "pending" | "accepted" | "rejected";
@@ -1206,6 +1234,13 @@ function initSchema(database: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_conversation_events_channel
       ON conversation_events(person_id, channel);
 
+    CREATE TABLE IF NOT EXISTS people_sync_status (
+      person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+      channel TEXT NOT NULL,
+      last_synced_at TEXT NOT NULL,
+      last_external_id TEXT,
+      PRIMARY KEY (person_id, channel)
+    );
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
@@ -3348,6 +3383,12 @@ export function resolvePersonByIdentifier(params: {
   return getPersonDetails(row.person_id);
 }
 
+function normalizeConversationText(value?: string | null): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
 function parseConversationMetadata(value: string | null): Record<string, unknown> {
   if (!value) return {};
   try {
@@ -3372,24 +3413,223 @@ function normalizeConversationMetadata(
   }
 }
 
-function normalizeConversationText(value?: string | null): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
 function toConversationEvent(row: ConversationEventRow): ConversationEvent {
   return {
     id: row.id,
     person_id: row.person_id,
     channel: row.channel,
     direction: row.direction,
-    summary: row.summary,
-    content: row.content,
-    external_id: row.external_id,
+    summary: row.summary ?? null,
+    content: row.content ?? null,
+    external_id: row.external_id ?? null,
     metadata: parseConversationMetadata(row.metadata),
     occurred_at: row.occurred_at,
     synced_at: row.synced_at,
+  };
+}
+
+function toPeopleSyncStatus(row: PeopleSyncStatusRow): PeopleSyncStatus {
+  return {
+    person_id: row.person_id,
+    channel: row.channel,
+    last_synced_at: row.last_synced_at,
+    last_external_id: row.last_external_id ?? null,
+  };
+}
+
+export function listPeopleForConversationSync(): Person[] {
+  const database = getDb();
+  const rows = database
+    .prepare(
+      `SELECT DISTINCT people.*
+       FROM people
+       LEFT JOIN people_projects ON people_projects.person_id = people.id
+       LEFT JOIN projects ON projects.id = people_projects.project_id
+       WHERE people.starred = 1 OR projects.status = 'active'
+       ORDER BY people.starred DESC, people.name ASC`
+    )
+    .all() as PersonRow[];
+  return rows.map((row) => toPerson(row));
+}
+
+export function insertConversationEvents(inputs: ConversationEventInsert[]): number {
+  if (!inputs.length) return 0;
+  const database = getDb();
+  let inserted = 0;
+  const insert = database.prepare(
+    `INSERT INTO conversation_events
+      (id, person_id, channel, direction, summary, content, external_id, metadata, occurred_at, synced_at)
+     VALUES
+      (@id, @person_id, @channel, @direction, @summary, @content, @external_id, @metadata, @occurred_at, @synced_at)
+     ON CONFLICT(channel, external_id) DO NOTHING`
+  );
+  const tx = database.transaction(() => {
+    for (const input of inputs) {
+      const row = {
+        id: crypto.randomUUID(),
+        person_id: input.person_id,
+        channel: input.channel,
+        direction: input.direction,
+        summary: normalizeConversationText(input.summary),
+        content: typeof input.content === "string" ? input.content : null,
+        external_id: normalizeConversationText(input.external_id),
+        metadata: normalizeConversationMetadata(input.metadata ?? undefined),
+        occurred_at: input.occurred_at,
+        synced_at: input.synced_at,
+      };
+      const result = insert.run(row);
+      inserted += result.changes;
+    }
+  });
+  tx();
+  return inserted;
+}
+
+export function listConversationEvents(query: ConversationEventQuery): ConversationEvent[] {
+  const database = getDb();
+  const clauses: string[] = ["person_id = ?"];
+  const params: Array<string | number> = [query.person_id];
+
+  if (query.channel) {
+    clauses.push("channel = ?");
+    params.push(query.channel);
+  }
+  if (query.since) {
+    clauses.push("occurred_at >= ?");
+    params.push(query.since);
+  }
+  if (query.until) {
+    clauses.push("occurred_at <= ?");
+    params.push(query.until);
+  }
+
+  const whereClause = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const limit =
+    typeof query.limit === "number" && Number.isFinite(query.limit)
+      ? Math.max(1, Math.min(200, Math.trunc(query.limit)))
+      : 50;
+  const offset =
+    typeof query.offset === "number" && Number.isFinite(query.offset)
+      ? Math.max(0, Math.trunc(query.offset))
+      : 0;
+
+  const rows = database
+    .prepare(
+      `SELECT *
+       FROM conversation_events
+       ${whereClause}
+       ORDER BY occurred_at DESC
+       LIMIT ? OFFSET ?`
+    )
+    .all(...params, limit, offset) as ConversationEventRow[];
+
+  return rows.map((row) => toConversationEvent(row));
+}
+
+export function listPeopleSyncStatus(personId: string): PeopleSyncStatus[] {
+  const database = getDb();
+  const rows = database
+    .prepare(
+      "SELECT * FROM people_sync_status WHERE person_id = ? ORDER BY channel ASC"
+    )
+    .all(personId) as PeopleSyncStatusRow[];
+  return rows.map((row) => toPeopleSyncStatus(row));
+}
+
+export function getPeopleSyncStatus(
+  personId: string,
+  channel: ConversationChannel
+): PeopleSyncStatus | null {
+  const database = getDb();
+  const row = database
+    .prepare(
+      "SELECT * FROM people_sync_status WHERE person_id = ? AND channel = ? LIMIT 1"
+    )
+    .get(personId, channel) as PeopleSyncStatusRow | undefined;
+  return row ? toPeopleSyncStatus(row) : null;
+}
+
+export function upsertPeopleSyncStatus(input: PeopleSyncStatusInput): PeopleSyncStatus {
+  const database = getDb();
+  const row: PeopleSyncStatusRow = {
+    person_id: input.person_id,
+    channel: input.channel,
+    last_synced_at: input.last_synced_at,
+    last_external_id: input.last_external_id ?? null,
+  };
+  database
+    .prepare(
+      `INSERT INTO people_sync_status
+        (person_id, channel, last_synced_at, last_external_id)
+       VALUES
+        (@person_id, @channel, @last_synced_at, @last_external_id)
+       ON CONFLICT(person_id, channel)
+       DO UPDATE SET last_synced_at = excluded.last_synced_at,
+                     last_external_id = excluded.last_external_id`
+    )
+    .run(row);
+  return toPeopleSyncStatus(row);
+}
+
+export function getConversationSummary(
+  personId: string,
+  params: { recentWindowDays?: number } = {}
+): ConversationSummary {
+  const database = getDb();
+  const recentWindowDays =
+    typeof params.recentWindowDays === "number" && Number.isFinite(params.recentWindowDays)
+      ? Math.max(1, Math.trunc(params.recentWindowDays))
+      : 30;
+  const recentSince = new Date(Date.now() - recentWindowDays * 24 * 60 * 60 * 1000)
+    .toISOString();
+
+  const recentRow = database
+    .prepare(
+      `SELECT COUNT(*) as count
+       FROM conversation_events
+       WHERE person_id = ? AND occurred_at >= ?`
+    )
+    .get(personId, recentSince) as { count?: number } | undefined;
+  const recentCount = Number.isFinite(recentRow?.count ?? null)
+    ? (recentRow?.count as number)
+    : 0;
+
+  const lastRow = database
+    .prepare(
+      `SELECT *
+       FROM conversation_events
+       WHERE person_id = ?
+       ORDER BY occurred_at DESC
+       LIMIT 1`
+    )
+    .get(personId) as ConversationEventRow | undefined;
+
+  const lastByChannel: Record<ConversationChannel, ConversationEvent | null> =
+    Object.fromEntries(
+      CONVERSATION_CHANNELS.map((channel) => [channel, null])
+    ) as Record<ConversationChannel, ConversationEvent | null>;
+
+  const channelStmt = database.prepare(
+    `SELECT *
+     FROM conversation_events
+     WHERE person_id = ? AND channel = ?
+     ORDER BY occurred_at DESC
+     LIMIT 1`
+  );
+  for (const channel of CONVERSATION_CHANNELS) {
+    const row = channelStmt.get(personId, channel) as ConversationEventRow | undefined;
+    if (row) {
+      lastByChannel[channel] = toConversationEvent(row);
+    }
+  }
+
+  return {
+    person_id: personId,
+    recent_activity_count: recentCount,
+    recent_window_days: recentWindowDays,
+    last_interaction: lastRow ? toConversationEvent(lastRow) : null,
+    last_interaction_by_channel: lastByChannel,
+    sync_status: listPeopleSyncStatus(personId),
   };
 }
 
