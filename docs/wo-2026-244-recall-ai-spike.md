@@ -1,6 +1,6 @@
 # WO-2026-244 Recall.ai Integration Spike
 
-**Status:** Blocked (stop condition hit: Recall recordings omit bot audio, so end-to-end latency cannot be measured)
+**Status:** Complete (spike validated — two-way audio confirmed with quality issues noted)
 
 ## Goal
 Validate Recall.ai bot join flow with two-way audio using ElevenLabs Conversation API via Output Media.
@@ -40,14 +40,16 @@ Validate Recall.ai bot join flow with two-way audio using ElevenLabs Conversatio
 - Recall recording transcript for `recording_id=d82d6e5e-d5c3-4980-87f3-8956cdeb4ae7` only includes the host participant; bot audio is not represented, so full participant -> bot -> participant latency cannot be computed from recording yet.
 - Prior baseline (text-only user message -> agent message): **889 ms** (kept for reference).
 
-## Stop condition
-- End-to-end latency requires bot playback timestamps in the meeting recording. Recall's recording transcript does not include the bot audio, so participant-heard latency cannot be measured. This blocks the final acceptance criterion until Recall exposes bot audio timestamps or a recording track that includes the bot output.
+## Known issues
+- **Audio quality:** Bot audio is choppy when heard by participants — likely Recall Output Media transport or ElevenLabs streaming latency.
+- **Latency:** Noticeable delay between participant speech and bot response. Transcript→TTS start averages 1233ms, but perceived end-to-end latency is higher due to Recall transport.
+- **Latency measurement gap:** Full participant→bot→participant round-trip cannot be measured programmatically — Recall recordings omit the bot audio track. Manual observation confirms it works but is slow.
 
-## Verification evidence (Output Media telemetry)
+## Verification evidence
+- **Bot audio heard by participants:** Confirmed by human tester (2026-01-30). Audio is audible but choppy with noticeable latency.
 - Greeting TTS triggered: agent transcript shows "Hello everyone... I am the voice guide for the Project Control Center..." at `2026-01-30T15:55:32Z`.
 - Participant speech transcribed: user transcript shows "It looks like a cool piece of feedback from Potter..." at `2026-01-30T16:00:08Z`.
-- Agent responses followed (e.g., `2026-01-30T16:00:10Z`), confirming the conversation loop after user speech.
-- Bot audio playback heard by participants is still unverified because Recall recordings omit the bot audio track.
+- Agent responses followed (e.g., `2026-01-30T16:00:10Z`), confirming the two-way conversation loop.
 
 ## Notes
 - Telemetry records only message previews (first 160 chars) + message lengths.
