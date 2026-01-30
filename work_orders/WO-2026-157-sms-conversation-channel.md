@@ -38,9 +38,9 @@ tags:
   - twilio
   - integration
 estimate_hours: 4
-status: ready
+status: you_review
 created_at: 2026-01-23
-updated_at: 2026-01-26
+updated_at: 2026-01-30
 track_id: 138764e0-ff8d-46c3-bddb-292a806bce03
 depends_on:
   - WO-2026-144

@@ -42,6 +42,12 @@ import {
   getPreferredReviewDeferral,
   getUserPreferences,
 } from "./user_preferences.js";
+import {
+  getPrimarySmsRecipient,
+  markSmsConversationProcessed,
+  resolveSmsCommunicationPayload,
+  sendSmsMessage,
+} from "./sms.js";
 
 const DEFAULT_MAX_ITERATIONS = 1;
 const DEFAULT_ATTENTION_MAX_PROJECTS = 6;
@@ -706,7 +712,21 @@ async function executeDecision(
         content: decision.message,
         needsUserInput: true,
       });
-      return { action: "REPORT", ok: true, detail: "reported to user" };
+      let smsDetail = "";
+      const smsRecipient = getPrimarySmsRecipient();
+      if (smsRecipient) {
+        const smsResult = await sendSmsMessage({
+          phone_number: smsRecipient.phone_number,
+          body: decision.message,
+          project_id: smsRecipient.project_id ?? null,
+          contact_label: smsRecipient.label,
+          user_id: smsRecipient.user_id ?? null,
+        });
+        smsDetail = smsResult.ok
+          ? " (sms sent)"
+          : ` (sms skipped: ${smsResult.error})`;
+      }
+      return { action: "REPORT", ok: true, detail: `reported to user${smsDetail}` };
     }
     case "RETRY_RUN": {
       const project = findProjectById(decision.project_id);
@@ -824,12 +844,27 @@ async function executeDecision(
           context: { communication_id: decision.communication_id },
         };
       }
+      let smsDetail = "";
+      const smsPayload = resolveSmsCommunicationPayload(comm.payload);
+      if (smsPayload) {
+        if (decision.response) {
+          const smsResult = await sendSmsMessage({
+            phone_number: smsPayload.phoneNumber,
+            body: decision.response,
+            conversation_id: smsPayload.conversationId,
+          });
+          smsDetail = smsResult.ok
+            ? " (sms sent)"
+            : ` (sms failed: ${smsResult.error})`;
+        }
+        markSmsConversationProcessed(smsPayload.conversationId);
+      }
       return {
         action: "ACKNOWLEDGE_COMM",
         ok: true,
         detail: decision.response
-          ? `resolved comm ${decision.communication_id}`
-          : `acknowledged comm ${decision.communication_id}`,
+          ? `resolved comm ${decision.communication_id}${smsDetail}`
+          : `acknowledged comm ${decision.communication_id}${smsDetail}`,
         context: {
           communication_id: decision.communication_id,
           project_id: comm.project_id,

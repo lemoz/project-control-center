@@ -98,6 +98,7 @@ function createRunRow(params) {
     failure_reason: null,
     failure_detail: null,
     escalation: params.escalation ?? null,
+    last_completed_phase: null,
   });
 }
 
@@ -241,6 +242,7 @@ test("buildGlobalContextResponse aggregates and sorts projects", () => {
       need: "Need alpha token",
       createdAt: alphaCreatedAt,
     }),
+    last_completed_phase: null,
   });
 
   createRun({
@@ -280,6 +282,7 @@ test("buildGlobalContextResponse aggregates and sorts projects", () => {
       need: "Need beta token",
       createdAt: betaCreatedAt,
     }),
+    last_completed_phase: null,
   });
 
   createProjectCommunication({
