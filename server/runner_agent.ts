@@ -2496,6 +2496,18 @@ export async function runRun(runId: string) {
     }
 
     const repoPath = project.path;
+
+    // Resume detection: determine which phases to skip
+    const resumePhase = run.last_completed_phase;
+    const PHASE_ORDER = ["setup", "builder", "test", "reviewer_approved", "committed"] as const;
+    const phaseIndex = (p: string | null) =>
+      p ? PHASE_ORDER.indexOf(p as typeof PHASE_ORDER[number]) : -1;
+    const resumeIndex = phaseIndex(resumePhase);
+    const isResume = resumeIndex >= 0;
+    if (isResume) {
+      log(`Resuming run from checkpoint: last_completed_phase="${resumePhase}"`);
+    }
+
     const runnerSettings = resolveRunnerSettingsForRepo(repoPath).effective;
     const builderModel = runnerSettings.builder.model.trim() || "gpt-5.2-codex";
     const reviewerModel = runnerSettings.reviewer.model.trim() || "gpt-5.2-codex";
@@ -2622,119 +2634,127 @@ export async function runRun(runId: string) {
       updateRun(runId, { branch_name: branchName });
     }
     const { worktreePath, worktreeRealPath } = resolveWorktreePaths(runDir);
-    try {
-      ensureWorktree({
-        repoPath,
-        worktreePath,
-        worktreeRealPath,
-        branchName,
-        baseBranch,
-        log,
-      });
-    } catch (err) {
-      log(`Failed to create worktree: ${String(err)}`);
-      updateRun(runId, {
-        status: "failed",
-        error: `worktree creation failed: ${String(err)}`,
-        finished_at: nowIso(),
-      });
-      return;
-    }
-    ensureNodeModulesSymlink(repoPath, worktreePath, log);
 
-    const setupStartedAt = new Date();
-    const recordSetupOutcome = (
-      outcome: RunPhaseMetricOutcome,
-      metadata?: RunPhaseMetricMetadata
-    ) => {
-      recordPhaseMetric({
-        runId,
-        phase: "setup",
-        iteration: 1,
-        outcome,
-        startedAt: setupStartedAt,
-        metadata,
-        log,
-      });
-    };
+    if (resumeIndex >= phaseIndex("setup")) {
+      // Resume: worktree already exists, baseline already passed — skip setup
+      log(`Skipping setup phase (already completed on previous run attempt)`);
+      ensureNodeModulesSymlink(repoPath, worktreePath, log);
+    } else {
+      try {
+        ensureWorktree({
+          repoPath,
+          worktreePath,
+          worktreeRealPath,
+          branchName,
+          baseBranch,
+          log,
+        });
+      } catch (err) {
+        log(`Failed to create worktree: ${String(err)}`);
+        updateRun(runId, {
+          status: "failed",
+          error: `worktree creation failed: ${String(err)}`,
+          finished_at: nowIso(),
+        });
+        return;
+      }
+      ensureNodeModulesSymlink(repoPath, worktreePath, log);
 
-    const baselineResultsPath = path.join(runDir, "tests", "baseline-results.json");
-    const baselineLogPath = path.join(runDir, "tests", "baseline-npm-test.log");
-    let baselineTests =
-      readJsonIfExists<Array<{ command: string; passed: boolean; output?: string }>>(baselineResultsPath);
-    let baselineAttempts = 0;
-    const setupMetadataBase: RunPhaseMetricMetadata = {
-      cached: Boolean(baselineTests),
-    };
-    if (!baselineTests) {
-      log("Running baseline health check...");
-      let baselineFailures: Array<{ command: string; passed: boolean; output?: string }> = [];
-      for (let attempt = 1; attempt <= BASELINE_MAX_ATTEMPTS; attempt++) {
-        baselineAttempts = attempt;
-        try {
-          baselineTests = await runRepoTests(worktreePath, runDir, 0, runId, {
-            logPath: baselineLogPath,
-            label: "baseline npm test",
-          });
-          writeJson(baselineResultsPath, baselineTests);
-        } catch (err) {
-          baselineTests = [{ command: "tests", passed: false, output: String(err) }];
-          writeJson(baselineResultsPath, baselineTests);
+      const setupStartedAt = new Date();
+      const recordSetupOutcome = (
+        outcome: RunPhaseMetricOutcome,
+        metadata?: RunPhaseMetricMetadata
+      ) => {
+        recordPhaseMetric({
+          runId,
+          phase: "setup",
+          iteration: 1,
+          outcome,
+          startedAt: setupStartedAt,
+          metadata,
+          log,
+        });
+      };
+
+      const baselineResultsPath = path.join(runDir, "tests", "baseline-results.json");
+      const baselineLogPath = path.join(runDir, "tests", "baseline-npm-test.log");
+      let baselineTests =
+        readJsonIfExists<Array<{ command: string; passed: boolean; output?: string }>>(baselineResultsPath);
+      let baselineAttempts = 0;
+      const setupMetadataBase: RunPhaseMetricMetadata = {
+        cached: Boolean(baselineTests),
+      };
+      if (!baselineTests) {
+        log("Running baseline health check...");
+        let baselineFailures: Array<{ command: string; passed: boolean; output?: string }> = [];
+        for (let attempt = 1; attempt <= BASELINE_MAX_ATTEMPTS; attempt++) {
+          baselineAttempts = attempt;
+          try {
+            baselineTests = await runRepoTests(worktreePath, runDir, 0, runId, {
+              logPath: baselineLogPath,
+              label: "baseline npm test",
+            });
+            writeJson(baselineResultsPath, baselineTests);
+          } catch (err) {
+            baselineTests = [{ command: "tests", passed: false, output: String(err) }];
+            writeJson(baselineResultsPath, baselineTests);
+          }
+
+          baselineFailures = baselineTests.filter((test) => !test.passed);
+          if (!baselineFailures.length) break;
+          if (baselineAttempts < BASELINE_MAX_ATTEMPTS) {
+            log(`Baseline tests failed (attempt ${baselineAttempts}); retrying...`);
+            await sleep(1000);
+          }
         }
 
-        baselineFailures = baselineTests.filter((test) => !test.passed);
-        if (!baselineFailures.length) break;
-        if (baselineAttempts < BASELINE_MAX_ATTEMPTS) {
-          log(`Baseline tests failed (attempt ${baselineAttempts}); retrying...`);
-          await sleep(1000);
-        }
+        setupMetadataBase.baseline_attempts = baselineAttempts;
+        copyLocalTestArtifacts({ worktreePath, runDir, iteration: 0, log });
+      } else {
+        log("Using cached baseline test results");
       }
 
-      setupMetadataBase.baseline_attempts = baselineAttempts;
-      copyLocalTestArtifacts({ worktreePath, runDir, iteration: 0, log });
-    } else {
-      log("Using cached baseline test results");
-    }
+      if (!baselineTests) {
+        const message = "baseline tests did not return results";
+        updateRun(runId, {
+          status: "failed",
+          error: message,
+          finished_at: nowIso(),
+        });
+        recordSetupOutcome("failed", setupMetadataBase);
+        log(message);
+        return;
+      }
 
-    if (!baselineTests) {
-      const message = "baseline tests did not return results";
-      updateRun(runId, {
-        status: "failed",
-        error: message,
-        finished_at: nowIso(),
-      });
-      recordSetupOutcome("failed", setupMetadataBase);
-      log(message);
-      return;
-    }
+      const baselineFailures = baselineTests.filter((test) => !test.passed);
+      if (baselineFailures.length) {
+        const failedTests = baselineFailures.map((test) => test.command).join(", ");
+        const message = `Cannot start run: baseline tests failing. Fix these first: ${failedTests}`;
+        updateRun(runId, {
+          status: "baseline_failed",
+          error: message,
+          finished_at: nowIso(),
+        });
+        recordSetupOutcome("failed", {
+          ...setupMetadataBase,
+          failed_tests: failedTests,
+        });
+        log(message);
+        return;
+      }
 
-    const baselineFailures = baselineTests.filter((test) => !test.passed);
-    if (baselineFailures.length) {
-      const failedTests = baselineFailures.map((test) => test.command).join(", ");
-      const message = `Cannot start run: baseline tests failing. Fix these first: ${failedTests}`;
-      updateRun(runId, {
-        status: "baseline_failed",
-        error: message,
-        finished_at: nowIso(),
+      const setupEndedAt = new Date();
+      recordSetupOutcome("success", setupMetadataBase);
+      updateRun(runId, { last_completed_phase: "setup" });
+      etaActualTotals.setup_seconds = durationSeconds(setupStartedAt, setupEndedAt);
+      etaCompleted.setup_done = true;
+      recordEtaUpdate({
+        phase: "setup",
+        iteration: 1,
+        actual_setup_seconds: etaActualTotals.setup_seconds,
       });
-      recordSetupOutcome("failed", {
-        ...setupMetadataBase,
-        failed_tests: failedTests,
-      });
-      log(message);
-      return;
+      log("Baseline healthy, starting builder...");
     }
-
-    const setupEndedAt = new Date();
-    recordSetupOutcome("success", setupMetadataBase);
-    etaActualTotals.setup_seconds = durationSeconds(setupStartedAt, setupEndedAt);
-    etaCompleted.setup_done = true;
-    recordEtaUpdate({
-      phase: "setup",
-      iteration: 1,
-      actual_setup_seconds: etaActualTotals.setup_seconds,
-    });
-    log("Baseline healthy, starting builder...");
 
     // Move Work Order into building inside the run branch.
     try {
@@ -2778,9 +2798,42 @@ export async function runRun(runId: string) {
       writeJson(iterationHistoryPath, iterationHistory);
     };
 
-    let finalIteration = 1;
+    // On resume, reload iteration history from disk
+    if (isResume) {
+      const savedHistory = readJsonIfExists<RunIterationHistoryEntry[]>(iterationHistoryPath);
+      if (savedHistory?.length) {
+        iterationHistory.push(...savedHistory);
+        log(`Loaded ${savedHistory.length} previous iteration(s) from history`);
+      }
+    }
 
-    for (let iteration = 1; iteration <= maxIterations; iteration++) {
+    // On resume from reviewer_approved or committed, skip the entire iteration loop
+    const skipIterationLoop = resumeIndex >= phaseIndex("reviewer_approved");
+    if (skipIterationLoop) {
+      // Restore approved state from previous run
+      const lastEntry = iterationHistory[iterationHistory.length - 1];
+      reviewerVerdict = "approved";
+      approvedSummary = lastEntry?.builder_summary || run.summary || "(no builder summary)";
+      reviewerNotes = lastEntry?.reviewer_notes || [];
+      log("Skipping iteration loop (reviewer already approved)");
+    }
+
+    let finalIteration = skipIterationLoop ? run.iteration : 1;
+
+    // Determine the iteration to resume from (for builder/test resume)
+    const resumeIteration =
+      isResume && !skipIterationLoop ? Math.max(1, run.iteration) : 0;
+
+    for (let iteration = skipIterationLoop ? maxIterations + 1 : 1; iteration <= maxIterations; iteration++) {
+      // On resume, skip iterations before the one that was in progress
+      if (resumeIteration > 0 && iteration < resumeIteration) {
+        log(`Skipping iteration ${iteration} (already completed in previous attempt)`);
+        continue;
+      }
+      const isResumeIteration = resumeIteration > 0 && iteration === resumeIteration;
+      const skipBuilder = isResumeIteration && resumeIndex >= phaseIndex("builder");
+      const skipTests = isResumeIteration && resumeIndex >= phaseIndex("test");
+
       finalIteration = iteration;
       updateRun(runId, {
         status: "building",
@@ -2789,7 +2842,11 @@ export async function runRun(runId: string) {
         reviewer_verdict: null,
         reviewer_notes: null,
       });
-      log(`Builder iteration ${iteration} starting`);
+      if (skipBuilder) {
+        log(`Resuming iteration ${iteration} — skipping builder (already completed)`);
+      } else {
+        log(`Builder iteration ${iteration} starting`);
+      }
       const builderStartedAt = new Date();
       let builderDurationSeconds = 0;
 
@@ -2810,110 +2867,201 @@ export async function runRun(runId: string) {
           }
         | null = null;
       let builderChanges: BuilderChange[] = [];
+      let diffPatch = "";
 
-      while (true) {
-        const builderPrompt = buildBuilderPrompt({
-          workOrderMarkdown,
-          workOrder,
-          iteration,
-          maxIterations,
-          reviewerFeedback,
-          testFailureOutput,
-          constitution: builderConstitution.content,
-          iterationHistory,
-          escalationContext,
-        });
-        const builderPromptPath = path.join(builderDir, "prompt.txt");
-        fs.writeFileSync(builderPromptPath, builderPrompt, "utf8");
-
-        const runLocalBuilder = async (): Promise<CodexExecResult> => {
-          try {
-            return await runCodexExec({
-              cwd: worktreePath,
-              prompt: builderPrompt,
-              schemaPath: builderSchemaPath,
-              outputPath: builderOutputPath,
-              logPath: builderLogPath,
-              sandbox: getBuilderSandboxMode(),
-              model: builderModel,
-              cliPath: runnerSettings.builder.cliPath,
-              streamMonitor: builderStreamMonitor ?? undefined,
-              streamContext: builderStreamMonitor ? streamContext : undefined,
-              onEscalation: async (request) => {
-                const escalationRecord: EscalationRecord = {
-                  ...request,
-                  created_at: nowIso(),
-                };
-                updateRun(runId, {
-                  status: "waiting_for_input",
-                  escalation: JSON.stringify(escalationRecord),
-                });
-                writeJson(path.join(runDir, "escalation.json"), escalationRecord);
-                logEscalationDetails(log, request);
-                log("Escalation requested; waiting for user input");
-
-                const resolved = await waitForEscalationResolution(runId, log);
-                if (!resolved?.resolution) return null;
-                try {
-                  writeEscalationResolution(runDir, resolved);
-                } catch (err) {
-                  log(`Failed to persist escalation resolution: ${String(err)}`);
-                  return null;
-                }
-                return resolved;
-              },
-              log,
-            });
-          } finally {
-            recordCostFromCodexLog({
-              projectId: project.id,
-              runId,
-              category: "builder",
-              model: builderModel,
-              logPath: builderLogPath,
-              description: `builder iteration ${iteration}`,
-              promptPath: builderPromptPath,
-              outputPath: builderOutputPath,
-              log,
-            });
-          }
-        };
-
-        let builderExecResult: CodexExecResult;
-        try {
-          builderExecResult = await runLocalBuilder();
-        } catch (err) {
-          if (err instanceof SecurityHoldError) {
-            throw err;
-          }
-          log(`Builder failed: ${String(err)}`);
-          recordPhaseMetric({
-            runId,
-            phase: "builder",
+      if (!skipBuilder) {
+        while (true) {
+          const builderPrompt = buildBuilderPrompt({
+            workOrderMarkdown,
+            workOrder,
             iteration,
-            outcome: "failed",
-            startedAt: builderStartedAt,
-            log,
+            maxIterations,
+            reviewerFeedback,
+            testFailureOutput,
+            constitution: builderConstitution.content,
+            iterationHistory,
+            escalationContext,
           });
-          updateRun(runId, {
-            status: "failed",
-            error: `builder failed: ${String(err)}`,
-            finished_at: nowIso(),
-          });
-          return;
+          const builderPromptPath = path.join(builderDir, "prompt.txt");
+          fs.writeFileSync(builderPromptPath, builderPrompt, "utf8");
+
+          const runLocalBuilder = async (): Promise<CodexExecResult> => {
+            try {
+              return await runCodexExec({
+                cwd: worktreePath,
+                prompt: builderPrompt,
+                schemaPath: builderSchemaPath,
+                outputPath: builderOutputPath,
+                logPath: builderLogPath,
+                sandbox: getBuilderSandboxMode(),
+                model: builderModel,
+                cliPath: runnerSettings.builder.cliPath,
+                streamMonitor: builderStreamMonitor ?? undefined,
+                streamContext: builderStreamMonitor ? streamContext : undefined,
+                onEscalation: async (request) => {
+                  const escalationRecord: EscalationRecord = {
+                    ...request,
+                    created_at: nowIso(),
+                  };
+                  updateRun(runId, {
+                    status: "waiting_for_input",
+                    escalation: JSON.stringify(escalationRecord),
+                  });
+                  writeJson(path.join(runDir, "escalation.json"), escalationRecord);
+                  logEscalationDetails(log, request);
+                  log("Escalation requested; waiting for user input");
+
+                  const resolved = await waitForEscalationResolution(runId, log);
+                  if (!resolved?.resolution) return null;
+                  try {
+                    writeEscalationResolution(runDir, resolved);
+                  } catch (err) {
+                    log(`Failed to persist escalation resolution: ${String(err)}`);
+                    return null;
+                  }
+                  return resolved;
+                },
+                log,
+              });
+            } finally {
+              recordCostFromCodexLog({
+                projectId: project.id,
+                runId,
+                category: "builder",
+                model: builderModel,
+                logPath: builderLogPath,
+                description: `builder iteration ${iteration}`,
+                promptPath: builderPromptPath,
+                outputPath: builderOutputPath,
+                log,
+              });
+            }
+          };
+
+          let builderExecResult: CodexExecResult;
+          try {
+            builderExecResult = await runLocalBuilder();
+          } catch (err) {
+            if (err instanceof SecurityHoldError) {
+              throw err;
+            }
+            log(`Builder failed: ${String(err)}`);
+            recordPhaseMetric({
+              runId,
+              phase: "builder",
+              iteration,
+              outcome: "failed",
+              startedAt: builderStartedAt,
+              log,
+            });
+            updateRun(runId, {
+              status: "failed",
+              error: `builder failed: ${String(err)}`,
+              finished_at: nowIso(),
+            });
+            return;
+          }
+
+          if (builderExecResult.escalationRequested && !builderExecResult.escalationResolved) {
+            log("Escalation resolution missing; exiting run");
+            return;
+          }
+          if (builderExecResult.escalationResolved) {
+            escalationContext = builderExecResult.escalationResolved;
+            log("Escalation resolved; continuing builder iteration with user input");
+          }
+
+          builderResult = null;
+          builderChanges = [];
+          try {
+            builderResult = JSON.parse(fs.readFileSync(builderOutputPath, "utf8")) as {
+              summary: string;
+              risks: string[];
+              tests: unknown[];
+              escalation?: string;
+              changes?: unknown;
+            };
+            builderChanges = normalizeBuilderChanges(builderResult?.changes);
+          } catch {
+            // keep going; reviewer can still evaluate diff
+          }
+
+          if (!builderExecResult.escalationRequested) {
+            let escalationRequest = findEscalationRequest([
+              builderResult?.escalation,
+              builderResult?.summary,
+            ]);
+            if (!escalationRequest) {
+              const builderOutputText = readTextIfExists(builderOutputPath);
+              const builderLogText = readTextIfExists(builderLogPath);
+              escalationRequest = findEscalationRequest([builderOutputText, builderLogText]);
+            }
+            if (escalationRequest) {
+              const escalationRecord: EscalationRecord = {
+                ...escalationRequest,
+                created_at: nowIso(),
+              };
+              updateRun(runId, {
+                status: "waiting_for_input",
+                escalation: JSON.stringify(escalationRecord),
+              });
+              writeJson(path.join(runDir, "escalation.json"), escalationRecord);
+              logEscalationDetails(log, escalationRequest);
+              log("Escalation requested after builder output; waiting for user input");
+
+              const resolved = await waitForEscalationResolution(runId, log);
+              if (!resolved?.resolution) {
+                log("Escalation resolution missing; exiting run");
+                return;
+              }
+              escalationContext = resolved;
+              try {
+                fs.writeFileSync(builderOutputPath, "", "utf8");
+                fs.writeFileSync(builderLogPath, "", "utf8");
+              } catch (err) {
+                log(`Failed to clear builder outputs before retry: ${String(err)}`);
+              }
+              continue;
+            }
+          }
+          break;
         }
 
-        if (builderExecResult.escalationRequested && !builderExecResult.escalationResolved) {
-          log("Escalation resolution missing; exiting run");
-          return;
-        }
-        if (builderExecResult.escalationResolved) {
-          escalationContext = builderExecResult.escalationResolved;
-          log("Escalation resolved; continuing builder iteration with user input");
-        }
+        recordPhaseMetric({
+          runId,
+          phase: "builder",
+          iteration,
+          outcome: "success",
+          startedAt: builderStartedAt,
+          log,
+        });
+        updateRun(runId, { last_completed_phase: "builder" });
+        const builderEndedAt = new Date();
+        builderDurationSeconds = durationSeconds(builderStartedAt, builderEndedAt);
+        etaActualTotals.builder_seconds += builderDurationSeconds;
+        etaCompleted.builder += 1;
 
-        builderResult = null;
-        builderChanges = [];
+        const changedFiles = computeChangedFiles(baselineRoot, worktreePath);
+        diffPatch = buildPatchForChangedFiles(
+          runDir,
+          baselineRoot,
+          worktreePath,
+          changedFiles
+        );
+        fs.writeFileSync(
+          path.join(runDir, "files_changed.json"),
+          `${JSON.stringify(changedFiles, null, 2)}\n`,
+          "utf8"
+        );
+        fs.writeFileSync(path.join(runDir, "diff.patch"), diffPatch, "utf8");
+        fs.writeFileSync(
+          path.join(runDir, `diff-iter-${iteration}.patch`),
+          diffPatch,
+          "utf8"
+        );
+      } else {
+        // Resume: reload builder result and diff from previous attempt
+        log("Loading builder result from previous attempt");
         try {
           builderResult = JSON.parse(fs.readFileSync(builderOutputPath, "utf8")) as {
             summary: string;
@@ -2926,79 +3074,12 @@ export async function runRun(runId: string) {
         } catch {
           // keep going; reviewer can still evaluate diff
         }
-
-        if (!builderExecResult.escalationRequested) {
-          let escalationRequest = findEscalationRequest([
-            builderResult?.escalation,
-            builderResult?.summary,
-          ]);
-          if (!escalationRequest) {
-            const builderOutputText = readTextIfExists(builderOutputPath);
-            const builderLogText = readTextIfExists(builderLogPath);
-            escalationRequest = findEscalationRequest([builderOutputText, builderLogText]);
-          }
-          if (escalationRequest) {
-            const escalationRecord: EscalationRecord = {
-              ...escalationRequest,
-              created_at: nowIso(),
-            };
-            updateRun(runId, {
-              status: "waiting_for_input",
-              escalation: JSON.stringify(escalationRecord),
-            });
-            writeJson(path.join(runDir, "escalation.json"), escalationRecord);
-            logEscalationDetails(log, escalationRequest);
-            log("Escalation requested after builder output; waiting for user input");
-
-            const resolved = await waitForEscalationResolution(runId, log);
-            if (!resolved?.resolution) {
-              log("Escalation resolution missing; exiting run");
-              return;
-            }
-            escalationContext = resolved;
-            try {
-              fs.writeFileSync(builderOutputPath, "", "utf8");
-              fs.writeFileSync(builderLogPath, "", "utf8");
-            } catch (err) {
-              log(`Failed to clear builder outputs before retry: ${String(err)}`);
-            }
-            continue;
-          }
+        try {
+          diffPatch = fs.readFileSync(path.join(runDir, "diff.patch"), "utf8");
+        } catch {
+          diffPatch = "";
         }
-        break;
       }
-
-      recordPhaseMetric({
-        runId,
-        phase: "builder",
-        iteration,
-        outcome: "success",
-        startedAt: builderStartedAt,
-        log,
-      });
-      const builderEndedAt = new Date();
-      builderDurationSeconds = durationSeconds(builderStartedAt, builderEndedAt);
-      etaActualTotals.builder_seconds += builderDurationSeconds;
-      etaCompleted.builder += 1;
-
-      const changedFiles = computeChangedFiles(baselineRoot, worktreePath);
-      const diffPatch = buildPatchForChangedFiles(
-        runDir,
-        baselineRoot,
-        worktreePath,
-        changedFiles
-      );
-      fs.writeFileSync(
-        path.join(runDir, "files_changed.json"),
-        `${JSON.stringify(changedFiles, null, 2)}\n`,
-        "utf8"
-      );
-      fs.writeFileSync(path.join(runDir, "diff.patch"), diffPatch, "utf8");
-      fs.writeFileSync(
-        path.join(runDir, `diff-iter-${iteration}.patch`),
-        diffPatch,
-        "utf8"
-      );
 
       const historyEntry: RunIterationHistoryEntry = {
         iteration,
@@ -3010,72 +3091,77 @@ export async function runRun(runId: string) {
         reviewer_notes: null,
       };
 
-      const testStartedAt = new Date();
-      const recordTestOutcome = (outcome: RunPhaseMetricOutcome) => {
-        recordPhaseMetric({
-          runId,
-          phase: "test",
-          iteration,
-          outcome,
-          startedAt: testStartedAt,
-          log,
-        });
-      };
-
-      updateRun(runId, { status: "testing" });
-      log(`Running tests (iter ${iteration})`);
-      let tests: Array<{ command: string; passed: boolean; output?: string }> = [];
-      try {
-        tests = await runRepoTests(worktreePath, runDir, iteration, runId);
-        writeJson(path.join(runDir, "tests", "results.json"), tests);
-      } catch (err) {
-        tests = [{ command: "tests", passed: false, output: String(err) }];
-        writeJson(path.join(runDir, "tests", "results.json"), tests);
-      }
-
-      copyLocalTestArtifacts({ worktreePath, runDir, iteration, log });
-
-      historyEntry.tests = tests.map((test) => ({
-        command: test.command,
-        passed: test.passed,
-        output: test.output ?? "",
-      }));
-
-      const testEndedAt = new Date();
-      const testDurationSeconds = durationSeconds(testStartedAt, testEndedAt);
-      etaActualTotals.test_seconds += testDurationSeconds;
-      etaCompleted.test += 1;
-
-      const anyFailed = tests.some((t) => !t.passed);
-      recordTestOutcome(anyFailed ? "failed" : "success");
-      recordEtaUpdate({
-        phase: "builder",
-        iteration,
-        tests_passed: !anyFailed,
-        actual_builder_seconds: builderDurationSeconds,
-        actual_test_seconds: testDurationSeconds,
-      });
-      if (anyFailed) {
-        testFailureOutput = buildTestFailureOutput(tests);
-        iterationHistory.push(historyEntry);
-        writeIterationHistory();
-        log(`Tests failed on iteration ${iteration}`);
-        if (iteration >= maxIterations) {
-          updateRun(runId, {
-            status: "failed",
-            error: `Tests failed after ${iteration} iterations`,
-            finished_at: nowIso(),
-            reviewer_verdict: reviewerVerdict,
-            reviewer_notes: reviewerNotes.length ? JSON.stringify(reviewerNotes) : null,
-            summary: builderResult?.summary || approvedSummary || null,
+      if (!skipTests) {
+        const testStartedAt = new Date();
+        const recordTestOutcome = (outcome: RunPhaseMetricOutcome) => {
+          recordPhaseMetric({
+            runId,
+            phase: "test",
+            iteration,
+            outcome,
+            startedAt: testStartedAt,
+            log,
           });
-          log("Tests failed; run marked failed");
-          return;
-        }
-        continue;
-      }
+        };
 
-      testFailureOutput = null;
+        updateRun(runId, { status: "testing" });
+        log(`Running tests (iter ${iteration})`);
+        let tests: Array<{ command: string; passed: boolean; output?: string }> = [];
+        try {
+          tests = await runRepoTests(worktreePath, runDir, iteration, runId);
+          writeJson(path.join(runDir, "tests", "results.json"), tests);
+        } catch (err) {
+          tests = [{ command: "tests", passed: false, output: String(err) }];
+          writeJson(path.join(runDir, "tests", "results.json"), tests);
+        }
+
+        copyLocalTestArtifacts({ worktreePath, runDir, iteration, log });
+
+        historyEntry.tests = tests.map((test) => ({
+          command: test.command,
+          passed: test.passed,
+          output: test.output ?? "",
+        }));
+
+        const testEndedAt = new Date();
+        const testDurationSeconds = durationSeconds(testStartedAt, testEndedAt);
+        etaActualTotals.test_seconds += testDurationSeconds;
+        etaCompleted.test += 1;
+
+        const anyFailed = tests.some((t) => !t.passed);
+        recordTestOutcome(anyFailed ? "failed" : "success");
+        recordEtaUpdate({
+          phase: "builder",
+          iteration,
+          tests_passed: !anyFailed,
+          actual_builder_seconds: builderDurationSeconds,
+          actual_test_seconds: testDurationSeconds,
+        });
+        if (anyFailed) {
+          testFailureOutput = buildTestFailureOutput(tests);
+          iterationHistory.push(historyEntry);
+          writeIterationHistory();
+          log(`Tests failed on iteration ${iteration}`);
+          if (iteration >= maxIterations) {
+            updateRun(runId, {
+              status: "failed",
+              error: `Tests failed after ${iteration} iterations`,
+              finished_at: nowIso(),
+              reviewer_verdict: reviewerVerdict,
+              reviewer_notes: reviewerNotes.length ? JSON.stringify(reviewerNotes) : null,
+              summary: builderResult?.summary || approvedSummary || null,
+            });
+            log("Tests failed; run marked failed");
+            return;
+          }
+          continue;
+        }
+
+        testFailureOutput = null;
+        updateRun(runId, { last_completed_phase: "test" });
+      } else {
+        log("Skipping tests (already passed in previous attempt)");
+      }
 
       const reviewerStartedAt = new Date();
       const recordReviewerOutcome = (outcome: RunPhaseMetricOutcome) => {
@@ -3248,6 +3334,7 @@ export async function runRun(runId: string) {
 
       if (reviewerVerdict === "approved") {
         approvedSummary = builderResult?.summary || "(no builder summary)";
+        updateRun(runId, { last_completed_phase: "reviewer_approved" });
         log(`Reviewer approved on iteration ${iteration}`);
         break;
       }
@@ -3318,60 +3405,66 @@ export async function runRun(runId: string) {
       }
     };
 
-    const statusOutput = runGit(["status", "--porcelain"], {
-      cwd: worktreePath,
-      allowFailure: true,
-    });
-    if (!statusOutput.stdout.trim()) {
-      log("No changes detected; skipping merge");
-      cleanupWorktree({
-        repoPath,
-        worktreePath,
-        worktreeRealPath,
-        branchName,
-        log,
+    const skipCommit = resumeIndex >= phaseIndex("committed");
+    if (!skipCommit) {
+      const statusOutput = runGit(["status", "--porcelain"], {
+        cwd: worktreePath,
+        allowFailure: true,
       });
+      if (!statusOutput.stdout.trim()) {
+        log("No changes detected; skipping merge");
+        cleanupWorktree({
+          repoPath,
+          worktreePath,
+          worktreeRealPath,
+          branchName,
+          log,
+        });
 
-      const finishedAt = nowIso();
-      updateRun(runId, {
-        status: "you_review",
-        finished_at: finishedAt,
-        reviewer_verdict: "approved",
-        reviewer_notes: JSON.stringify(reviewerNotes),
-        summary: approvedSummary,
-        merge_status: "merged",
-        conflict_with_run_id: null,
-      });
+        const finishedAt = nowIso();
+        updateRun(runId, {
+          status: "you_review",
+          finished_at: finishedAt,
+          reviewer_verdict: "approved",
+          reviewer_notes: JSON.stringify(reviewerNotes),
+          summary: approvedSummary,
+          merge_status: "merged",
+          conflict_with_run_id: null,
+        });
 
-      recordMergeOutcome("skipped", { reason: "no_changes" });
-      log("Run completed and approved");
-      return;
-    }
+        recordMergeOutcome("skipped", { reason: "no_changes" });
+        log("Run completed and approved");
+        return;
+      }
 
-    runGit(["add", "-A"], { cwd: worktreePath, log });
-    const commitTitle = workOrder.title.replace(/\s+/g, " ").trim();
-    const commitMessage = `${workOrder.id}: ${commitTitle || "Update"}`;
-    const commitResult = runGit(
-      [
-        "-c",
-        "user.name=Control Center Runner",
-        "-c",
-        "user.email=runner@local",
-        "commit",
-        "-m",
-        commitMessage,
-      ],
-      { cwd: worktreePath, allowFailure: true, log }
-    );
-    if (commitResult.status !== 0) {
-      recordMergeOutcome("failed", { reason: "commit_failed" });
-      updateRun(runId, {
-        status: "failed",
-        error: `git commit failed: ${commitResult.stderr || commitResult.stdout}`,
-        finished_at: nowIso(),
-        merge_status: null,
-      });
-      return;
+      runGit(["add", "-A"], { cwd: worktreePath, log });
+      const commitTitle = workOrder.title.replace(/\s+/g, " ").trim();
+      const commitMessage = `${workOrder.id}: ${commitTitle || "Update"}`;
+      const commitResult = runGit(
+        [
+          "-c",
+          "user.name=Control Center Runner",
+          "-c",
+          "user.email=runner@local",
+          "commit",
+          "-m",
+          commitMessage,
+        ],
+        { cwd: worktreePath, allowFailure: true, log }
+      );
+      if (commitResult.status !== 0) {
+        recordMergeOutcome("failed", { reason: "commit_failed" });
+        updateRun(runId, {
+          status: "failed",
+          error: `git commit failed: ${commitResult.stderr || commitResult.stdout}`,
+          finished_at: nowIso(),
+          merge_status: null,
+        });
+        return;
+      }
+      updateRun(runId, { last_completed_phase: "committed" });
+    } else {
+      log("Skipping commit (already committed in previous attempt)");
     }
 
     let conflictRunId: string | null = null;
@@ -4083,6 +4176,7 @@ export function enqueueCodexRun(
     failure_reason: null,
     failure_detail: null,
     escalation: null,
+    last_completed_phase: null,
   };
 
   createRun(run);
@@ -4478,6 +4572,110 @@ export function resumeSecurityHoldRun(runId: string): SecurityHoldActionResult {
     // Ignore incident resolution failures.
   }
   log("Run resumed from security hold.");
+  return { ok: true, run: getRunById(runId) ?? run };
+}
+
+export type ResumeRunResult =
+  | { ok: true; run: RunRow }
+  | { ok: false; error: string; code: "not_found" | "not_resumable" | "no_checkpoint" | "worktree_missing" | "active_run_exists" | "resume_failed" };
+
+export function resumeRun(runId: string): ResumeRunResult {
+  const run = getRunById(runId);
+  if (!run) return { ok: false, error: "run not found", code: "not_found" };
+
+  // 1. Status must be failed or canceled
+  if (run.status !== "failed" && run.status !== "canceled") {
+    return {
+      ok: false,
+      error: `run status is "${run.status}", must be "failed" or "canceled" to resume`,
+      code: "not_resumable",
+    };
+  }
+
+  // 2. Must have a checkpoint
+  if (!run.last_completed_phase) {
+    return {
+      ok: false,
+      error: "run has no checkpoint (last_completed_phase is null); cannot resume",
+      code: "no_checkpoint",
+    };
+  }
+
+  // 3. Worktree must still exist on disk
+  const { worktreePath } = resolveWorktreePaths(run.run_dir);
+  if (!fs.existsSync(worktreePath)) {
+    return {
+      ok: false,
+      error: `worktree not found at ${worktreePath}; cannot resume without existing worktree`,
+      code: "worktree_missing",
+    };
+  }
+
+  // 4. No other active run for the same work order
+  const project = findProjectById(run.project_id);
+  if (project) {
+    const ACTIVE_RUN_STATUSES = new Set([
+      "queued",
+      "building",
+      "testing",
+      "ai_review",
+      "you_review",
+      "waiting_for_input",
+      "security_hold",
+    ]);
+    const existingRuns = listRunsByProject(run.project_id, 100);
+    const activeRunForWO = existingRuns.find(
+      (r) =>
+        r.id !== runId &&
+        r.work_order_id === run.work_order_id &&
+        ACTIVE_RUN_STATUSES.has(r.status)
+    );
+    if (activeRunForWO) {
+      return {
+        ok: false,
+        error: `Run ${activeRunForWO.id.slice(0, 8)} is already ${activeRunForWO.status} for ${run.work_order_id}`,
+        code: "active_run_exists",
+      };
+    }
+  }
+
+  const log = (line: string) => appendLog(run.log_path, line);
+  log(`Resuming run from checkpoint: last_completed_phase="${run.last_completed_phase}"`);
+
+  // Reset run fields for re-execution; keep last_completed_phase so the worker knows where to resume
+  updateRun(runId, {
+    status: "building",
+    error: null,
+    finished_at: null,
+    failure_category: null,
+    failure_reason: null,
+    failure_detail: null,
+  });
+
+  // Spawn a new runner worker
+  let worker: ChildProcess | null = null;
+  try {
+    worker = spawnRunWorker(runId);
+    if (!worker.pid) {
+      throw new Error("runner worker pid unavailable");
+    }
+    writeRunnerPid(run.run_dir, worker.pid);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(`Failed to resume run: ${message}`);
+    updateRun(runId, {
+      status: "failed",
+      error: `resume failed: ${message}`,
+      finished_at: nowIso(),
+    });
+    return {
+      ok: false,
+      error: `failed to resume run: ${message}`,
+      code: "resume_failed",
+    };
+  }
+
+  log("Run resumed successfully, worker spawned.");
   return { ok: true, run: getRunById(runId) ?? run };
 }
 

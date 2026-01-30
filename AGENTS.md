@@ -93,3 +93,19 @@ When a builder agent cannot complete a task (missing dependencies, needs manual 
 - Do NOT manually edit the database status to bypass escalation
 - Do NOT create resolution files manually - use the API
 - The builder subprocess is paused and waiting for the API to signal resume
+
+## Run Checkpoint & Resume
+
+Runs automatically checkpoint after each phase (setup, builder, test, reviewer_approved, committed). Failed or canceled runs can be resumed from their last checkpoint:
+
+```
+POST /runs/:runId/resume
+```
+
+The run must be in `failed` or `canceled` status, have a non-null `last_completed_phase`, and the worktree directory must still exist on disk. The resume reuses the same run ID and skips all phases up to the checkpoint.
+
+### Important
+
+- Do NOT manually set `last_completed_phase` — it is managed by the runner
+- Worktrees are required for resume; if the worktree was cleaned up, the run cannot be resumed
+- Only one active run per work order is allowed; cancel any active run before resuming a failed one

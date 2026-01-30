@@ -202,6 +202,7 @@ import {
   getRun,
   getRunsForProject,
   provideRunInput,
+  resumeRun,
   resumeSecurityHoldRun,
 } from "./runner_agent.js";
 import {
@@ -4828,6 +4829,20 @@ app.post("/runs/:runId/cancel", async (req, res) => {
       error: err instanceof Error ? err.message : "cancel failed",
     });
   }
+});
+
+app.post("/runs/:runId/resume", (req, res) => {
+  const result = resumeRun(req.params.runId);
+  if (!result.ok) {
+    const status =
+      result.code === "not_found"
+        ? 404
+        : result.code === "active_run_exists"
+          ? 409
+          : 400;
+    return res.status(status).json({ error: result.error, code: result.code });
+  }
+  return res.json(result.run);
 });
 
 app.post("/runs/:runId/security-hold/resume", (req, res) => {

@@ -78,6 +78,9 @@ flowchart TB
             PHASE_REVIEWER -->|changes_requested| PHASE_BUILDER
         end
 
+        RESUME_API[POST /runs/:id/resume]
+        RESUME_API -->|skip to checkpoint| RUN_PHASES
+
         subgraph BUILDER_LOOP["Builder Loop (max 10 iter)"]
             SPAWN_WORKER[Spawn Worker]
             CODEX_EXEC[Codex Execution]

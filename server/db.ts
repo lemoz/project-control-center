@@ -97,6 +97,13 @@ export type RunRow = {
   failure_reason: string | null;
   failure_detail: string | null;
   escalation: string | null;
+  last_completed_phase:
+    | "setup"
+    | "builder"
+    | "test"
+    | "reviewer_approved"
+    | "committed"
+    | null;
 };
 
 export type SignalRow = {
@@ -1803,6 +1810,10 @@ function initSchema(database: Database.Database) {
   if (!hasEscalation) {
     database.exec("ALTER TABLE runs ADD COLUMN escalation TEXT;");
   }
+  const hasLastCompletedPhase = runColumns.some((c) => c.name === "last_completed_phase");
+  if (!hasLastCompletedPhase) {
+    database.exec("ALTER TABLE runs ADD COLUMN last_completed_phase TEXT;");
+  }
 
   const escalationColumns = database
     .prepare("PRAGMA table_info(escalations)")
@@ -2423,9 +2434,9 @@ export function createRun(run: RunRow): void {
   database
     .prepare(
       `INSERT INTO runs
-        (id, project_id, work_order_id, provider, triggered_by, status, iteration, builder_iteration, reviewer_verdict, reviewer_notes, summary, estimated_iterations, estimated_minutes, estimate_confidence, estimate_reasoning, current_eta_minutes, estimated_completion_at, eta_history, branch_name, source_branch, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error, failure_category, failure_reason, failure_detail, escalation)
+        (id, project_id, work_order_id, provider, triggered_by, status, iteration, builder_iteration, reviewer_verdict, reviewer_notes, summary, estimated_iterations, estimated_minutes, estimate_confidence, estimate_reasoning, current_eta_minutes, estimated_completion_at, eta_history, branch_name, source_branch, merge_status, conflict_with_run_id, run_dir, log_path, created_at, started_at, finished_at, error, failure_category, failure_reason, failure_detail, escalation, last_completed_phase)
        VALUES
-        (@id, @project_id, @work_order_id, @provider, @triggered_by, @status, @iteration, @builder_iteration, @reviewer_verdict, @reviewer_notes, @summary, @estimated_iterations, @estimated_minutes, @estimate_confidence, @estimate_reasoning, @current_eta_minutes, @estimated_completion_at, @eta_history, @branch_name, @source_branch, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error, @failure_category, @failure_reason, @failure_detail, @escalation)`
+        (@id, @project_id, @work_order_id, @provider, @triggered_by, @status, @iteration, @builder_iteration, @reviewer_verdict, @reviewer_notes, @summary, @estimated_iterations, @estimated_minutes, @estimate_confidence, @estimate_reasoning, @current_eta_minutes, @estimated_completion_at, @eta_history, @branch_name, @source_branch, @merge_status, @conflict_with_run_id, @run_dir, @log_path, @created_at, @started_at, @finished_at, @error, @failure_category, @failure_reason, @failure_detail, @escalation, @last_completed_phase)`
     )
     .run(run);
 }
@@ -3077,6 +3088,7 @@ export function updateRun(
       | "failure_reason"
       | "failure_detail"
       | "escalation"
+      | "last_completed_phase"
     >
   >
 ): boolean {
@@ -3105,6 +3117,7 @@ export function updateRun(
     { key: "failure_reason", column: "failure_reason" },
     { key: "failure_detail", column: "failure_detail" },
     { key: "escalation", column: "escalation" },
+    { key: "last_completed_phase", column: "last_completed_phase" },
   ];
   const sets = fields
     .filter((f) => patch[f.key] !== undefined)
