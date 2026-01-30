@@ -33,7 +33,13 @@ import {
   createSignal,
   createConstitutionSuggestions,
   createInitiative,
+  createPerson,
+  createPersonIdentifier,
+  createPersonProject,
   deleteInitiative,
+  deletePerson,
+  deletePersonIdentifier,
+  deletePersonProject,
   expireStaleGlobalShifts,
   expireStaleShifts,
   decideConstitutionSuggestion,
@@ -53,6 +59,9 @@ import {
   getEstimationContextSummary,
   getRunPhaseMetricsSummary,
   updateRun,
+  getPersonById,
+  getPersonDetails,
+  getPersonProject,
   getGlobalShiftById,
   getShiftByProjectId,
   listGlobalPatterns,
@@ -69,10 +78,16 @@ import {
   listRunPhaseMetrics,
   listShifts,
   listProjects,
+  listPeople,
   listSubscribers,
   markSecurityIncidentFalsePositive,
   markInProgressRunsFailed,
   markWorkOrderRunsMerged,
+  normalizeEmail,
+  normalizePhone,
+  PEOPLE_IDENTIFIER_TYPES,
+  PEOPLE_PROJECT_RELATIONSHIPS,
+  resolvePersonByIdentifier,
   setProjectStar,
   updateProjectAutoShift,
   startShift,
@@ -395,6 +410,8 @@ const COST_PERIODS = ["day", "week", "month", "all_time"] as const;
 const COST_CATEGORIES = ["builder", "reviewer", "chat", "handoff", "other", "all"] as const;
 const COST_PERIOD_SET = new Set<string>(COST_PERIODS);
 const COST_CATEGORY_SET = new Set<string>(COST_CATEGORIES);
+const PEOPLE_IDENTIFIER_TYPE_SET = new Set<string>(PEOPLE_IDENTIFIER_TYPES);
+const PEOPLE_PROJECT_RELATIONSHIP_SET = new Set<string>(PEOPLE_PROJECT_RELATIONSHIPS);
 const VOICE_SIGNATURE_HEADERS = [
   "x-elevenlabs-signature",
   "x-elevenlabs-hmac",
@@ -1497,6 +1514,366 @@ app.get("/projects/:id/budget/enforcement", (req, res) => {
     Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(200, Math.trunc(limitRaw)) : 50;
   const events = listBudgetEnforcementLog(project.id, limit);
   return res.json({ events });
+});
+
+function parsePersonTagsInput(
+  value: unknown
+): { ok: true; tags: string[] } | { ok: false; error: string } {
+  if (value === null) return { ok: true, tags: [] };
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return { ok: true, tags: trimmed ? [trimmed] : [] };
+  }
+  if (Array.isArray(value)) {
+    const tags: string[] = [];
+    for (const entry of value) {
+      if (typeof entry !== "string") {
+        return { ok: false, error: "`tags` must be an array of strings" };
+      }
+      const trimmed = entry.trim();
+      if (trimmed) tags.push(trimmed);
+    }
+    return { ok: true, tags };
+  }
+  return { ok: false, error: "`tags` must be a string or array of strings" };
+}
+
+app.get("/people/resolve", (req, res) => {
+  if (req.query.phone !== undefined && typeof req.query.phone !== "string") {
+    return res.status(400).json({ error: "`phone` must be a string" });
+  }
+  if (req.query.email !== undefined && typeof req.query.email !== "string") {
+    return res.status(400).json({ error: "`email` must be a string" });
+  }
+
+  const phone = typeof req.query.phone === "string" ? req.query.phone.trim() : "";
+  const email = typeof req.query.email === "string" ? req.query.email.trim() : "";
+
+  if (phone && email) {
+    return res.status(400).json({ error: "provide only one of `phone` or `email`" });
+  }
+  if (!phone && !email) {
+    return res.status(400).json({ error: "`phone` or `email` is required" });
+  }
+
+  if (phone) {
+    const normalized = normalizePhone(phone);
+    if (!normalized) return res.status(400).json({ error: "invalid phone" });
+    const person = resolvePersonByIdentifier({
+      type: "phone",
+      normalizedValue: normalized,
+    });
+    if (!person) return res.status(404).json({ error: "person not found" });
+    return res.json({ person });
+  }
+
+  const normalized = normalizeEmail(email);
+  if (!normalized) return res.status(400).json({ error: "invalid email" });
+  const person = resolvePersonByIdentifier({
+    type: "email",
+    normalizedValue: normalized,
+  });
+  if (!person) return res.status(404).json({ error: "person not found" });
+  return res.json({ person });
+});
+
+app.get("/people", (req, res) => {
+  if (req.query.q !== undefined && typeof req.query.q !== "string") {
+    return res.status(400).json({ error: "`q` must be a string" });
+  }
+  if (req.query.project !== undefined && typeof req.query.project !== "string") {
+    return res.status(400).json({ error: "`project` must be a string" });
+  }
+  if (req.query.tag !== undefined && typeof req.query.tag !== "string") {
+    return res.status(400).json({ error: "`tag` must be a string" });
+  }
+  if (req.query.starred !== undefined && typeof req.query.starred !== "string") {
+    return res.status(400).json({ error: "`starred` must be a string" });
+  }
+
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const projectId = typeof req.query.project === "string" ? req.query.project.trim() : "";
+  const tag = typeof req.query.tag === "string" ? req.query.tag.trim() : "";
+  const starredRaw = typeof req.query.starred === "string" ? req.query.starred.trim() : "";
+  let starred: 0 | 1 | null = null;
+
+  if (starredRaw) {
+    const normalized = starredRaw.toLowerCase();
+    if (normalized === "1" || normalized === "true") {
+      starred = 1;
+    } else if (normalized === "0" || normalized === "false") {
+      starred = 0;
+    } else {
+      return res.status(400).json({ error: "`starred` must be true or false" });
+    }
+  }
+
+  const people = listPeople({
+    q: q || null,
+    projectId: projectId || null,
+    tag: tag || null,
+    starred,
+  });
+  return res.json({ people });
+});
+
+app.get("/people/:id", (req, res) => {
+  const { id } = req.params;
+  const person = getPersonDetails(id);
+  if (!person) return res.status(404).json({ error: "person not found" });
+  return res.json({ person });
+});
+
+app.post("/people", (req, res) => {
+  const payload = req.body ?? {};
+  const nameValue = payload.name;
+  if (typeof nameValue !== "string" || !nameValue.trim()) {
+    return res.status(400).json({ error: "`name` is required" });
+  }
+
+  const nicknameValue = payload.nickname;
+  if (
+    nicknameValue !== undefined &&
+    nicknameValue !== null &&
+    typeof nicknameValue !== "string"
+  ) {
+    return res.status(400).json({ error: "`nickname` must be a string" });
+  }
+
+  const companyValue = payload.company;
+  if (
+    companyValue !== undefined &&
+    companyValue !== null &&
+    typeof companyValue !== "string"
+  ) {
+    return res.status(400).json({ error: "`company` must be a string" });
+  }
+
+  const roleValue = payload.role;
+  if (roleValue !== undefined && roleValue !== null && typeof roleValue !== "string") {
+    return res.status(400).json({ error: "`role` must be a string" });
+  }
+
+  const notesValue = payload.notes;
+  if (notesValue !== undefined && notesValue !== null && typeof notesValue !== "string") {
+    return res.status(400).json({ error: "`notes` must be a string" });
+  }
+
+  let tags: string[] | undefined;
+  if ("tags" in payload) {
+    const parsed = parsePersonTagsInput(payload.tags);
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+    tags = parsed.tags;
+  }
+
+  if ("starred" in payload && typeof payload.starred !== "boolean") {
+    return res.status(400).json({ error: "`starred` must be boolean" });
+  }
+
+  const person = createPerson({
+    name: nameValue.trim(),
+    nickname: typeof nicknameValue === "string" ? normalizeOptionalText(nicknameValue) : null,
+    company: typeof companyValue === "string" ? normalizeOptionalText(companyValue) : null,
+    role: typeof roleValue === "string" ? normalizeOptionalText(roleValue) : null,
+    notes: typeof notesValue === "string" ? normalizeOptionalText(notesValue) : null,
+    tags,
+    starred: payload.starred ?? false,
+  });
+
+  return res.status(201).json({ person });
+});
+
+app.put("/people/:id", (req, res) => {
+  const { id } = req.params;
+  const payload = req.body ?? {};
+  const patch: {
+    name?: string;
+    nickname?: string | null;
+    company?: string | null;
+    role?: string | null;
+    notes?: string | null;
+    tags?: string[];
+    starred?: boolean;
+  } = {};
+
+  if ("name" in payload) {
+    if (typeof payload.name !== "string" || !payload.name.trim()) {
+      return res.status(400).json({ error: "`name` must be a non-empty string" });
+    }
+    patch.name = payload.name.trim();
+  }
+
+  if ("nickname" in payload) {
+    if (payload.nickname === null) {
+      patch.nickname = null;
+    } else if (typeof payload.nickname === "string") {
+      patch.nickname = normalizeOptionalText(payload.nickname);
+    } else {
+      return res.status(400).json({ error: "`nickname` must be a string or null" });
+    }
+  }
+
+  if ("company" in payload) {
+    if (payload.company === null) {
+      patch.company = null;
+    } else if (typeof payload.company === "string") {
+      patch.company = normalizeOptionalText(payload.company);
+    } else {
+      return res.status(400).json({ error: "`company` must be a string or null" });
+    }
+  }
+
+  if ("role" in payload) {
+    if (payload.role === null) {
+      patch.role = null;
+    } else if (typeof payload.role === "string") {
+      patch.role = normalizeOptionalText(payload.role);
+    } else {
+      return res.status(400).json({ error: "`role` must be a string or null" });
+    }
+  }
+
+  if ("notes" in payload) {
+    if (payload.notes === null) {
+      patch.notes = null;
+    } else if (typeof payload.notes === "string") {
+      patch.notes = normalizeOptionalText(payload.notes);
+    } else {
+      return res.status(400).json({ error: "`notes` must be a string or null" });
+    }
+  }
+
+  if ("tags" in payload) {
+    const parsed = parsePersonTagsInput(payload.tags);
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+    patch.tags = parsed.tags;
+  }
+
+  if ("starred" in payload) {
+    if (typeof payload.starred !== "boolean") {
+      return res.status(400).json({ error: "`starred` must be boolean" });
+    }
+    patch.starred = payload.starred;
+  }
+
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ error: "No valid fields to update" });
+  }
+
+  const person = updatePerson(id, patch);
+  if (!person) return res.status(404).json({ error: "person not found" });
+  return res.json({ person });
+});
+
+app.delete("/people/:id", (req, res) => {
+  const { id } = req.params;
+  const deleted = deletePerson(id);
+  if (!deleted) return res.status(404).json({ error: "person not found" });
+  return res.json({ ok: true });
+});
+
+app.post("/people/:id/identifiers", (req, res) => {
+  const { id } = req.params;
+  const person = getPersonById(id);
+  if (!person) return res.status(404).json({ error: "person not found" });
+
+  const payload = req.body ?? {};
+  const typeValue = payload.type;
+  if (typeof typeValue !== "string" || !typeValue.trim()) {
+    return res.status(400).json({ error: "`type` is required" });
+  }
+  const normalizedType = typeValue.trim().toLowerCase();
+  if (!PEOPLE_IDENTIFIER_TYPE_SET.has(normalizedType)) {
+    return res
+      .status(400)
+      .json({ error: "`type` must be phone, email, imessage, or other" });
+  }
+
+  const valueValue = payload.value;
+  if (typeof valueValue !== "string" || !valueValue.trim()) {
+    return res.status(400).json({ error: "`value` is required" });
+  }
+
+  const labelValue = payload.label;
+  if (labelValue !== undefined && labelValue !== null && typeof labelValue !== "string") {
+    return res.status(400).json({ error: "`label` must be a string" });
+  }
+
+  const identifier = createPersonIdentifier({
+    person_id: id,
+    type: normalizedType as "phone" | "email" | "imessage" | "other",
+    value: valueValue.trim(),
+    label: typeof labelValue === "string" ? normalizeOptionalText(labelValue) : null,
+  });
+  if (!identifier) {
+    return res.status(400).json({ error: "invalid identifier value" });
+  }
+
+  return res.status(201).json({ identifier });
+});
+
+app.delete("/people/:id/identifiers/:iid", (req, res) => {
+  const { id, iid } = req.params;
+  const deleted = deletePersonIdentifier(id, iid);
+  if (!deleted) return res.status(404).json({ error: "identifier not found" });
+  return res.json({ ok: true });
+});
+
+app.post("/people/:id/projects", (req, res) => {
+  const { id } = req.params;
+  const person = getPersonById(id);
+  if (!person) return res.status(404).json({ error: "person not found" });
+
+  const payload = req.body ?? {};
+  const projectValue = payload.project_id ?? payload.projectId;
+  if (typeof projectValue !== "string" || !projectValue.trim()) {
+    return res.status(400).json({ error: "`project_id` is required" });
+  }
+  const projectId = projectValue.trim();
+
+  const relationshipValue = payload.relationship;
+  if (
+    relationshipValue !== undefined &&
+    relationshipValue !== null &&
+    typeof relationshipValue !== "string"
+  ) {
+    return res.status(400).json({ error: "`relationship` must be a string" });
+  }
+  const relationship =
+    typeof relationshipValue === "string" ? relationshipValue.trim().toLowerCase() : null;
+  if (relationship && !PEOPLE_PROJECT_RELATIONSHIP_SET.has(relationship)) {
+    return res.status(400).json({
+      error: "`relationship` must be stakeholder, collaborator, client, vendor, or other",
+    });
+  }
+
+  const notesValue = payload.notes;
+  if (notesValue !== undefined && notesValue !== null && typeof notesValue !== "string") {
+    return res.status(400).json({ error: "`notes` must be a string" });
+  }
+
+  const existing = getPersonProject(id, projectId);
+  if (existing) {
+    return res.status(409).json({ error: "project association already exists" });
+  }
+
+  const project = createPersonProject({
+    person_id: id,
+    project_id: projectId,
+    relationship: relationship
+      ? (relationship as "stakeholder" | "collaborator" | "client" | "vendor" | "other")
+      : undefined,
+    notes: typeof notesValue === "string" ? normalizeOptionalText(notesValue) : null,
+  });
+
+  return res.status(201).json({ project });
+});
+
+app.delete("/people/:id/projects/:pid", (req, res) => {
+  const { id, pid } = req.params;
+  const deleted = deletePersonProject(id, pid);
+  if (!deleted) return res.status(404).json({ error: "project association not found" });
+  return res.json({ ok: true });
 });
 
 function normalizeStringArrayField(value: unknown): string[] | undefined {
