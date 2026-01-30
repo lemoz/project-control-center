@@ -150,6 +150,23 @@ export const PEOPLE_PROJECT_RELATIONSHIPS = [
 ] as const;
 export type PeopleProjectRelationship = (typeof PEOPLE_PROJECT_RELATIONSHIPS)[number];
 
+export const CONVERSATION_EVENT_CHANNELS = [
+  "imessage",
+  "email",
+  "meeting",
+  "call",
+  "note",
+] as const;
+export type ConversationEventChannel = (typeof CONVERSATION_EVENT_CHANNELS)[number];
+
+export const CONVERSATION_EVENT_DIRECTIONS = [
+  "inbound",
+  "outbound",
+  "bidirectional",
+] as const;
+export type ConversationEventDirection =
+  (typeof CONVERSATION_EVENT_DIRECTIONS)[number];
+
 export type PersonRow = {
   id: string;
   name: string;
@@ -217,6 +234,37 @@ export type PersonProject = {
 export type PersonDetails = Person & {
   identifiers: PersonIdentifier[];
   projects: PersonProject[];
+};
+
+export type ConversationEventRow = {
+  id: string;
+  person_id: string;
+  channel: ConversationEventChannel;
+  direction: ConversationEventDirection;
+  summary: string | null;
+  content: string | null;
+  external_id: string | null;
+  metadata: string;
+  occurred_at: string;
+  synced_at: string;
+};
+
+export type ConversationEventMetadata = Record<string, unknown>;
+
+export type ConversationEvent = Omit<ConversationEventRow, "metadata"> & {
+  metadata: ConversationEventMetadata;
+};
+
+export type CreateConversationEventInput = {
+  person_id: string;
+  channel: ConversationEventChannel;
+  direction: ConversationEventDirection;
+  summary?: string | null;
+  content?: string | null;
+  external_id?: string | null;
+  metadata?: ConversationEventMetadata | null;
+  occurred_at: string;
+  synced_at?: string;
 };
 
 export type CreatePersonInput = {
@@ -3340,6 +3388,12 @@ function normalizeConversationMetadata(
   }
 }
 
+function normalizeConversationText(value?: string | null): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
 function toConversationEvent(row: ConversationEventRow): ConversationEvent {
   return {
     id: row.id,
@@ -3357,7 +3411,7 @@ function toConversationEvent(row: ConversationEventRow): ConversationEvent {
 
 export function createConversationEvent(
   input: CreateConversationEventInput
-): ConversationEvent {
+): ConversationEvent | null {
   const database = getDb();
   const now = new Date().toISOString();
   const row: ConversationEventRow = {
@@ -3373,15 +3427,17 @@ export function createConversationEvent(
     synced_at: normalizeOptionalString(input.synced_at) ?? now,
   };
 
-  database
+  const result = database
     .prepare(
       `INSERT INTO conversation_events
         (id, person_id, channel, direction, summary, content, external_id, metadata, occurred_at, synced_at)
        VALUES
-        (@id, @person_id, @channel, @direction, @summary, @content, @external_id, @metadata, @occurred_at, @synced_at)`
+        (@id, @person_id, @channel, @direction, @summary, @content, @external_id, @metadata, @occurred_at, @synced_at)
+       ON CONFLICT(channel, external_id) DO NOTHING`
     )
     .run(row);
 
+  if (result.changes === 0) return null;
   return toConversationEvent(row);
 }
 
@@ -6151,6 +6207,19 @@ function normalizeDecisionArrayInput(value: unknown): ShiftHandoffDecision[] {
     decisions.push({ decision, rationale });
   }
   return decisions;
+}
+
+function parseJsonRecord(value: string | null): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
 function parseJsonStringArray(value: string | null): string[] {
