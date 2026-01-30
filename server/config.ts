@@ -207,6 +207,48 @@ export function getElevenLabsApiKey(): string | null {
   return trimmed || null;
 }
 
+export function getTwilioAccountSid(): string | null {
+  return trimEnvValue(process.env.CONTROL_CENTER_TWILIO_ACCOUNT_SID);
+}
+
+export function getTwilioAuthToken(): string | null {
+  return trimEnvValue(process.env.CONTROL_CENTER_TWILIO_AUTH_TOKEN);
+}
+
+export function getTwilioPhoneNumber(): string | null {
+  return trimEnvValue(process.env.CONTROL_CENTER_TWILIO_PHONE_NUMBER);
+}
+
+export function getTwilioVerifySignature(): boolean {
+  const raw = process.env.CONTROL_CENTER_TWILIO_VERIFY_SIGNATURE;
+  if (raw === undefined) return true;
+  return isTruthyEnv(raw);
+}
+
+export function getSmsMonthlyBudgetCents(): number {
+  const raw = process.env.CONTROL_CENTER_SMS_MONTHLY_BUDGET_CENTS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : 0;
+}
+
+export function getSmsRateLimitPerHour(): number {
+  const raw = process.env.CONTROL_CENTER_SMS_RATE_LIMIT_PER_HOUR;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 30;
+}
+
+export function getSmsMessageCostCents(): number {
+  const raw = process.env.CONTROL_CENTER_SMS_MESSAGE_COST_CENTS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
+export function getSmsConversationTimeoutMinutes(): number {
+  const raw = process.env.CONTROL_CENTER_SMS_CONVERSATION_TIMEOUT_MINUTES;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 30;
+}
+
 export function getElevenLabsSignedUrlTtlSeconds(): number | null {
   const raw = process.env.CONTROL_CENTER_ELEVENLABS_SIGNED_URL_TTL_SECONDS;
   const parsed = raw === undefined ? 300 : Number.parseInt(raw, 10);

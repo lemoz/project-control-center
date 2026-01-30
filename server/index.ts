@@ -59,6 +59,7 @@ import {
   listEscalations,
   listSecurityIncidents,
   listProjectCommunications,
+  listSmsContacts,
   listGlobalShifts,
   listConstitutionSuggestions,
   listInitiatives,
@@ -91,6 +92,7 @@ import {
   deleteTrack,
   getTrackById,
   listBudgetEnforcementLog,
+  upsertSmsContact,
   PROJECT_LIFECYCLE_STATUSES,
   type CreateGlobalShiftHandoffInput,
   type CreateShiftHandoffInput,
@@ -164,6 +166,13 @@ import {
   leaveMeeting,
   refreshMeetingStatus,
 } from "./meeting_connector.js";
+import {
+  handleIncomingSms,
+  normalizePhoneNumber,
+  sendSmsMessage,
+  sweepStaleSmsConversations,
+  verifyTwilioSignature,
+} from "./sms.js";
 import {
   getEscalationDeferral,
   getExplicitPreferences,
@@ -302,6 +311,7 @@ const allowLan = getAllowLan();
 const allowRemoteHealth = getAllowRemoteHealth();
 const healthToken = getHealthToken();
 const ESCALATION_TIMEOUT_SWEEP_MS = 10 * 60 * 1000;
+const SMS_TIMEOUT_SWEEP_MS = 5 * 60 * 1000;
 
 // Initialize the SQLite database on boot to surface path/schema errors early.
 getDb();
@@ -332,6 +342,29 @@ function startEscalationTimeoutSweep(): void {
 
   sweep();
   setInterval(sweep, ESCALATION_TIMEOUT_SWEEP_MS);
+}
+
+function startSmsConversationSweep(): void {
+  const sweep = () => {
+    try {
+      const result = sweepStaleSmsConversations();
+      if (result.ended > 0) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[sms] auto-ended ${result.ended}/${result.checked} stale conversations`
+        );
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        "[sms] failed to sweep stale conversations:",
+        err instanceof Error ? err.message : err
+      );
+    }
+  };
+
+  sweep();
+  setInterval(sweep, SMS_TIMEOUT_SWEEP_MS);
 }
 const ESCALATION_TYPES: EscalationType[] = [
   "need_input",
@@ -484,6 +517,29 @@ function verifyElevenLabsWebhook(
   }
 
   next();
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function buildTwimlResponse(message: string | null): string {
+  if (!message) return "<Response></Response>";
+  return `<Response><Message>${escapeXml(message)}</Message></Response>`;
+}
+
+function resolveWebhookUrl(req: Request): string {
+  const proto = req.get("x-forwarded-proto")?.trim() || req.protocol;
+  const host =
+    req.get("x-forwarded-host")?.trim() ||
+    req.get("host")?.trim() ||
+    req.hostname;
+  return `${proto}://${host}${req.originalUrl}`;
 }
 
 function isLoopbackHost(value: string): boolean {
@@ -771,6 +827,137 @@ app.post("/api/voice/run-status", verifyElevenLabsWebhook, (req, res) => {
   const run = getRun(runId);
   if (!run) return res.status(404).json({ error: "run not found" });
   return res.json(run);
+});
+
+app.post(
+  "/api/sms/webhook",
+  express.urlencoded({ extended: false }),
+  async (req, res) => {
+    const record = req.body as Record<string, unknown> | null;
+    const from = typeof record?.From === "string" ? record.From.trim() : "";
+    const to = typeof record?.To === "string" ? record.To.trim() : "";
+    const body = typeof record?.Body === "string" ? record.Body : "";
+    const messageSid =
+      typeof record?.MessageSid === "string" ? record.MessageSid.trim() : null;
+
+    const signatureHeader = req.get("x-twilio-signature")?.trim() ?? null;
+    const url = resolveWebhookUrl(req);
+    const formBody: Record<string, string> = {};
+    if (record) {
+      for (const [key, value] of Object.entries(record)) {
+        if (typeof value === "string") formBody[key] = value;
+      }
+    }
+    if (!verifyTwilioSignature({ signature: signatureHeader, url, body: formBody })) {
+      return res.status(401).send("invalid signature");
+    }
+
+    if (!from || !to) {
+      return res.status(400).send("missing From or To");
+    }
+
+    try {
+      const result = await handleIncomingSms({
+        from,
+        to,
+        body,
+        messageSid,
+      });
+      const twiml = buildTwimlResponse(result.replyMessage);
+      res.setHeader("Content-Type", "text/xml");
+      return res.status(200).send(twiml);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "failed to handle sms";
+      return res.status(400).send(message);
+    }
+  }
+);
+
+app.post("/api/sms/send", async (req, res) => {
+  const to =
+    typeof req.body?.phone_number === "string"
+      ? req.body.phone_number.trim()
+      : typeof req.body?.to === "string"
+        ? req.body.to.trim()
+        : "";
+  const message =
+    typeof req.body?.message === "string"
+      ? req.body.message
+      : typeof req.body?.body === "string"
+        ? req.body.body
+        : "";
+  if (!to || !message) {
+    return res.status(400).json({ error: "`phone_number` and `message` are required" });
+  }
+
+  const result = await sendSmsMessage({
+    phone_number: normalizePhoneNumber(to),
+    body: message,
+    conversation_id:
+      typeof req.body?.conversation_id === "string"
+        ? req.body.conversation_id.trim()
+        : null,
+    project_id:
+      typeof req.body?.project_id === "string" ? req.body.project_id.trim() : null,
+    contact_label:
+      typeof req.body?.contact_label === "string"
+        ? req.body.contact_label.trim()
+        : null,
+    user_id: typeof req.body?.user_id === "string" ? req.body.user_id.trim() : null,
+  });
+
+  if (!result.ok) {
+    const status =
+      result.error === "rate_limit"
+        ? 429
+        : result.error === "budget_exceeded"
+          ? 402
+          : result.error === "twilio_not_configured"
+            ? 503
+            : 400;
+    return res.status(status).json({ error: result.error });
+  }
+
+  return res.json({
+    ok: true,
+    message_sid: result.messageSid,
+    conversation: result.conversation,
+  });
+});
+
+app.get("/api/sms/contacts", (_req, res) => {
+  return res.json({ contacts: listSmsContacts() });
+});
+
+app.post("/api/sms/contacts", (req, res) => {
+  const phoneRaw =
+    typeof req.body?.phone_number === "string"
+      ? req.body.phone_number.trim()
+      : typeof req.body?.phone === "string"
+        ? req.body.phone.trim()
+        : "";
+  const phone = normalizePhoneNumber(phoneRaw);
+  if (!phone) {
+    return res.status(400).json({ error: "`phone_number` is required" });
+  }
+  const label =
+    typeof req.body?.label === "string" ? req.body.label.trim() : undefined;
+  const userId =
+    typeof req.body?.user_id === "string" ? req.body.user_id.trim() : undefined;
+  const projectId =
+    typeof req.body?.project_id === "string"
+      ? req.body.project_id.trim()
+      : undefined;
+  const isPrimary =
+    typeof req.body?.is_primary === "boolean" ? req.body.is_primary : undefined;
+  const contact = upsertSmsContact({
+    phone_number: phone,
+    ...(label !== undefined ? { label } : {}),
+    ...(userId !== undefined ? { user_id: userId } : {}),
+    ...(projectId !== undefined ? { project_id: projectId } : {}),
+    ...(isPrimary !== undefined ? { is_primary: isPrimary } : {}),
+  });
+  return res.status(201).json(contact);
 });
 
 app.post("/meetings/join", async (req, res) => {
@@ -5507,6 +5694,7 @@ app.listen(port, host, () => {
     console.log(`Marked ${recovered} in-progress runs as failed (restart recovery).`);
   }
   startEscalationTimeoutSweep();
+  startSmsConversationSweep();
   startShiftScheduler();
   startAutopilotScheduler();
   recoverAutonomousSessionLoop();

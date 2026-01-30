@@ -355,6 +355,44 @@ export type EscalationRow = ProjectCommunicationRow & {
   type: EscalationType;
 };
 
+export type SmsConversationStatus = "active" | "ended" | "processed";
+export type SmsMessageDirection = "inbound" | "outbound";
+export type SmsMessageRole = "user" | "agent" | "system";
+
+export type SmsContactRow = {
+  phone_number: string;
+  label: string;
+  user_id: string | null;
+  project_id: string | null;
+  is_primary: 0 | 1;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SmsConversationRow = {
+  id: string;
+  phone_number: string;
+  user_id: string | null;
+  contact_label: string | null;
+  project_id: string | null;
+  status: SmsConversationStatus;
+  started_at: string;
+  last_message_at: string;
+  ended_at: string | null;
+  processed_at: string | null;
+  ended_reason: string | null;
+};
+
+export type SmsMessageRow = {
+  id: string;
+  conversation_id: string;
+  direction: SmsMessageDirection;
+  role: SmsMessageRole;
+  body: string;
+  provider_message_id: string | null;
+  created_at: string;
+};
+
 export type ConstitutionScope = "global" | "project";
 
 export type ConstitutionVersionRow = {
@@ -1450,6 +1488,51 @@ function initSchema(database: Database.Database) {
     CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_action_ledger_message_action ON chat_action_ledger(message_id, action_index);
     CREATE INDEX IF NOT EXISTS idx_chat_action_ledger_thread_applied_at ON chat_action_ledger(thread_id, applied_at DESC);
     CREATE INDEX IF NOT EXISTS idx_chat_action_ledger_run_id ON chat_action_ledger(run_id);
+
+    CREATE TABLE IF NOT EXISTS sms_contacts (
+      phone_number TEXT PRIMARY KEY,
+      label TEXT NOT NULL DEFAULT '',
+      user_id TEXT,
+      project_id TEXT,
+      is_primary INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sms_contacts_project_id ON sms_contacts(project_id);
+
+    CREATE TABLE IF NOT EXISTS sms_conversations (
+      id TEXT PRIMARY KEY,
+      phone_number TEXT NOT NULL,
+      user_id TEXT,
+      contact_label TEXT,
+      project_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      started_at TEXT NOT NULL,
+      last_message_at TEXT NOT NULL,
+      ended_at TEXT,
+      processed_at TEXT,
+      ended_reason TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sms_conversations_phone_status
+      ON sms_conversations(phone_number, status, last_message_at DESC);
+
+    CREATE TABLE IF NOT EXISTS sms_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      role TEXT NOT NULL,
+      body TEXT NOT NULL,
+      provider_message_id TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (conversation_id) REFERENCES sms_conversations(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sms_messages_conversation_created
+      ON sms_messages(conversation_id, created_at DESC);
   `);
 
   database.exec(`
@@ -1976,6 +2059,69 @@ function initSchema(database: Database.Database) {
   }
   if (!hasWorkOrderRunId) {
     database.exec("ALTER TABLE chat_action_ledger ADD COLUMN work_order_run_id TEXT;");
+  }
+
+  const smsContactsTableExists = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sms_contacts'")
+    .get();
+  if (!smsContactsTableExists) {
+    database.exec(`
+      CREATE TABLE sms_contacts (
+        phone_number TEXT PRIMARY KEY,
+        label TEXT NOT NULL DEFAULT '',
+        user_id TEXT,
+        project_id TEXT,
+        is_primary INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+      );
+      CREATE INDEX idx_sms_contacts_project_id ON sms_contacts(project_id);
+    `);
+  }
+
+  const smsConversationsTableExists = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sms_conversations'")
+    .get();
+  if (!smsConversationsTableExists) {
+    database.exec(`
+      CREATE TABLE sms_conversations (
+        id TEXT PRIMARY KEY,
+        phone_number TEXT NOT NULL,
+        user_id TEXT,
+        contact_label TEXT,
+        project_id TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        started_at TEXT NOT NULL,
+        last_message_at TEXT NOT NULL,
+        ended_at TEXT,
+        processed_at TEXT,
+        ended_reason TEXT,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+      );
+      CREATE INDEX idx_sms_conversations_phone_status
+        ON sms_conversations(phone_number, status, last_message_at DESC);
+    `);
+  }
+
+  const smsMessagesTableExists = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sms_messages'")
+    .get();
+  if (!smsMessagesTableExists) {
+    database.exec(`
+      CREATE TABLE sms_messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        role TEXT NOT NULL,
+        body TEXT NOT NULL,
+        provider_message_id TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (conversation_id) REFERENCES sms_conversations(id) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_sms_messages_conversation_created
+        ON sms_messages(conversation_id, created_at DESC);
+    `);
   }
 
   const globalShiftColumns = database
@@ -3431,6 +3577,284 @@ export function updateProjectCommunication(
     .prepare(`UPDATE escalations SET ${sets.join(", ")} WHERE id = @id`)
     .run({ id, ...patch });
   return result.changes > 0;
+}
+
+export function listSmsContacts(): SmsContactRow[] {
+  const database = getDb();
+  return database
+    .prepare("SELECT * FROM sms_contacts ORDER BY is_primary DESC, updated_at DESC")
+    .all() as SmsContactRow[];
+}
+
+export function getSmsContactByPhone(phoneNumber: string): SmsContactRow | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM sms_contacts WHERE phone_number = ? LIMIT 1")
+    .get(phoneNumber) as SmsContactRow | undefined;
+  return row || null;
+}
+
+export function getPrimarySmsContact(): SmsContactRow | null {
+  const database = getDb();
+  const row = database
+    .prepare(
+      "SELECT * FROM sms_contacts ORDER BY is_primary DESC, updated_at DESC LIMIT 1"
+    )
+    .get() as SmsContactRow | undefined;
+  return row || null;
+}
+
+export function upsertSmsContact(input: {
+  phone_number: string;
+  label?: string;
+  user_id?: string | null;
+  project_id?: string | null;
+  is_primary?: boolean;
+}): SmsContactRow {
+  const database = getDb();
+  const existing = getSmsContactByPhone(input.phone_number);
+  const now = new Date().toISOString();
+  const resolvedLabel =
+    input.label !== undefined ? input.label : existing?.label ?? "";
+  const resolvedUserId =
+    input.user_id !== undefined ? input.user_id : existing?.user_id ?? null;
+  const resolvedProjectId =
+    input.project_id !== undefined ? input.project_id : existing?.project_id ?? null;
+  const resolvedPrimary =
+    input.is_primary === undefined
+      ? existing?.is_primary ?? 0
+      : input.is_primary
+        ? 1
+        : 0;
+  const row: SmsContactRow = {
+    phone_number: input.phone_number,
+    label: resolvedLabel,
+    user_id: resolvedUserId,
+    project_id: resolvedProjectId,
+    is_primary: resolvedPrimary,
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+  };
+
+  const tx = database.transaction(() => {
+    database
+      .prepare(
+        `INSERT INTO sms_contacts
+          (phone_number, label, user_id, project_id, is_primary, created_at, updated_at)
+         VALUES
+          (@phone_number, @label, @user_id, @project_id, @is_primary, @created_at, @updated_at)
+         ON CONFLICT(phone_number) DO UPDATE SET
+          label = excluded.label,
+          user_id = excluded.user_id,
+          project_id = excluded.project_id,
+          is_primary = excluded.is_primary,
+          updated_at = excluded.updated_at`
+      )
+      .run(row);
+    if (row.is_primary) {
+      database
+        .prepare("UPDATE sms_contacts SET is_primary = 0 WHERE phone_number != ?")
+        .run(row.phone_number);
+    }
+  });
+  tx();
+
+  return getSmsContactByPhone(input.phone_number) ?? row;
+}
+
+export function createSmsConversation(input: {
+  phone_number: string;
+  user_id?: string | null;
+  contact_label?: string | null;
+  project_id?: string | null;
+  status?: SmsConversationStatus;
+  started_at?: string;
+  last_message_at?: string;
+  ended_at?: string | null;
+  processed_at?: string | null;
+  ended_reason?: string | null;
+}): SmsConversationRow {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const row: SmsConversationRow = {
+    id: crypto.randomUUID(),
+    phone_number: input.phone_number,
+    user_id: input.user_id ?? null,
+    contact_label: input.contact_label ?? null,
+    project_id: input.project_id ?? null,
+    status: input.status ?? "active",
+    started_at: input.started_at ?? now,
+    last_message_at: input.last_message_at ?? input.started_at ?? now,
+    ended_at: input.ended_at ?? null,
+    processed_at: input.processed_at ?? null,
+    ended_reason: input.ended_reason ?? null,
+  };
+  database
+    .prepare(
+      `INSERT INTO sms_conversations
+        (id, phone_number, user_id, contact_label, project_id, status, started_at, last_message_at, ended_at, processed_at, ended_reason)
+       VALUES
+        (@id, @phone_number, @user_id, @contact_label, @project_id, @status, @started_at, @last_message_at, @ended_at, @processed_at, @ended_reason)`
+    )
+    .run(row);
+  return row;
+}
+
+export function getSmsConversationById(id: string): SmsConversationRow | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM sms_conversations WHERE id = ? LIMIT 1")
+    .get(id) as SmsConversationRow | undefined;
+  return row || null;
+}
+
+export function getActiveSmsConversationByPhone(
+  phoneNumber: string
+): SmsConversationRow | null {
+  const database = getDb();
+  const row = database
+    .prepare(
+      `SELECT * FROM sms_conversations
+       WHERE phone_number = ? AND status = 'active'
+       ORDER BY last_message_at DESC
+       LIMIT 1`
+    )
+    .get(phoneNumber) as SmsConversationRow | undefined;
+  return row || null;
+}
+
+export function listStaleSmsConversations(params: {
+  lastMessageBefore: string;
+  limit?: number;
+}): SmsConversationRow[] {
+  const database = getDb();
+  const limit =
+    typeof params.limit === "number" && Number.isFinite(params.limit)
+      ? Math.max(1, Math.min(200, Math.trunc(params.limit)))
+      : 200;
+  return database
+    .prepare(
+      `SELECT * FROM sms_conversations
+       WHERE status = 'active' AND last_message_at < ?
+       ORDER BY last_message_at ASC
+       LIMIT ?`
+    )
+    .all(params.lastMessageBefore, limit) as SmsConversationRow[];
+}
+
+export function updateSmsConversation(
+  id: string,
+  patch: Partial<
+    Pick<
+      SmsConversationRow,
+      | "user_id"
+      | "contact_label"
+      | "project_id"
+      | "status"
+      | "started_at"
+      | "last_message_at"
+      | "ended_at"
+      | "processed_at"
+      | "ended_reason"
+    >
+  >
+): boolean {
+  const database = getDb();
+  const fields: Array<{ key: keyof typeof patch; column: string }> = [
+    { key: "user_id", column: "user_id" },
+    { key: "contact_label", column: "contact_label" },
+    { key: "project_id", column: "project_id" },
+    { key: "status", column: "status" },
+    { key: "started_at", column: "started_at" },
+    { key: "last_message_at", column: "last_message_at" },
+    { key: "ended_at", column: "ended_at" },
+    { key: "processed_at", column: "processed_at" },
+    { key: "ended_reason", column: "ended_reason" },
+  ];
+  const sets = fields
+    .filter((field) => patch[field.key] !== undefined)
+    .map((field) => `${field.column} = @${field.key}`);
+  if (!sets.length) return false;
+  const result = database
+    .prepare(`UPDATE sms_conversations SET ${sets.join(", ")} WHERE id = @id`)
+    .run({ id, ...patch });
+  return result.changes > 0;
+}
+
+export function createSmsMessage(input: {
+  conversation_id: string;
+  direction: SmsMessageDirection;
+  role: SmsMessageRole;
+  body: string;
+  provider_message_id?: string | null;
+  created_at?: string;
+}): SmsMessageRow {
+  const database = getDb();
+  const row: SmsMessageRow = {
+    id: crypto.randomUUID(),
+    conversation_id: input.conversation_id,
+    direction: input.direction,
+    role: input.role,
+    body: input.body,
+    provider_message_id: input.provider_message_id ?? null,
+    created_at: input.created_at ?? new Date().toISOString(),
+  };
+  database
+    .prepare(
+      `INSERT INTO sms_messages
+        (id, conversation_id, direction, role, body, provider_message_id, created_at)
+       VALUES
+        (@id, @conversation_id, @direction, @role, @body, @provider_message_id, @created_at)`
+    )
+    .run(row);
+  return row;
+}
+
+export function listSmsMessages(params: {
+  conversation_id: string;
+  limit?: number;
+}): SmsMessageRow[] {
+  const database = getDb();
+  const limit =
+    typeof params.limit === "number" && Number.isFinite(params.limit)
+      ? Math.max(1, Math.min(500, Math.trunc(params.limit)))
+      : 500;
+  return database
+    .prepare(
+      `SELECT * FROM sms_messages
+       WHERE conversation_id = ?
+       ORDER BY created_at ASC
+       LIMIT ?`
+    )
+    .all(params.conversation_id, limit) as SmsMessageRow[];
+}
+
+export function countSmsMessagesSince(params: {
+  since: string;
+  phone_number?: string;
+  direction?: SmsMessageDirection;
+}): number {
+  const database = getDb();
+  const clauses = ["m.created_at >= ?"];
+  const values: Array<string> = [params.since];
+  if (params.phone_number) {
+    clauses.push("c.phone_number = ?");
+    values.push(params.phone_number);
+  }
+  if (params.direction) {
+    clauses.push("m.direction = ?");
+    values.push(params.direction);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const row = database
+    .prepare(
+      `SELECT COUNT(*) as count
+       FROM sms_messages m
+       JOIN sms_conversations c ON c.id = m.conversation_id
+       ${where}`
+    )
+    .get(...values) as { count: number } | undefined;
+  return row?.count ?? 0;
 }
 
 export type EscalationQuery = {
