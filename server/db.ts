@@ -1450,6 +1450,61 @@ function initSchema(database: Database.Database) {
     CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_action_ledger_message_action ON chat_action_ledger(message_id, action_index);
     CREATE INDEX IF NOT EXISTS idx_chat_action_ledger_thread_applied_at ON chat_action_ledger(thread_id, applied_at DESC);
     CREATE INDEX IF NOT EXISTS idx_chat_action_ledger_run_id ON chat_action_ledger(run_id);
+
+    CREATE TABLE IF NOT EXISTS slack_oauth_states (
+      state TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_slack_oauth_states_expires ON slack_oauth_states(expires_at);
+
+    CREATE TABLE IF NOT EXISTS slack_installations (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL UNIQUE,
+      team_name TEXT,
+      bot_user_id TEXT,
+      bot_token TEXT NOT NULL,
+      scope TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_slack_installations_team ON slack_installations(team_id);
+
+    CREATE TABLE IF NOT EXISTS slack_conversations (
+      id TEXT PRIMARY KEY,
+      slack_team_id TEXT NOT NULL,
+      slack_channel_id TEXT NOT NULL,
+      slack_user_id TEXT NOT NULL,
+      slack_thread_ts TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      project_id TEXT,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      processed_at TEXT,
+      global_shift_id TEXT,
+      last_message_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+      FOREIGN KEY (global_shift_id) REFERENCES global_shifts(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_slack_conversations_status ON slack_conversations(status, last_message_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_slack_conversations_thread ON slack_conversations(slack_team_id, slack_channel_id, slack_user_id, slack_thread_ts);
+    CREATE INDEX IF NOT EXISTS idx_slack_conversations_project ON slack_conversations(project_id, last_message_at DESC);
+
+    CREATE TABLE IF NOT EXISTS slack_conversation_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      slack_ts TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (conversation_id) REFERENCES slack_conversations(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_slack_conversation_messages_convo ON slack_conversation_messages(conversation_id, created_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_slack_conversation_messages_ts ON slack_conversation_messages(conversation_id, slack_ts);
   `);
 
   database.exec(`

@@ -165,6 +165,15 @@ import {
   refreshMeetingStatus,
 } from "./meeting_connector.js";
 import {
+  buildSlackInstallUrl,
+  exchangeSlackOAuthCode,
+  expireSlackConversations,
+  handleSlackEventEnvelope,
+  sendSlackMessage,
+  verifySlackOAuthState,
+  verifySlackSignature,
+} from "./slack.js";
+import {
   getEscalationDeferral,
   getExplicitPreferences,
   getLastEscalationAt,
@@ -302,6 +311,7 @@ const allowLan = getAllowLan();
 const allowRemoteHealth = getAllowRemoteHealth();
 const healthToken = getHealthToken();
 const ESCALATION_TIMEOUT_SWEEP_MS = 10 * 60 * 1000;
+const SLACK_CONVERSATION_SWEEP_MS = 5 * 60 * 1000;
 
 // Initialize the SQLite database on boot to surface path/schema errors early.
 getDb();
@@ -332,6 +342,29 @@ function startEscalationTimeoutSweep(): void {
 
   sweep();
   setInterval(sweep, ESCALATION_TIMEOUT_SWEEP_MS);
+}
+
+function startSlackConversationSweep(): void {
+  const sweep = async () => {
+    try {
+      const expired = await expireSlackConversations();
+      if (expired > 0) {
+        // eslint-disable-next-line no-console
+        console.log(`[slack] auto-ended ${expired} stale conversations`);
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        "[slack] failed to sweep conversations:",
+        err instanceof Error ? err.message : err
+      );
+    }
+  };
+
+  void sweep();
+  setInterval(() => {
+    void sweep();
+  }, SLACK_CONVERSATION_SWEEP_MS);
 }
 const ESCALATION_TYPES: EscalationType[] = [
   "need_input",
@@ -483,6 +516,27 @@ function verifyElevenLabsWebhook(
     return;
   }
 
+  next();
+}
+
+function verifySlackWebhook(
+  req: RawBodyRequest,
+  res: Response,
+  next: NextFunction
+): void {
+  const signature = req.header("x-slack-signature");
+  const timestamp = req.header("x-slack-request-timestamp");
+  const rawBody = req.rawBody ?? Buffer.from("");
+  const result = verifySlackSignature({
+    rawBody,
+    timestamp: timestamp ?? null,
+    signature: signature ?? null,
+  });
+  if (!result.ok) {
+    const status = result.error?.includes("configured") ? 500 : 401;
+    res.status(status).json({ error: result.error ?? "Slack signature invalid" });
+    return;
+  }
   next();
 }
 
@@ -771,6 +825,78 @@ app.post("/api/voice/run-status", verifyElevenLabsWebhook, (req, res) => {
   const run = getRun(runId);
   if (!run) return res.status(404).json({ error: "run not found" });
   return res.json(run);
+});
+
+app.get("/slack/install", (req, res) => {
+  const result = buildSlackInstallUrl();
+  if (!result.ok || !result.url) {
+    return res.status(500).json({ error: result.error ?? "Slack OAuth not configured" });
+  }
+  if (req.query.redirect === "1") {
+    return res.redirect(result.url);
+  }
+  return res.json({ url: result.url });
+});
+
+app.get("/slack/oauth/callback", async (req, res) => {
+  const state = typeof req.query.state === "string" ? req.query.state.trim() : "";
+  if (!state) return res.status(400).json({ error: "`state` is required" });
+  const stateResult = verifySlackOAuthState(state);
+  if (!stateResult.ok) {
+    return res.status(400).json({ error: stateResult.error ?? "invalid state" });
+  }
+  const slackError = typeof req.query.error === "string" ? req.query.error.trim() : "";
+  if (slackError) return res.status(400).json({ error: slackError });
+  const code = typeof req.query.code === "string" ? req.query.code.trim() : "";
+  if (!code) return res.status(400).json({ error: "`code` is required" });
+  const result = await exchangeSlackOAuthCode(code);
+  if (!result.ok || !result.installation) {
+    return res.status(500).json({ error: result.error ?? "Slack OAuth failed" });
+  }
+  return res.json({
+    installation: {
+      team_id: result.installation.team_id,
+      team_name: result.installation.team_name,
+      bot_user_id: result.installation.bot_user_id,
+    },
+  });
+});
+
+app.post("/slack/events", verifySlackWebhook, async (req, res) => {
+  const result = await handleSlackEventEnvelope(req.body);
+  return res.status(result.status).json(result.body);
+});
+
+app.post("/slack/messages", async (req, res) => {
+  const body =
+    req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  const userId = typeof body.user_id === "string" ? body.user_id.trim() : "";
+  const channelId = typeof body.channel_id === "string" ? body.channel_id.trim() : "";
+  const teamId = typeof body.team_id === "string" ? body.team_id.trim() : "";
+  const threadTs = typeof body.thread_ts === "string" ? body.thread_ts.trim() : "";
+  const projectId = typeof body.project_id === "string" ? body.project_id.trim() : "";
+
+  if (!text) return res.status(400).json({ error: "`text` is required" });
+  if (!userId) return res.status(400).json({ error: "`user_id` is required" });
+
+  const result = await sendSlackMessage({
+    team_id: teamId || null,
+    channel_id: channelId || null,
+    user_id: userId,
+    text,
+    thread_ts: threadTs || null,
+    project_id: projectId || null,
+  });
+
+  if (!result.ok) {
+    return res.status(500).json({ error: result.error ?? "Slack message failed" });
+  }
+  return res.status(201).json({
+    ok: true,
+    slack_ts: result.slack_ts ?? null,
+    conversation_id: result.conversation?.id ?? null,
+  });
 });
 
 app.post("/meetings/join", async (req, res) => {
@@ -5507,6 +5633,7 @@ app.listen(port, host, () => {
     console.log(`Marked ${recovered} in-progress runs as failed (restart recovery).`);
   }
   startEscalationTimeoutSweep();
+  startSlackConversationSweep();
   startShiftScheduler();
   startAutopilotScheduler();
   recoverAutonomousSessionLoop();

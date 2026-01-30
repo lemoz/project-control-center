@@ -214,6 +214,38 @@ export function getElevenLabsSignedUrlTtlSeconds(): number | null {
   return parsed;
 }
 
+export function getSlackClientId(): string | null {
+  return trimEnvValue(process.env.CONTROL_CENTER_SLACK_CLIENT_ID);
+}
+
+export function getSlackClientSecret(): string | null {
+  return trimEnvValue(process.env.CONTROL_CENTER_SLACK_CLIENT_SECRET);
+}
+
+export function getSlackSigningSecret(): string | null {
+  return trimEnvValue(process.env.CONTROL_CENTER_SLACK_SIGNING_SECRET);
+}
+
+export function getSlackRedirectUri(): string | null {
+  return trimEnvValue(process.env.CONTROL_CENTER_SLACK_REDIRECT_URI);
+}
+
+export function getSlackScopes(): string[] {
+  const scopes = parseEnvList(process.env.CONTROL_CENTER_SLACK_SCOPES);
+  if (scopes.length) return scopes;
+  return [
+    "chat:write",
+    "im:history",
+    "im:write",
+    "app_mentions:read",
+    "channels:history",
+  ];
+}
+
+export function getSlackConversationTimeoutMinutes(): number {
+  return parseNumberEnv(process.env.CONTROL_CENTER_SLACK_CONVERSATION_TIMEOUT_MINUTES, 10);
+}
+
 export function getScanRoots(): string[] {
   return parseEnvList(process.env.CONTROL_CENTER_SCAN_ROOTS);
 }

@@ -133,6 +133,7 @@ test("provideRunInput records escalation resolution", () => {
       inputs: [{ key: "api_token", label: "API Token" }],
       created_at: now,
     }),
+    last_completed_phase: null,
   });
 
   const missing = provideRunInput(runId, { api_token: "" });
