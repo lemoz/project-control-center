@@ -25,9 +25,9 @@ tags:
   - voice
   - spike
 estimate_hours: 3
-status: ready
+status: building
 created_at: 2026-01-29
-updated_at: 2026-01-29
+updated_at: 2026-01-30
 depends_on: []
 era: v2
 ---
