@@ -120,12 +120,16 @@ export function getEscalationTimeoutHours(): number {
   return 24;
 }
 
-export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+export type SandboxMode =
+  | "read-only"
+  | "workspace-write"
+  | "workspace-write-whitelist"
+  | "danger-full-access";
 
 /**
  * Get the sandbox mode for builder agents.
  * Controlled by PCC_BUILDER_SANDBOX env var.
- * Options: "read-only", "workspace-write", "danger-full-access"
+ * Options: "read-only", "workspace-write", "workspace-write-whitelist", "danger-full-access"
  * Default: "workspace-write"
  *
  * Use "danger-full-access" when stream monitoring is enabled to allow
@@ -135,6 +139,9 @@ export function getBuilderSandboxMode(): SandboxMode {
   const raw = (process.env.PCC_BUILDER_SANDBOX || "").trim().toLowerCase();
   if (raw === "danger-full-access" || raw === "full-access" || raw === "none") {
     return "danger-full-access";
+  }
+  if (raw === "workspace-write-whitelist") {
+    return "workspace-write-whitelist";
   }
   if (raw === "read-only") {
     return "read-only";

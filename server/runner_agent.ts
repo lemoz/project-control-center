@@ -1,7 +1,9 @@
 import { spawn, spawnSync, type ChildProcess } from "child_process";
 import crypto from "crypto";
+import dns from "dns";
 import fs from "fs";
 import fg from "fast-glob";
+import net from "net";
 import path from "path";
 import YAML from "yaml";
 import {
@@ -41,7 +43,13 @@ import {
   type WorkOrder,
 } from "./work_orders.js";
 import { generateAndStoreHandoff, type RunOutcome } from "./handoff_generator.js";
-import { getMonitoringSettings, resolveRunnerSettingsForRepo } from "./settings.js";
+import {
+  getMonitoringSettings,
+  listNetworkWhitelistEntries,
+  resolveRunnerSettingsForRepo,
+} from "./settings.js";
+import { startNetworkWhitelistFirewall } from "./network_firewall.js";
+import { startNetworkWhitelistProxy } from "./network_proxy.js";
 import {
   parseCodexTokenUsageFromLog,
   recordCostEntry,
@@ -267,6 +275,85 @@ function getPortOffset(runId: string): number {
 function ensureDir(dir: string) {
   if (fs.existsSync(dir)) return;
   fs.mkdirSync(dir, { recursive: true });
+}
+
+function ensureOwnedBy(
+  targetPath: string,
+  owner: { uid: number; gid: number },
+  log?: (line: string) => void
+) {
+  if (!fs.existsSync(targetPath)) return;
+  try {
+    const stats = fs.statSync(targetPath);
+    if (stats.uid === owner.uid && stats.gid === owner.gid) return;
+    fs.chownSync(targetPath, owner.uid, owner.gid);
+  } catch (err) {
+    log?.(`Failed to update ownership for ${targetPath}: ${String(err)}`);
+  }
+}
+
+function ensureOwnedByRecursive(
+  targetPath: string,
+  owner: { uid: number; gid: number },
+  log?: (line: string) => void
+) {
+  if (!fs.existsSync(targetPath)) return;
+  const stack = [targetPath];
+  while (stack.length) {
+    const currentPath = stack.pop();
+    if (!currentPath) continue;
+    let stats: fs.Stats;
+    try {
+      stats = fs.lstatSync(currentPath);
+    } catch {
+      continue;
+    }
+    if (stats.isSymbolicLink()) continue;
+    try {
+      if (stats.uid !== owner.uid || stats.gid !== owner.gid) {
+        fs.chownSync(currentPath, owner.uid, owner.gid);
+      }
+    } catch (err) {
+      log?.(`Failed to update ownership for ${currentPath}: ${String(err)}`);
+      continue;
+    }
+    if (!stats.isDirectory()) continue;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(currentPath, { withFileTypes: true });
+    } catch (err) {
+      log?.(`Failed to read directory ${currentPath}: ${String(err)}`);
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      stack.push(path.join(currentPath, entry.name));
+    }
+  }
+}
+
+function resolveNonRootOwner(
+  repoPath: string,
+  log?: (line: string) => void
+): { uid: number; gid: number } | null {
+  if (typeof process.geteuid !== "function" || process.geteuid() !== 0) return null;
+  const rawUid = process.env.SUDO_UID?.trim() ?? "";
+  const rawGid = process.env.SUDO_GID?.trim() ?? "";
+  const envUid = Number.parseInt(rawUid, 10);
+  const envGid = Number.parseInt(rawGid, 10);
+  if (Number.isFinite(envUid) && envUid > 0 && Number.isFinite(envGid) && envGid > 0) {
+    return { uid: envUid, gid: envGid };
+  }
+  try {
+    const stats = fs.statSync(repoPath);
+    if (stats.uid > 0 && stats.gid > 0) {
+      return { uid: stats.uid, gid: stats.gid };
+    }
+  } catch (err) {
+    log?.(`Failed to resolve repo owner for worktree: ${String(err)}`);
+  }
+  log?.("Network whitelist requires a non-root worktree owner; none detected.");
+  return null;
 }
 
 function npmCommand(): string {
@@ -856,6 +943,7 @@ function ensureWorktree(params: {
   worktreeRealPath: string;
   branchName: string;
   baseBranch: string;
+  owner?: { uid: number; gid: number };
   log: (line: string) => void;
 }) {
   removeWorktreeLink(params.worktreePath);
@@ -889,6 +977,9 @@ function ensureWorktree(params: {
     { cwd: params.repoPath, log: params.log }
   );
   ensureWorktreeLink(params.worktreePath, params.worktreeRealPath);
+  if (params.owner) {
+    ensureOwnedByRecursive(params.worktreeRealPath, params.owner, params.log);
+  }
 }
 
 function cleanupWorktree(params: {
@@ -1372,6 +1463,8 @@ type CodexExecResult = {
   escalationResolved: EscalationRecord | null;
 };
 
+type NetworkMode = "none" | "sandbox" | "full";
+
 class SecurityHoldError extends Error {
   incident: StreamMonitorIncident;
 
@@ -1382,6 +1475,13 @@ class SecurityHoldError extends Error {
   }
 }
 
+function buildSandboxNetworkConfig(sandbox: SandboxMode): string | null {
+  if (sandbox === "workspace-write" || sandbox === "workspace-write-whitelist") {
+    return `sandbox_${sandbox.replace(/-/g, "_")}.network_access=true`;
+  }
+  return null;
+}
+
 function buildCodexExecArgs(params: {
   sandbox: SandboxMode;
   schemaPath: string;
@@ -1389,13 +1489,22 @@ function buildCodexExecArgs(params: {
   skipGitRepoCheck?: boolean;
   model?: string;
   reasoningEffort?: string;
+  networkMode?: NetworkMode;
 }): string[] {
   const args: string[] = ["--ask-for-approval", "never", "exec", "--json"];
   const model = params.model?.trim() || "gpt-5.2-codex";
   args.push("--model", model);
 
-  // Enable full network access for agent runs.
-  args.push("-c", 'sandbox_permissions=["network-full-access"]');
+  const networkMode = params.networkMode ?? "full";
+  if (networkMode === "full") {
+    args.push("-c", 'sandbox_permissions=["network-full-access"]');
+  }
+  if (networkMode === "sandbox") {
+    const networkConfig = buildSandboxNetworkConfig(params.sandbox);
+    if (networkConfig) {
+      args.push("-c", networkConfig);
+    }
+  }
 
   // Set reasoning effort level (xhigh for maximum thinking)
   const reasoningEffort = params.reasoningEffort?.trim() || "xhigh";
@@ -1418,6 +1527,225 @@ function buildCodexExecArgs(params: {
   return args;
 }
 
+type BuilderNetworkAccess = "sandboxed" | "whitelist";
+
+function resolveBuilderSandboxMode(networkAccess: BuilderNetworkAccess): SandboxMode {
+  if (networkAccess === "whitelist") return "workspace-write-whitelist";
+  return getBuilderSandboxMode();
+}
+
+function parseBooleanEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+function detectLinuxGateway(): string | null {
+  if (process.platform !== "linux") return null;
+  try {
+    const raw = fs.readFileSync("/proc/net/route", "utf8");
+    const lines = raw.split("\n").slice(1);
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 3) continue;
+      const destination = parts[1];
+      const gateway = parts[2];
+      if (destination !== "00000000") continue;
+      if (!/^[0-9A-Fa-f]{8}$/.test(gateway)) continue;
+      const bytes = [];
+      for (let i = 0; i < 8; i += 2) {
+        bytes.push(Number.parseInt(gateway.slice(i, i + 2), 16));
+      }
+      if (bytes.some((value) => Number.isNaN(value))) continue;
+      return bytes.reverse().join(".");
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function resolveProxyHosts(): { bindHost: string; proxyHost: string; containerMode: boolean } {
+  const bindHostOverride = (
+    process.env.CONTROL_CENTER_PROXY_BIND_HOST ||
+    process.env.PCC_PROXY_BIND_HOST ||
+    ""
+  )
+    .trim();
+  const proxyHostOverride = (
+    process.env.CONTROL_CENTER_PROXY_HOST ||
+    process.env.PCC_PROXY_HOST ||
+    ""
+  )
+    .trim();
+  const containerMode = parseBooleanEnv(
+    process.env.PCC_BUILDER_CONTAINER ||
+      process.env.CONTROL_CENTER_BUILDER_CONTAINER ||
+      process.env.PCC_CONTAINERIZED
+  );
+  const containerHostOverride = (
+    process.env.PCC_BUILDER_CONTAINER_HOST ||
+    process.env.CONTROL_CENTER_BUILDER_CONTAINER_HOST ||
+    ""
+  )
+    .trim();
+
+  let bindHost = bindHostOverride || "127.0.0.1";
+  let proxyHost = proxyHostOverride || bindHost;
+
+  if (containerMode) {
+    bindHost = bindHostOverride || "0.0.0.0";
+    if (!proxyHostOverride) {
+      proxyHost = containerHostOverride || detectLinuxGateway() || "host.docker.internal";
+    }
+  }
+
+  return { bindHost, proxyHost, containerMode };
+}
+
+function resolveBuilderIdentity(
+  worktreePath: string,
+  log?: (line: string) => void
+): { uid: number; gid: number } | null {
+  if (typeof process.geteuid !== "function" || process.geteuid() !== 0) {
+    return null;
+  }
+  try {
+    const stats = fs.statSync(worktreePath);
+    if (stats.uid === 0) {
+      log?.("Network whitelist requires a non-root worktree owner to isolate builder egress.");
+      return null;
+    }
+    return { uid: stats.uid, gid: stats.gid };
+  } catch (err) {
+    log?.(`Failed to resolve builder UID/GID: ${String(err)}`);
+    return null;
+  }
+}
+
+async function startBuilderNetworkProxy(params: {
+  enabled: boolean;
+  runId: string;
+  logPath: string;
+  worktreePath: string;
+  log?: (line: string) => void;
+  streamMonitor?: StreamMonitor | null;
+}): Promise<{
+  env: Record<string, string>;
+  stop: () => Promise<void>;
+  networkMode: NetworkMode;
+  runAs?: { uid: number; gid: number };
+} | null> {
+  if (!params.enabled) return null;
+  const whitelist = listNetworkWhitelistEntries()
+    .filter((entry) => entry.enabled)
+    .map((entry) => entry.domain);
+  if (!whitelist.length) {
+    params.log?.(
+      "Builder whitelist mode enabled but no domains configured; all network requests will be blocked."
+    );
+  }
+  let firewall: Awaited<ReturnType<typeof startNetworkWhitelistFirewall>> | null = null;
+  let proxy: Awaited<ReturnType<typeof startNetworkWhitelistProxy>> | null = null;
+  const { bindHost, proxyHost: rawProxyHost, containerMode } = resolveProxyHosts();
+  const builderIdentity = resolveBuilderIdentity(params.worktreePath, params.log);
+  if (!builderIdentity && !containerMode) {
+    const message =
+      "Network whitelist enforcement requires root runner with a non-root worktree owner.";
+    params.log?.(message);
+    throw new Error(message);
+  }
+  if (!builderIdentity && containerMode) {
+    params.log?.("Container whitelist active without host UID restriction.");
+  }
+  let proxyHost = rawProxyHost;
+  if (containerMode && proxyHost && net.isIP(proxyHost) === 0) {
+    try {
+      const resolved = await dns.promises.lookup(proxyHost);
+      proxyHost = resolved.address;
+      params.log?.(`Resolved container proxy host ${rawProxyHost} -> ${proxyHost}.`);
+    } catch (err) {
+      params.log?.(
+        `Failed to resolve container proxy host ${rawProxyHost}: ${String(err)}`
+      );
+    }
+  }
+  try {
+    firewall = await startNetworkWhitelistFirewall({
+      whitelist,
+      runId: params.runId,
+      log: params.log,
+      containerMode,
+      proxyOnly: true,
+      restrictUid: builderIdentity?.uid,
+      extraAllowHosts: containerMode && proxyHost ? [proxyHost] : [],
+      onViolation: (violation) => {
+        const address = violation.address;
+        const port = violation.port ? `:${violation.port}` : "";
+        params.streamMonitor?.reportNetworkViolation({
+          domain: `${address}${port}`,
+          path: "(firewall)",
+          method: violation.protocol ?? "BLOCKED",
+          status: 403,
+          reason: violation.reason,
+        });
+      },
+    });
+    if (!firewall) {
+      const message =
+        "Network whitelist firewall unavailable; whitelist mode requires firewall enforcement.";
+      params.log?.(message);
+      throw new Error(message);
+    }
+    if (containerMode) {
+      params.log?.(
+        `Container builder mode active; proxy host set to ${proxyHost} (bind ${bindHost}).`
+      );
+    }
+    const startedProxy = await startNetworkWhitelistProxy({
+      whitelist,
+      logPath: params.logPath,
+      runId: params.runId,
+      bindHost,
+      proxyHost,
+      resolveHost: firewall.resolveHost,
+      onViolation: (entry) => {
+        params.streamMonitor?.reportNetworkViolation({
+          domain: entry.domain,
+          path: entry.path,
+          method: entry.method,
+          status: entry.status,
+        });
+      },
+    });
+    proxy = startedProxy;
+    firewall.allowLoopbackTcpPorts?.([startedProxy.handle.port]);
+    params.log?.(`Network whitelist proxy started (${startedProxy.handle.url})`);
+  } catch (err) {
+    if (proxy) {
+      await proxy.handle.stop();
+    }
+    if (firewall) {
+      await firewall.stop();
+    }
+    throw err;
+  }
+  if (!proxy) {
+    throw new Error("Network whitelist proxy failed to start.");
+  }
+  return {
+    env: proxy.env,
+    stop: async () => {
+      await proxy.handle.stop();
+      params.log?.("Network whitelist proxy stopped.");
+      if (firewall) {
+        await firewall.stop();
+      }
+    },
+    networkMode: "sandbox",
+    runAs: builderIdentity ?? undefined,
+  };
+}
+
 async function runCodexExec(params: {
   cwd: string;
   prompt: string;
@@ -1428,6 +1756,9 @@ async function runCodexExec(params: {
   skipGitRepoCheck?: boolean;
   model?: string;
   cliPath?: string;
+  env?: NodeJS.ProcessEnv;
+  networkMode?: NetworkMode;
+  runAs?: { uid: number; gid: number };
   onEscalation?: (request: EscalationRequest) => Promise<EscalationRecord | null>;
   streamMonitor?: StreamMonitor;
   streamContext?: StreamMonitorContext;
@@ -1439,6 +1770,7 @@ async function runCodexExec(params: {
     outputPath: params.outputPath,
     skipGitRepoCheck: params.skipGitRepoCheck,
     model: params.model,
+    networkMode: params.networkMode,
   });
   const monitorStartIndex = params.streamMonitor
     ? params.streamMonitor.getIncidents().length
@@ -1450,11 +1782,16 @@ async function runCodexExec(params: {
   const logStream = fs.createWriteStream(params.logPath, { flags: "a" });
   logStream.write(`[${nowIso()}] codex exec start (${params.sandbox})\n`);
 
-  const child = spawn(cmd, args, {
+  const spawnOptions: Parameters<typeof spawn>[2] = {
     cwd: params.cwd,
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...getProcessEnv() },
-  });
+    env: { ...getProcessEnv(), ...(params.env || {}) },
+  };
+  if (params.runAs) {
+    spawnOptions.uid = params.runAs.uid;
+    spawnOptions.gid = params.runAs.gid;
+  }
+  const child = spawn(cmd, args, spawnOptions);
 
   if (params.streamMonitor && params.streamContext) {
     params.streamMonitor.attach(child, params.streamContext);
@@ -1725,6 +2062,7 @@ function buildBuilderPrompt(params: {
   constitution?: string;
   iterationHistory?: RunIterationHistoryEntry[];
   escalationContext?: EscalationRecord | null;
+  networkAccess?: "sandboxed" | "whitelist";
 }) {
   const feedback = params.reviewerFeedback?.trim();
   const testFailureOutput = params.testFailureOutput?.trim();
@@ -1748,10 +2086,15 @@ function buildBuilderPrompt(params: {
       "```\n\n" +
       "Please analyze the failure and fix the issues.\n\n"
     : "";
+  const networkAccess = params.networkAccess ?? "sandboxed";
+  const networkLine =
+    networkAccess === "whitelist"
+      ? "- Network access is restricted to a whitelist of domains; all other requests are blocked and logged.\n"
+      : "- No internet access: you cannot fetch URLs, external documentation, or call external APIs.\n";
   const executionEnvironmentBlock =
     `## Execution Environment\n\n` +
     `- You are running in a sandboxed workspace with limited filesystem access.\n` +
-    `- No internet access: you cannot fetch URLs, external documentation, or call external APIs.\n` +
+    networkLine +
     `- All required context must come from the Work Order and repo contents.\n` +
     `- If critical documentation is missing from the Work Order, request escalation rather than guessing.\n\n`;
   const resourcefulPostureBlock =
@@ -2529,6 +2872,10 @@ export async function runRun(runId: string) {
 
     const builderMonitoring = getMonitoringSettings("builder");
     const reviewerMonitoring = getMonitoringSettings("reviewer");
+    const builderNetworkAccess = builderMonitoring.networkAccess as BuilderNetworkAccess;
+    const builderSandboxMode = resolveBuilderSandboxMode(builderNetworkAccess);
+    const builderNetworkMode: NetworkMode =
+      builderNetworkAccess === "whitelist" ? "sandbox" : "none";
     const builderStreamMonitor = builderMonitoring.monitorEnabled
       ? new StreamMonitor({
           log: (line) => log(line),
@@ -2622,6 +2969,8 @@ export async function runRun(runId: string) {
       updateRun(runId, { branch_name: branchName });
     }
     const { worktreePath, worktreeRealPath } = resolveWorktreePaths(runDir);
+    const worktreeOwner =
+      builderNetworkAccess === "whitelist" ? resolveNonRootOwner(repoPath, log) : null;
     try {
       ensureWorktree({
         repoPath,
@@ -2629,6 +2978,7 @@ export async function runRun(runId: string) {
         worktreeRealPath,
         branchName,
         baseBranch,
+        owner: worktreeOwner ?? undefined,
         log,
       });
     } catch (err) {
@@ -2822,21 +3172,42 @@ export async function runRun(runId: string) {
           constitution: builderConstitution.content,
           iterationHistory,
           escalationContext,
+          networkAccess: builderMonitoring.networkAccess,
         });
         const builderPromptPath = path.join(builderDir, "prompt.txt");
         fs.writeFileSync(builderPromptPath, builderPrompt, "utf8");
 
         const runLocalBuilder = async (): Promise<CodexExecResult> => {
+          const networkLogPath = path.join(builderDir, "network.log.jsonl");
+          let proxy: Awaited<ReturnType<typeof startBuilderNetworkProxy>> | null =
+            null;
           try {
+            proxy = await startBuilderNetworkProxy({
+              enabled: builderNetworkAccess === "whitelist",
+              runId,
+              logPath: networkLogPath,
+              worktreePath,
+              log,
+              streamMonitor: builderStreamMonitor,
+            });
+            const networkMode = proxy?.networkMode ?? builderNetworkMode;
+            const runAs = proxy?.runAs;
+            if (runAs) {
+              ensureOwnedBy(builderDir, runAs, log);
+              ensureOwnedBy(builderOutputPath, runAs, log);
+            }
             return await runCodexExec({
               cwd: worktreePath,
               prompt: builderPrompt,
               schemaPath: builderSchemaPath,
               outputPath: builderOutputPath,
               logPath: builderLogPath,
-              sandbox: getBuilderSandboxMode(),
+              sandbox: builderSandboxMode,
               model: builderModel,
               cliPath: runnerSettings.builder.cliPath,
+              env: proxy?.env,
+              networkMode,
+              runAs,
               streamMonitor: builderStreamMonitor ?? undefined,
               streamContext: builderStreamMonitor ? streamContext : undefined,
               onEscalation: async (request) => {
@@ -2865,6 +3236,9 @@ export async function runRun(runId: string) {
               log,
             });
           } finally {
+            if (proxy) {
+              await proxy.stop();
+            }
             recordCostFromCodexLog({
               projectId: project.id,
               runId,
@@ -3454,20 +3828,43 @@ export async function runRun(runId: string) {
       const mergeBuilderLogPath = path.join(mergeDir, "codex.log");
       const runLocalMergeBuilder = () =>
         (async () => {
+          const networkLogPath = path.join(mergeDir, "network.log.jsonl");
+          let proxy: Awaited<ReturnType<typeof startBuilderNetworkProxy>> | null =
+            null;
           try {
+            proxy = await startBuilderNetworkProxy({
+              enabled: builderNetworkAccess === "whitelist",
+              runId,
+              logPath: networkLogPath,
+              worktreePath,
+              log,
+              streamMonitor: builderStreamMonitor,
+            });
+            const networkMode = proxy?.networkMode ?? builderNetworkMode;
+            const runAs = proxy?.runAs;
+            if (runAs) {
+              ensureOwnedBy(mergeDir, runAs, log);
+              ensureOwnedBy(mergeBuilderOutputPath, runAs, log);
+            }
             return await runCodexExec({
               cwd: worktreePath,
               prompt: conflictPrompt,
               schemaPath: builderSchemaPath,
               outputPath: mergeBuilderOutputPath,
               logPath: mergeBuilderLogPath,
-              sandbox: getBuilderSandboxMode(),
+              sandbox: builderSandboxMode,
               model: builderModel,
               cliPath: runnerSettings.builder.cliPath,
+              env: proxy?.env,
+              networkMode,
+              runAs,
               streamMonitor: builderStreamMonitor ?? undefined,
               streamContext: builderStreamMonitor ? streamContext : undefined,
             });
           } finally {
+            if (proxy) {
+              await proxy.stop();
+            }
             recordCostFromCodexLog({
               projectId: project.id,
               runId,
