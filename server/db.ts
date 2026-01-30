@@ -138,6 +138,122 @@ export type SignalQuery = {
   limit?: number;
 };
 
+export const PEOPLE_IDENTIFIER_TYPES = ["phone", "email", "imessage", "other"] as const;
+export type PeopleIdentifierType = (typeof PEOPLE_IDENTIFIER_TYPES)[number];
+
+export const PEOPLE_PROJECT_RELATIONSHIPS = [
+  "stakeholder",
+  "collaborator",
+  "client",
+  "vendor",
+  "other",
+] as const;
+export type PeopleProjectRelationship = (typeof PEOPLE_PROJECT_RELATIONSHIPS)[number];
+
+export type PersonRow = {
+  id: string;
+  name: string;
+  nickname: string | null;
+  company: string | null;
+  role: string | null;
+  notes: string | null;
+  tags: string;
+  starred: 0 | 1;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PersonIdentifierRow = {
+  id: string;
+  person_id: string;
+  type: PeopleIdentifierType;
+  value: string;
+  normalized_value: string;
+  label: string | null;
+  created_at: string;
+};
+
+export type PersonProjectRow = {
+  id: string;
+  person_id: string;
+  project_id: string;
+  relationship: PeopleProjectRelationship;
+  notes: string | null;
+  created_at: string;
+};
+
+export type Person = {
+  id: string;
+  name: string;
+  nickname: string | null;
+  company: string | null;
+  role: string | null;
+  notes: string | null;
+  tags: string[];
+  starred: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PersonIdentifier = {
+  id: string;
+  person_id: string;
+  type: PeopleIdentifierType;
+  value: string;
+  normalized_value: string;
+  label: string | null;
+  created_at: string;
+};
+
+export type PersonProject = {
+  id: string;
+  person_id: string;
+  project_id: string;
+  relationship: PeopleProjectRelationship;
+  notes: string | null;
+  created_at: string;
+};
+
+export type PersonDetails = Person & {
+  identifiers: PersonIdentifier[];
+  projects: PersonProject[];
+};
+
+export type CreatePersonInput = {
+  name: string;
+  nickname?: string | null;
+  company?: string | null;
+  role?: string | null;
+  notes?: string | null;
+  tags?: string[] | null;
+  starred?: boolean;
+};
+
+export type PersonPatch = Partial<
+  Pick<Person, "name" | "nickname" | "company" | "role" | "notes" | "tags" | "starred">
+>;
+
+export type PeopleListFilters = {
+  q?: string | null;
+  projectId?: string | null;
+  tag?: string | null;
+  starred?: 0 | 1 | null;
+};
+
+export type CreatePersonIdentifierInput = {
+  person_id: string;
+  type: PeopleIdentifierType;
+  value: string;
+  label?: string | null;
+};
+
+export type CreatePersonProjectInput = {
+  person_id: string;
+  project_id: string;
+  relationship?: PeopleProjectRelationship;
+  notes?: string | null;
+};
+
 export type ConstitutionSuggestionStatus = "pending" | "accepted" | "rejected";
 
 export type ConstitutionSuggestionEvidence = {
@@ -914,6 +1030,46 @@ function initSchema(database: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_wo_tracks_project_id ON wo_tracks(project_id);
     CREATE INDEX IF NOT EXISTS idx_wo_tracks_track_id ON wo_tracks(track_id);
+
+    CREATE TABLE IF NOT EXISTS people (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      nickname TEXT,
+      company TEXT,
+      role TEXT,
+      notes TEXT,
+      tags TEXT NOT NULL DEFAULT '[]',
+      starred INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS people_identifiers (
+      id TEXT PRIMARY KEY,
+      person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      value TEXT NOT NULL,
+      normalized_value TEXT NOT NULL,
+      label TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_people_identifiers_normalized
+      ON people_identifiers(type, normalized_value);
+    CREATE INDEX IF NOT EXISTS idx_people_identifiers_person
+      ON people_identifiers(person_id);
+
+    CREATE TABLE IF NOT EXISTS people_projects (
+      id TEXT PRIMARY KEY,
+      person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+      project_id TEXT NOT NULL,
+      relationship TEXT NOT NULL DEFAULT 'stakeholder',
+      notes TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_people_projects_unique
+      ON people_projects(person_id, project_id);
 
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY,
@@ -2542,6 +2698,356 @@ export function listSignals(query: SignalQuery): Signal[] {
     .all(...params, limit) as SignalRow[];
 
   return rows.map((row) => toSignal(row));
+}
+
+export function normalizePhone(raw: string): string | null {
+  if (typeof raw !== "string") return null;
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return null;
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+1${digits.slice(1)}`;
+  }
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+  console.warn("normalizePhone: unsupported phone length", { length: digits.length });
+  return null;
+}
+
+export function normalizeEmail(raw: string): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().toLowerCase();
+  return trimmed ? trimmed : null;
+}
+
+function normalizePersonTags(tags: string[]): string[] {
+  const cleaned = tags.map((tag) => tag.trim()).filter(Boolean);
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const tag of cleaned) {
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(tag);
+  }
+  return deduped;
+}
+
+function normalizePersonOptionalText(value?: string | null): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function normalizeIdentifierValue(type: PeopleIdentifierType, value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (type === "phone") return normalizePhone(trimmed);
+  if (type === "email") return normalizeEmail(trimmed);
+  return trimmed.toLowerCase();
+}
+
+function toPerson(row: PersonRow): Person {
+  return {
+    id: row.id,
+    name: row.name,
+    nickname: row.nickname,
+    company: row.company,
+    role: row.role,
+    notes: row.notes,
+    tags: normalizePersonTags(parseJsonStringArray(row.tags)),
+    starred: row.starred === 1,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function toPersonIdentifier(row: PersonIdentifierRow): PersonIdentifier {
+  return {
+    id: row.id,
+    person_id: row.person_id,
+    type: row.type,
+    value: row.value,
+    normalized_value: row.normalized_value,
+    label: row.label ?? null,
+    created_at: row.created_at,
+  };
+}
+
+function toPersonProject(row: PersonProjectRow): PersonProject {
+  return {
+    id: row.id,
+    person_id: row.person_id,
+    project_id: row.project_id,
+    relationship: row.relationship,
+    notes: row.notes ?? null,
+    created_at: row.created_at,
+  };
+}
+
+function listPersonIdentifiers(personId: string): PersonIdentifier[] {
+  const database = getDb();
+  const rows = database
+    .prepare(
+      "SELECT * FROM people_identifiers WHERE person_id = ? ORDER BY created_at ASC"
+    )
+    .all(personId) as PersonIdentifierRow[];
+  return rows.map((row) => toPersonIdentifier(row));
+}
+
+function listPersonProjects(personId: string): PersonProject[] {
+  const database = getDb();
+  const rows = database
+    .prepare(
+      "SELECT * FROM people_projects WHERE person_id = ? ORDER BY created_at ASC"
+    )
+    .all(personId) as PersonProjectRow[];
+  return rows.map((row) => toPersonProject(row));
+}
+
+export function createPerson(input: CreatePersonInput): Person {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const tags = normalizePersonTags(input.tags ?? []);
+  const row: PersonRow = {
+    id: crypto.randomUUID(),
+    name: input.name.trim(),
+    nickname: normalizePersonOptionalText(input.nickname),
+    company: normalizePersonOptionalText(input.company),
+    role: normalizePersonOptionalText(input.role),
+    notes: normalizePersonOptionalText(input.notes),
+    tags: JSON.stringify(tags),
+    starred: input.starred ? 1 : 0,
+    created_at: now,
+    updated_at: now,
+  };
+
+  database
+    .prepare(
+      `INSERT INTO people
+        (id, name, nickname, company, role, notes, tags, starred, created_at, updated_at)
+       VALUES
+        (@id, @name, @nickname, @company, @role, @notes, @tags, @starred, @created_at, @updated_at)`
+    )
+    .run(row);
+
+  return toPerson(row);
+}
+
+export function updatePerson(personId: string, patch: PersonPatch): Person | null {
+  const database = getDb();
+  const sets: string[] = [];
+  const params: Record<string, unknown> = {
+    id: personId,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (patch.name !== undefined) {
+    sets.push("name = @name");
+    params.name = patch.name.trim();
+  }
+  if (patch.nickname !== undefined) {
+    sets.push("nickname = @nickname");
+    params.nickname = normalizePersonOptionalText(patch.nickname);
+  }
+  if (patch.company !== undefined) {
+    sets.push("company = @company");
+    params.company = normalizePersonOptionalText(patch.company);
+  }
+  if (patch.role !== undefined) {
+    sets.push("role = @role");
+    params.role = normalizePersonOptionalText(patch.role);
+  }
+  if (patch.notes !== undefined) {
+    sets.push("notes = @notes");
+    params.notes = normalizePersonOptionalText(patch.notes);
+  }
+  if (patch.tags !== undefined) {
+    sets.push("tags = @tags");
+    params.tags = JSON.stringify(normalizePersonTags(patch.tags));
+  }
+  if (patch.starred !== undefined) {
+    sets.push("starred = @starred");
+    params.starred = patch.starred ? 1 : 0;
+  }
+
+  if (!sets.length) return getPersonById(personId);
+
+  database
+    .prepare(
+      `UPDATE people
+       SET ${sets.join(", ")}, updated_at = @updated_at
+       WHERE id = @id`
+    )
+    .run(params);
+
+  return getPersonById(personId);
+}
+
+export function deletePerson(personId: string): boolean {
+  const database = getDb();
+  const result = database.prepare("DELETE FROM people WHERE id = ?").run(personId);
+  return result.changes > 0;
+}
+
+export function listPeople(filters: PeopleListFilters = {}): Person[] {
+  const database = getDb();
+  const clauses: string[] = [];
+  const params: Array<string | number> = [];
+
+  const q = typeof filters.q === "string" ? filters.q.trim() : "";
+  if (q) {
+    const needle = `%${q}%`;
+    clauses.push("(name LIKE ? OR nickname LIKE ?)");
+    params.push(needle, needle);
+  }
+
+  const projectId = typeof filters.projectId === "string" ? filters.projectId.trim() : "";
+  if (projectId) {
+    clauses.push(
+      "EXISTS (SELECT 1 FROM people_projects WHERE people_projects.person_id = people.id AND people_projects.project_id = ?)"
+    );
+    params.push(projectId);
+  }
+
+  if (filters.starred === 0 || filters.starred === 1) {
+    clauses.push("starred = ?");
+    params.push(filters.starred);
+  }
+
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const rows = database
+    .prepare(
+      `SELECT *
+       FROM people
+       ${where}
+       ORDER BY starred DESC, name ASC`
+    )
+    .all(...params) as PersonRow[];
+  let people = rows.map((row) => toPerson(row));
+
+  const tag = typeof filters.tag === "string" ? filters.tag.trim().toLowerCase() : "";
+  if (tag) {
+    people = people.filter((person) =>
+      person.tags.some((entry) => entry.toLowerCase() === tag)
+    );
+  }
+
+  return people;
+}
+
+export function getPersonById(personId: string): Person | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM people WHERE id = ? LIMIT 1")
+    .get(personId) as PersonRow | undefined;
+  return row ? toPerson(row) : null;
+}
+
+export function getPersonDetails(personId: string): PersonDetails | null {
+  const person = getPersonById(personId);
+  if (!person) return null;
+  return {
+    ...person,
+    identifiers: listPersonIdentifiers(personId),
+    projects: listPersonProjects(personId),
+  };
+}
+
+export function createPersonIdentifier(
+  input: CreatePersonIdentifierInput
+): PersonIdentifier | null {
+  const database = getDb();
+  const value = input.value.trim();
+  const normalized = normalizeIdentifierValue(input.type, value);
+  if (!normalized) return null;
+  const now = new Date().toISOString();
+  const row: PersonIdentifierRow = {
+    id: crypto.randomUUID(),
+    person_id: input.person_id,
+    type: input.type,
+    value,
+    normalized_value: normalized,
+    label: normalizePersonOptionalText(input.label),
+    created_at: now,
+  };
+
+  database
+    .prepare(
+      `INSERT INTO people_identifiers
+        (id, person_id, type, value, normalized_value, label, created_at)
+       VALUES
+        (@id, @person_id, @type, @value, @normalized_value, @label, @created_at)`
+    )
+    .run(row);
+
+  return toPersonIdentifier(row);
+}
+
+export function deletePersonIdentifier(personId: string, identifierId: string): boolean {
+  const database = getDb();
+  const result = database
+    .prepare("DELETE FROM people_identifiers WHERE id = ? AND person_id = ?")
+    .run(identifierId, personId);
+  return result.changes > 0;
+}
+
+export function getPersonProject(personId: string, projectId: string): PersonProject | null {
+  const database = getDb();
+  const row = database
+    .prepare(
+      "SELECT * FROM people_projects WHERE person_id = ? AND project_id = ? LIMIT 1"
+    )
+    .get(personId, projectId) as PersonProjectRow | undefined;
+  return row ? toPersonProject(row) : null;
+}
+
+export function createPersonProject(input: CreatePersonProjectInput): PersonProject {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const row: PersonProjectRow = {
+    id: crypto.randomUUID(),
+    person_id: input.person_id,
+    project_id: input.project_id,
+    relationship: input.relationship ?? "stakeholder",
+    notes: normalizePersonOptionalText(input.notes),
+    created_at: now,
+  };
+
+  database
+    .prepare(
+      `INSERT INTO people_projects
+        (id, person_id, project_id, relationship, notes, created_at)
+       VALUES
+        (@id, @person_id, @project_id, @relationship, @notes, @created_at)`
+    )
+    .run(row);
+
+  return toPersonProject(row);
+}
+
+export function deletePersonProject(personId: string, associationId: string): boolean {
+  const database = getDb();
+  const result = database
+    .prepare("DELETE FROM people_projects WHERE id = ? AND person_id = ?")
+    .run(associationId, personId);
+  return result.changes > 0;
+}
+
+export function resolvePersonByIdentifier(params: {
+  type: PeopleIdentifierType;
+  normalizedValue: string;
+}): PersonDetails | null {
+  const database = getDb();
+  const normalized = params.normalizedValue.trim();
+  if (!normalized) return null;
+  const row = database
+    .prepare(
+      "SELECT person_id FROM people_identifiers WHERE type = ? AND normalized_value = ? LIMIT 1"
+    )
+    .get(params.type, normalized) as { person_id: string } | undefined;
+  if (!row) return null;
+  return getPersonDetails(row.person_id);
 }
 
 function normalizeSuggestionEvidenceInput(
