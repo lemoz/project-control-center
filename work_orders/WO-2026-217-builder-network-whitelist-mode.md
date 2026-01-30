@@ -1,7 +1,7 @@
 ---
 id: WO-2026-217
 title: Builder network whitelist mode
-status: ready
+status: you_review
 priority: 1
 tags:
   - sandbox
@@ -13,7 +13,7 @@ depends_on:
   - WO-2026-215
   - WO-2026-216
 era: v2
-updated_at: 2026-01-27
+updated_at: 2026-01-30
 goal: Implement a new sandbox mode that allows builders network access only to whitelisted domains.
 context:
   - Current sandbox modes are workspace-write and read-only (fully sandboxed)

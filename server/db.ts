@@ -150,6 +150,23 @@ export const PEOPLE_PROJECT_RELATIONSHIPS = [
 ] as const;
 export type PeopleProjectRelationship = (typeof PEOPLE_PROJECT_RELATIONSHIPS)[number];
 
+export const CONVERSATION_EVENT_CHANNELS = [
+  "imessage",
+  "email",
+  "meeting",
+  "call",
+  "note",
+] as const;
+export type ConversationEventChannel = (typeof CONVERSATION_EVENT_CHANNELS)[number];
+
+export const CONVERSATION_EVENT_DIRECTIONS = [
+  "inbound",
+  "outbound",
+  "bidirectional",
+] as const;
+export type ConversationEventDirection =
+  (typeof CONVERSATION_EVENT_DIRECTIONS)[number];
+
 export type PersonRow = {
   id: string;
   name: string;
@@ -219,6 +236,37 @@ export type PersonDetails = Person & {
   projects: PersonProject[];
 };
 
+export type ConversationEventRow = {
+  id: string;
+  person_id: string;
+  channel: ConversationEventChannel;
+  direction: ConversationEventDirection;
+  summary: string | null;
+  content: string | null;
+  external_id: string | null;
+  metadata: string;
+  occurred_at: string;
+  synced_at: string;
+};
+
+export type ConversationEventMetadata = Record<string, unknown>;
+
+export type ConversationEvent = Omit<ConversationEventRow, "metadata"> & {
+  metadata: ConversationEventMetadata;
+};
+
+export type CreateConversationEventInput = {
+  person_id: string;
+  channel: ConversationEventChannel;
+  direction: ConversationEventDirection;
+  summary?: string | null;
+  content?: string | null;
+  external_id?: string | null;
+  metadata?: ConversationEventMetadata | null;
+  occurred_at: string;
+  synced_at?: string;
+};
+
 export type CreatePersonInput = {
   name: string;
   nickname?: string | null;
@@ -252,6 +300,51 @@ export type CreatePersonProjectInput = {
   project_id: string;
   relationship?: PeopleProjectRelationship;
   notes?: string | null;
+};
+
+export const CONVERSATION_EVENT_CHANNELS = [
+  "imessage",
+  "email",
+  "meeting",
+  "call",
+  "note",
+] as const;
+export type ConversationEventChannel = (typeof CONVERSATION_EVENT_CHANNELS)[number];
+
+export const CONVERSATION_EVENT_DIRECTIONS = [
+  "inbound",
+  "outbound",
+  "bidirectional",
+] as const;
+export type ConversationEventDirection = (typeof CONVERSATION_EVENT_DIRECTIONS)[number];
+
+export type ConversationEventRow = {
+  id: string;
+  person_id: string;
+  channel: ConversationEventChannel;
+  direction: ConversationEventDirection;
+  summary: string | null;
+  content: string | null;
+  external_id: string | null;
+  metadata: string;
+  occurred_at: string;
+  synced_at: string;
+};
+
+export type ConversationEvent = Omit<ConversationEventRow, "metadata"> & {
+  metadata: Record<string, unknown>;
+};
+
+export type CreateConversationEventInput = {
+  person_id: string;
+  channel: ConversationEventChannel;
+  direction: ConversationEventDirection;
+  summary?: string | null;
+  content?: string | null;
+  external_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+  occurred_at?: string;
+  synced_at?: string;
 };
 
 export type ConstitutionSuggestionStatus = "pending" | "accepted" | "rejected";
@@ -469,6 +562,44 @@ export type ProjectCommunicationRow = {
 export type EscalationRow = ProjectCommunicationRow & {
   intent: "escalation";
   type: EscalationType;
+};
+
+export type SmsConversationStatus = "active" | "ended" | "processed";
+export type SmsMessageDirection = "inbound" | "outbound";
+export type SmsMessageRole = "user" | "agent" | "system";
+
+export type SmsContactRow = {
+  phone_number: string;
+  label: string;
+  user_id: string | null;
+  project_id: string | null;
+  is_primary: 0 | 1;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SmsConversationRow = {
+  id: string;
+  phone_number: string;
+  user_id: string | null;
+  contact_label: string | null;
+  project_id: string | null;
+  status: SmsConversationStatus;
+  started_at: string;
+  last_message_at: string;
+  ended_at: string | null;
+  processed_at: string | null;
+  ended_reason: string | null;
+};
+
+export type SmsMessageRow = {
+  id: string;
+  conversation_id: string;
+  direction: SmsMessageDirection;
+  role: SmsMessageRole;
+  body: string;
+  provider_message_id: string | null;
+  created_at: string;
 };
 
 export type ConstitutionScope = "global" | "project";
@@ -1071,6 +1202,26 @@ function initSchema(database: Database.Database) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_people_projects_unique
       ON people_projects(person_id, project_id);
 
+    CREATE TABLE IF NOT EXISTS conversation_events (
+      id TEXT PRIMARY KEY,
+      person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+      channel TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      summary TEXT,
+      content TEXT,
+      external_id TEXT,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      occurred_at TEXT NOT NULL,
+      synced_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_conversation_events_person
+      ON conversation_events(person_id, occurred_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_events_dedup
+      ON conversation_events(channel, external_id);
+    CREATE INDEX IF NOT EXISTS idx_conversation_events_channel
+      ON conversation_events(person_id, channel);
+
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
@@ -1606,6 +1757,106 @@ function initSchema(database: Database.Database) {
     CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_action_ledger_message_action ON chat_action_ledger(message_id, action_index);
     CREATE INDEX IF NOT EXISTS idx_chat_action_ledger_thread_applied_at ON chat_action_ledger(thread_id, applied_at DESC);
     CREATE INDEX IF NOT EXISTS idx_chat_action_ledger_run_id ON chat_action_ledger(run_id);
+
+    CREATE TABLE IF NOT EXISTS slack_oauth_states (
+      state TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_slack_oauth_states_expires ON slack_oauth_states(expires_at);
+
+    CREATE TABLE IF NOT EXISTS slack_installations (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL UNIQUE,
+      team_name TEXT,
+      bot_user_id TEXT,
+      bot_token TEXT NOT NULL,
+      scope TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_slack_installations_team ON slack_installations(team_id);
+
+    CREATE TABLE IF NOT EXISTS slack_conversations (
+      id TEXT PRIMARY KEY,
+      slack_team_id TEXT NOT NULL,
+      slack_channel_id TEXT NOT NULL,
+      slack_user_id TEXT NOT NULL,
+      slack_thread_ts TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      project_id TEXT,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      processed_at TEXT,
+      global_shift_id TEXT,
+      last_message_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+      FOREIGN KEY (global_shift_id) REFERENCES global_shifts(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_slack_conversations_status ON slack_conversations(status, last_message_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_slack_conversations_thread ON slack_conversations(slack_team_id, slack_channel_id, slack_user_id, slack_thread_ts);
+    CREATE INDEX IF NOT EXISTS idx_slack_conversations_project ON slack_conversations(project_id, last_message_at DESC);
+
+    CREATE TABLE IF NOT EXISTS slack_conversation_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      slack_ts TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (conversation_id) REFERENCES slack_conversations(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_slack_conversation_messages_convo ON slack_conversation_messages(conversation_id, created_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_slack_conversation_messages_ts ON slack_conversation_messages(conversation_id, slack_ts);
+
+    CREATE TABLE IF NOT EXISTS sms_contacts (
+      phone_number TEXT PRIMARY KEY,
+      label TEXT NOT NULL DEFAULT '',
+      user_id TEXT,
+      project_id TEXT,
+      is_primary INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sms_contacts_project_id ON sms_contacts(project_id);
+
+    CREATE TABLE IF NOT EXISTS sms_conversations (
+      id TEXT PRIMARY KEY,
+      phone_number TEXT NOT NULL,
+      user_id TEXT,
+      contact_label TEXT,
+      project_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      started_at TEXT NOT NULL,
+      last_message_at TEXT NOT NULL,
+      ended_at TEXT,
+      processed_at TEXT,
+      ended_reason TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sms_conversations_phone_status
+      ON sms_conversations(phone_number, status, last_message_at DESC);
+
+    CREATE TABLE IF NOT EXISTS sms_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      role TEXT NOT NULL,
+      body TEXT NOT NULL,
+      provider_message_id TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (conversation_id) REFERENCES sms_conversations(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sms_messages_conversation_created
+      ON sms_messages(conversation_id, created_at DESC);
   `);
 
   database.exec(`
@@ -2132,6 +2383,69 @@ function initSchema(database: Database.Database) {
   }
   if (!hasWorkOrderRunId) {
     database.exec("ALTER TABLE chat_action_ledger ADD COLUMN work_order_run_id TEXT;");
+  }
+
+  const smsContactsTableExists = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sms_contacts'")
+    .get();
+  if (!smsContactsTableExists) {
+    database.exec(`
+      CREATE TABLE sms_contacts (
+        phone_number TEXT PRIMARY KEY,
+        label TEXT NOT NULL DEFAULT '',
+        user_id TEXT,
+        project_id TEXT,
+        is_primary INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+      );
+      CREATE INDEX idx_sms_contacts_project_id ON sms_contacts(project_id);
+    `);
+  }
+
+  const smsConversationsTableExists = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sms_conversations'")
+    .get();
+  if (!smsConversationsTableExists) {
+    database.exec(`
+      CREATE TABLE sms_conversations (
+        id TEXT PRIMARY KEY,
+        phone_number TEXT NOT NULL,
+        user_id TEXT,
+        contact_label TEXT,
+        project_id TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        started_at TEXT NOT NULL,
+        last_message_at TEXT NOT NULL,
+        ended_at TEXT,
+        processed_at TEXT,
+        ended_reason TEXT,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+      );
+      CREATE INDEX idx_sms_conversations_phone_status
+        ON sms_conversations(phone_number, status, last_message_at DESC);
+    `);
+  }
+
+  const smsMessagesTableExists = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sms_messages'")
+    .get();
+  if (!smsMessagesTableExists) {
+    database.exec(`
+      CREATE TABLE sms_messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        role TEXT NOT NULL,
+        body TEXT NOT NULL,
+        provider_message_id TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (conversation_id) REFERENCES sms_conversations(id) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_sms_messages_conversation_created
+        ON sms_messages(conversation_id, created_at DESC);
+    `);
   }
 
   const globalShiftColumns = database
@@ -3050,6 +3364,83 @@ export function resolvePersonByIdentifier(params: {
   return getPersonDetails(row.person_id);
 }
 
+function parseConversationMetadata(value: string | null): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return {};
+  }
+  return {};
+}
+
+function normalizeConversationMetadata(
+  value: Record<string, unknown> | null | undefined
+): string {
+  if (!value) return "{}";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "{}";
+  }
+}
+
+function normalizeConversationText(value?: string | null): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function toConversationEvent(row: ConversationEventRow): ConversationEvent {
+  return {
+    id: row.id,
+    person_id: row.person_id,
+    channel: row.channel,
+    direction: row.direction,
+    summary: row.summary,
+    content: row.content,
+    external_id: row.external_id,
+    metadata: parseConversationMetadata(row.metadata),
+    occurred_at: row.occurred_at,
+    synced_at: row.synced_at,
+  };
+}
+
+export function createConversationEvent(
+  input: CreateConversationEventInput
+): ConversationEvent | null {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const row: ConversationEventRow = {
+    id: crypto.randomUUID(),
+    person_id: input.person_id,
+    channel: input.channel,
+    direction: input.direction,
+    summary: normalizeOptionalString(input.summary),
+    content: normalizeOptionalString(input.content),
+    external_id: normalizeOptionalString(input.external_id),
+    metadata: normalizeConversationMetadata(input.metadata),
+    occurred_at: normalizeOptionalString(input.occurred_at) ?? now,
+    synced_at: normalizeOptionalString(input.synced_at) ?? now,
+  };
+
+  const result = database
+    .prepare(
+      `INSERT INTO conversation_events
+        (id, person_id, channel, direction, summary, content, external_id, metadata, occurred_at, synced_at)
+       VALUES
+        (@id, @person_id, @channel, @direction, @summary, @content, @external_id, @metadata, @occurred_at, @synced_at)
+       ON CONFLICT(channel, external_id) DO NOTHING`
+    )
+    .run(row);
+
+  if (result.changes === 0) return null;
+  return toConversationEvent(row);
+}
+
 function normalizeSuggestionEvidenceInput(
   value: unknown
 ): ConstitutionSuggestionEvidence[] {
@@ -3937,6 +4328,284 @@ export function updateProjectCommunication(
     .prepare(`UPDATE escalations SET ${sets.join(", ")} WHERE id = @id`)
     .run({ id, ...patch });
   return result.changes > 0;
+}
+
+export function listSmsContacts(): SmsContactRow[] {
+  const database = getDb();
+  return database
+    .prepare("SELECT * FROM sms_contacts ORDER BY is_primary DESC, updated_at DESC")
+    .all() as SmsContactRow[];
+}
+
+export function getSmsContactByPhone(phoneNumber: string): SmsContactRow | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM sms_contacts WHERE phone_number = ? LIMIT 1")
+    .get(phoneNumber) as SmsContactRow | undefined;
+  return row || null;
+}
+
+export function getPrimarySmsContact(): SmsContactRow | null {
+  const database = getDb();
+  const row = database
+    .prepare(
+      "SELECT * FROM sms_contacts ORDER BY is_primary DESC, updated_at DESC LIMIT 1"
+    )
+    .get() as SmsContactRow | undefined;
+  return row || null;
+}
+
+export function upsertSmsContact(input: {
+  phone_number: string;
+  label?: string;
+  user_id?: string | null;
+  project_id?: string | null;
+  is_primary?: boolean;
+}): SmsContactRow {
+  const database = getDb();
+  const existing = getSmsContactByPhone(input.phone_number);
+  const now = new Date().toISOString();
+  const resolvedLabel =
+    input.label !== undefined ? input.label : existing?.label ?? "";
+  const resolvedUserId =
+    input.user_id !== undefined ? input.user_id : existing?.user_id ?? null;
+  const resolvedProjectId =
+    input.project_id !== undefined ? input.project_id : existing?.project_id ?? null;
+  const resolvedPrimary =
+    input.is_primary === undefined
+      ? existing?.is_primary ?? 0
+      : input.is_primary
+        ? 1
+        : 0;
+  const row: SmsContactRow = {
+    phone_number: input.phone_number,
+    label: resolvedLabel,
+    user_id: resolvedUserId,
+    project_id: resolvedProjectId,
+    is_primary: resolvedPrimary,
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+  };
+
+  const tx = database.transaction(() => {
+    database
+      .prepare(
+        `INSERT INTO sms_contacts
+          (phone_number, label, user_id, project_id, is_primary, created_at, updated_at)
+         VALUES
+          (@phone_number, @label, @user_id, @project_id, @is_primary, @created_at, @updated_at)
+         ON CONFLICT(phone_number) DO UPDATE SET
+          label = excluded.label,
+          user_id = excluded.user_id,
+          project_id = excluded.project_id,
+          is_primary = excluded.is_primary,
+          updated_at = excluded.updated_at`
+      )
+      .run(row);
+    if (row.is_primary) {
+      database
+        .prepare("UPDATE sms_contacts SET is_primary = 0 WHERE phone_number != ?")
+        .run(row.phone_number);
+    }
+  });
+  tx();
+
+  return getSmsContactByPhone(input.phone_number) ?? row;
+}
+
+export function createSmsConversation(input: {
+  phone_number: string;
+  user_id?: string | null;
+  contact_label?: string | null;
+  project_id?: string | null;
+  status?: SmsConversationStatus;
+  started_at?: string;
+  last_message_at?: string;
+  ended_at?: string | null;
+  processed_at?: string | null;
+  ended_reason?: string | null;
+}): SmsConversationRow {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const row: SmsConversationRow = {
+    id: crypto.randomUUID(),
+    phone_number: input.phone_number,
+    user_id: input.user_id ?? null,
+    contact_label: input.contact_label ?? null,
+    project_id: input.project_id ?? null,
+    status: input.status ?? "active",
+    started_at: input.started_at ?? now,
+    last_message_at: input.last_message_at ?? input.started_at ?? now,
+    ended_at: input.ended_at ?? null,
+    processed_at: input.processed_at ?? null,
+    ended_reason: input.ended_reason ?? null,
+  };
+  database
+    .prepare(
+      `INSERT INTO sms_conversations
+        (id, phone_number, user_id, contact_label, project_id, status, started_at, last_message_at, ended_at, processed_at, ended_reason)
+       VALUES
+        (@id, @phone_number, @user_id, @contact_label, @project_id, @status, @started_at, @last_message_at, @ended_at, @processed_at, @ended_reason)`
+    )
+    .run(row);
+  return row;
+}
+
+export function getSmsConversationById(id: string): SmsConversationRow | null {
+  const database = getDb();
+  const row = database
+    .prepare("SELECT * FROM sms_conversations WHERE id = ? LIMIT 1")
+    .get(id) as SmsConversationRow | undefined;
+  return row || null;
+}
+
+export function getActiveSmsConversationByPhone(
+  phoneNumber: string
+): SmsConversationRow | null {
+  const database = getDb();
+  const row = database
+    .prepare(
+      `SELECT * FROM sms_conversations
+       WHERE phone_number = ? AND status = 'active'
+       ORDER BY last_message_at DESC
+       LIMIT 1`
+    )
+    .get(phoneNumber) as SmsConversationRow | undefined;
+  return row || null;
+}
+
+export function listStaleSmsConversations(params: {
+  lastMessageBefore: string;
+  limit?: number;
+}): SmsConversationRow[] {
+  const database = getDb();
+  const limit =
+    typeof params.limit === "number" && Number.isFinite(params.limit)
+      ? Math.max(1, Math.min(200, Math.trunc(params.limit)))
+      : 200;
+  return database
+    .prepare(
+      `SELECT * FROM sms_conversations
+       WHERE status = 'active' AND last_message_at < ?
+       ORDER BY last_message_at ASC
+       LIMIT ?`
+    )
+    .all(params.lastMessageBefore, limit) as SmsConversationRow[];
+}
+
+export function updateSmsConversation(
+  id: string,
+  patch: Partial<
+    Pick<
+      SmsConversationRow,
+      | "user_id"
+      | "contact_label"
+      | "project_id"
+      | "status"
+      | "started_at"
+      | "last_message_at"
+      | "ended_at"
+      | "processed_at"
+      | "ended_reason"
+    >
+  >
+): boolean {
+  const database = getDb();
+  const fields: Array<{ key: keyof typeof patch; column: string }> = [
+    { key: "user_id", column: "user_id" },
+    { key: "contact_label", column: "contact_label" },
+    { key: "project_id", column: "project_id" },
+    { key: "status", column: "status" },
+    { key: "started_at", column: "started_at" },
+    { key: "last_message_at", column: "last_message_at" },
+    { key: "ended_at", column: "ended_at" },
+    { key: "processed_at", column: "processed_at" },
+    { key: "ended_reason", column: "ended_reason" },
+  ];
+  const sets = fields
+    .filter((field) => patch[field.key] !== undefined)
+    .map((field) => `${field.column} = @${field.key}`);
+  if (!sets.length) return false;
+  const result = database
+    .prepare(`UPDATE sms_conversations SET ${sets.join(", ")} WHERE id = @id`)
+    .run({ id, ...patch });
+  return result.changes > 0;
+}
+
+export function createSmsMessage(input: {
+  conversation_id: string;
+  direction: SmsMessageDirection;
+  role: SmsMessageRole;
+  body: string;
+  provider_message_id?: string | null;
+  created_at?: string;
+}): SmsMessageRow {
+  const database = getDb();
+  const row: SmsMessageRow = {
+    id: crypto.randomUUID(),
+    conversation_id: input.conversation_id,
+    direction: input.direction,
+    role: input.role,
+    body: input.body,
+    provider_message_id: input.provider_message_id ?? null,
+    created_at: input.created_at ?? new Date().toISOString(),
+  };
+  database
+    .prepare(
+      `INSERT INTO sms_messages
+        (id, conversation_id, direction, role, body, provider_message_id, created_at)
+       VALUES
+        (@id, @conversation_id, @direction, @role, @body, @provider_message_id, @created_at)`
+    )
+    .run(row);
+  return row;
+}
+
+export function listSmsMessages(params: {
+  conversation_id: string;
+  limit?: number;
+}): SmsMessageRow[] {
+  const database = getDb();
+  const limit =
+    typeof params.limit === "number" && Number.isFinite(params.limit)
+      ? Math.max(1, Math.min(500, Math.trunc(params.limit)))
+      : 500;
+  return database
+    .prepare(
+      `SELECT * FROM sms_messages
+       WHERE conversation_id = ?
+       ORDER BY created_at ASC
+       LIMIT ?`
+    )
+    .all(params.conversation_id, limit) as SmsMessageRow[];
+}
+
+export function countSmsMessagesSince(params: {
+  since: string;
+  phone_number?: string;
+  direction?: SmsMessageDirection;
+}): number {
+  const database = getDb();
+  const clauses = ["m.created_at >= ?"];
+  const values: Array<string> = [params.since];
+  if (params.phone_number) {
+    clauses.push("c.phone_number = ?");
+    values.push(params.phone_number);
+  }
+  if (params.direction) {
+    clauses.push("m.direction = ?");
+    values.push(params.direction);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const row = database
+    .prepare(
+      `SELECT COUNT(*) as count
+       FROM sms_messages m
+       JOIN sms_conversations c ON c.id = m.conversation_id
+       ${where}`
+    )
+    .get(...values) as { count: number } | undefined;
+  return row?.count ?? 0;
 }
 
 export type EscalationQuery = {
@@ -5538,6 +6207,19 @@ function normalizeDecisionArrayInput(value: unknown): ShiftHandoffDecision[] {
     decisions.push({ decision, rationale });
   }
   return decisions;
+}
+
+function parseJsonRecord(value: string | null): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
 function parseJsonStringArray(value: string | null): string[] {

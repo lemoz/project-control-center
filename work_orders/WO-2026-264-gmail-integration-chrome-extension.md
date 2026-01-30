@@ -6,11 +6,11 @@ context:
   - server/db.ts (people tables from WO-2026-260)
   - server/conversation_sync.ts (conversation_events from WO-2026-262, if available)
   - "Chrome extension: Claude-in-Chrome MCP tools for browser automation"
-  - "People identifier resolution for matching email addresses"
+  - People identifier resolution for matching email addresses
   - "Approval flow: auto-send to known project contacts, ask for unknown"
 acceptance_criteria:
-  - "Read email threads for a contact by searching Gmail for their email address"
-  - "Compose and send emails via Chrome Gmail automation"
+  - Read email threads for a contact by searching Gmail for their email address
+  - Compose and send emails via Chrome Gmail automation
   - Link email threads to conversation_events table (channel = 'email')
   - "Auto-send approval: messages to known project contacts send automatically"
   - "New contact approval: agent proposes send, user confirms before execution"
@@ -33,7 +33,7 @@ tags:
   - chrome
   - communication
 estimate_hours: 4
-status: ready
+status: you_review
 created_at: 2026-01-30
 updated_at: 2026-01-30
 depends_on:

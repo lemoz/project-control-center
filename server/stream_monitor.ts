@@ -6,7 +6,8 @@ type PatternCategory =
   | "prompt_injection"
   | "dangerous_command"
   | "credential_access"
-  | "sandbox_escape";
+  | "sandbox_escape"
+  | "network_violation";
 
 export type StreamMonitorContext = {
   runId?: string;
@@ -425,6 +426,66 @@ export class StreamMonitor {
 
   getIncidents(): StreamMonitorIncident[] {
     return [...this.incidents];
+  }
+
+  reportNetworkViolation(details: {
+    domain: string;
+    path: string;
+    method: string;
+    status?: number;
+    reason?: string;
+    timestamp?: string;
+  }): void {
+    const timestamp = details.timestamp ?? nowIso();
+    const verdict: StreamMonitorVerdict = "WARN";
+    const action: StreamMonitorIncident["action"] = "warned";
+    const reason =
+      details.reason ?? `Blocked non-whitelisted request to ${details.domain}`;
+    const record: StreamMonitorIncident = {
+      timestamp,
+      patternId: "network_whitelist_violation",
+      pattern: "network whitelist violation",
+      category: "network_violation",
+      matchedText: details.domain,
+      recentOutput: this.recentOutput,
+      verdict,
+      reason,
+      geminiLatencyMs: null,
+      action,
+    };
+    this.incidents.push(record);
+    this.log?.(
+      `[stream-monitor] ${record.timestamp} ${record.verdict} ${record.patternId} action=${record.action}`
+    );
+
+    if (this.context?.runId && this.context.projectId) {
+      try {
+        createSecurityIncident({
+          run_id: this.context.runId,
+          project_id: this.context.projectId,
+          timestamp: record.timestamp,
+          pattern_category: record.category,
+          pattern_matched: details.domain || "network_whitelist_violation",
+          trigger_content: JSON.stringify({
+            domain: details.domain,
+            path: details.path,
+            method: details.method,
+            status: details.status ?? null,
+          }),
+          agent_output_snippet: this.recentOutput || null,
+          wo_id: this.context.workOrderId ?? null,
+          wo_goal: this.context.goal?.trim() || null,
+          gemini_verdict: verdict,
+          gemini_reason: reason,
+          gemini_latency_ms: null,
+          action_taken: action,
+        });
+      } catch (err) {
+        this.log?.(
+          `[stream-monitor] failed to log network violation: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
   }
 
   private enqueueIncident(incident: PendingIncident): void {
