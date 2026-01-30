@@ -302,22 +302,6 @@ export type CreatePersonProjectInput = {
   notes?: string | null;
 };
 
-export const CONVERSATION_EVENT_CHANNELS = [
-  "imessage",
-  "email",
-  "meeting",
-  "call",
-  "note",
-] as const;
-export type ConversationEventChannel = (typeof CONVERSATION_EVENT_CHANNELS)[number];
-
-export const CONVERSATION_EVENT_DIRECTIONS = [
-  "inbound",
-  "outbound",
-  "bidirectional",
-] as const;
-export type ConversationEventDirection = (typeof CONVERSATION_EVENT_DIRECTIONS)[number];
-
 export type ConversationEventRow = {
   id: string;
   person_id: string;
