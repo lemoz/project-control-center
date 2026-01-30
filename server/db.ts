@@ -254,6 +254,51 @@ export type CreatePersonProjectInput = {
   notes?: string | null;
 };
 
+export const CONVERSATION_EVENT_CHANNELS = [
+  "imessage",
+  "email",
+  "meeting",
+  "call",
+  "note",
+] as const;
+export type ConversationEventChannel = (typeof CONVERSATION_EVENT_CHANNELS)[number];
+
+export const CONVERSATION_EVENT_DIRECTIONS = [
+  "inbound",
+  "outbound",
+  "bidirectional",
+] as const;
+export type ConversationEventDirection = (typeof CONVERSATION_EVENT_DIRECTIONS)[number];
+
+export type ConversationEventRow = {
+  id: string;
+  person_id: string;
+  channel: ConversationEventChannel;
+  direction: ConversationEventDirection;
+  summary: string | null;
+  content: string | null;
+  external_id: string | null;
+  metadata: string;
+  occurred_at: string;
+  synced_at: string;
+};
+
+export type ConversationEvent = Omit<ConversationEventRow, "metadata"> & {
+  metadata: Record<string, unknown>;
+};
+
+export type CreateConversationEventInput = {
+  person_id: string;
+  channel: ConversationEventChannel;
+  direction: ConversationEventDirection;
+  summary?: string | null;
+  content?: string | null;
+  external_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+  occurred_at?: string;
+  synced_at?: string;
+};
+
 export type ConstitutionSuggestionStatus = "pending" | "accepted" | "rejected";
 
 export type ConstitutionSuggestionEvidence = {
@@ -1070,6 +1115,26 @@ function initSchema(database: Database.Database) {
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_people_projects_unique
       ON people_projects(person_id, project_id);
+
+    CREATE TABLE IF NOT EXISTS conversation_events (
+      id TEXT PRIMARY KEY,
+      person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+      channel TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      summary TEXT,
+      content TEXT,
+      external_id TEXT,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      occurred_at TEXT NOT NULL,
+      synced_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_conversation_events_person
+      ON conversation_events(person_id, occurred_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_events_dedup
+      ON conversation_events(channel, external_id);
+    CREATE INDEX IF NOT EXISTS idx_conversation_events_channel
+      ON conversation_events(person_id, channel);
 
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY,
@@ -3048,6 +3113,75 @@ export function resolvePersonByIdentifier(params: {
     .get(params.type, normalized) as { person_id: string } | undefined;
   if (!row) return null;
   return getPersonDetails(row.person_id);
+}
+
+function parseConversationMetadata(value: string | null): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return {};
+  }
+  return {};
+}
+
+function normalizeConversationMetadata(
+  value: Record<string, unknown> | null | undefined
+): string {
+  if (!value) return "{}";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "{}";
+  }
+}
+
+function toConversationEvent(row: ConversationEventRow): ConversationEvent {
+  return {
+    id: row.id,
+    person_id: row.person_id,
+    channel: row.channel,
+    direction: row.direction,
+    summary: row.summary,
+    content: row.content,
+    external_id: row.external_id,
+    metadata: parseConversationMetadata(row.metadata),
+    occurred_at: row.occurred_at,
+    synced_at: row.synced_at,
+  };
+}
+
+export function createConversationEvent(
+  input: CreateConversationEventInput
+): ConversationEvent {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const row: ConversationEventRow = {
+    id: crypto.randomUUID(),
+    person_id: input.person_id,
+    channel: input.channel,
+    direction: input.direction,
+    summary: normalizeOptionalString(input.summary),
+    content: normalizeOptionalString(input.content),
+    external_id: normalizeOptionalString(input.external_id),
+    metadata: normalizeConversationMetadata(input.metadata),
+    occurred_at: normalizeOptionalString(input.occurred_at) ?? now,
+    synced_at: normalizeOptionalString(input.synced_at) ?? now,
+  };
+
+  database
+    .prepare(
+      `INSERT INTO conversation_events
+        (id, person_id, channel, direction, summary, content, external_id, metadata, occurred_at, synced_at)
+       VALUES
+        (@id, @person_id, @channel, @direction, @summary, @content, @external_id, @metadata, @occurred_at, @synced_at)`
+    )
+    .run(row);
+
+  return toConversationEvent(row);
 }
 
 function normalizeSuggestionEvidenceInput(

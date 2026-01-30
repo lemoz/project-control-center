@@ -187,6 +187,12 @@ import {
   sendMacMessage,
 } from "./mac_connector.js";
 import {
+  cancelCall,
+  confirmCall,
+  listPendingCalls,
+  proposeCall,
+} from "./calling.js";
+import {
   getEscalationDeferral,
   getExplicitPreferences,
   getLastEscalationAt,
@@ -856,6 +862,38 @@ app.get("/mac/status", async (_req, res) => {
     return res.status(result.status).json({ error: result.error });
   }
   return res.json({ status: result.data });
+});
+
+app.post("/mac/call", async (req, res) => {
+  const result = await proposeCall(req.body);
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.status(201).json(result.data);
+});
+
+app.get("/mac/call/pending", (_req, res) => {
+  return res.json({ calls: listPendingCalls() });
+});
+
+app.post("/mac/call/confirm/:id", async (req, res) => {
+  const id = req.params.id;
+  if (!id) return res.status(400).json({ error: "`id` is required." });
+  const result = await confirmCall(id);
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.json(result.data);
+});
+
+app.post("/mac/call/cancel/:id", (req, res) => {
+  const id = req.params.id;
+  if (!id) return res.status(400).json({ error: "`id` is required." });
+  const result = cancelCall(id);
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.json(result.data);
 });
 
 app.post("/narration", async (req, res) => {

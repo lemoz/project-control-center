@@ -5,15 +5,15 @@ goal: Enable PCC agents to initiate FaceTime audio/video calls and phone calls o
 context:
   - server/mac_connector.ts (AppleScript execution, from WO-2026-261)
   - server/db.ts (people tables from WO-2026-260, conversation_events from WO-2026-262)
-  - "FaceTime.app supports AppleScript for initiating calls"
+  - FaceTime.app supports AppleScript for initiating calls
   - "tel: URL scheme for phone calls via FaceTime PSTN"
   - "Agent-initiated with approval: agent proposes, user confirms"
 acceptance_criteria:
-  - "Initiate FaceTime audio call via AppleScript"
-  - "Initiate FaceTime video call via AppleScript"
+  - Initiate FaceTime audio call via AppleScript
+  - Initiate FaceTime video call via AppleScript
   - "Initiate phone call via tel: URL scheme (opens FaceTime for PSTN)"
   - "Agent approval flow: POST /mac/call returns { needs_approval, call_details } for user to confirm"
-  - "POST /mac/call/confirm/:id executes the approved call"
+  - POST /mac/call/confirm/:id executes the approved call
   - Call log entries written to conversation_events (channel = 'call')
   - "API: POST /mac/call (body: { person_id, type: audio|video|phone })"
   - "API: POST /mac/call/confirm/:id"
@@ -34,7 +34,7 @@ tags:
   - mac
   - communication
 estimate_hours: 3
-status: ready
+status: you_review
 created_at: 2026-01-30
 updated_at: 2026-01-30
 depends_on:
