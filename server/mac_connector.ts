@@ -332,7 +332,12 @@ function normalizeService(value: string | null): "iMessage" | "SMS" {
 }
 
 function escapeAppleScriptString(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, "\\\"")
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r")
+    .replace(/\t/g, "\\t");
 }
 
 function normalizeRecipient(value: string): { ok: true; recipient: string } | { ok: false; error: string } {
@@ -407,7 +412,7 @@ function execAppleScript(
     execFile(
       "osascript",
       ["-e", script],
-      { maxBuffer: 5 * 1024 * 1024 },
+      { maxBuffer: 5 * 1024 * 1024, timeout: 30_000 },
       (error, stdout, stderr) => {
         if (error) {
           const trimmed = stderr.trim() || error.message || "AppleScript execution failed.";
