@@ -187,6 +187,12 @@ import {
   sendMacMessage,
 } from "./mac_connector.js";
 import {
+  approveGmailDraft,
+  getGmailThreads,
+  sendGmail,
+  syncGmailHistory,
+} from "./gmail_connector.js";
+import {
   getEscalationDeferral,
   getExplicitPreferences,
   getLastEscalationAt,
@@ -856,6 +862,45 @@ app.get("/mac/status", async (_req, res) => {
     return res.status(result.status).json({ error: result.error });
   }
   return res.json({ status: result.data });
+});
+
+app.get("/gmail/threads", async (req, res) => {
+  const result = await getGmailThreads(req.query);
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.json({ threads: result.threads });
+});
+
+app.post("/gmail/send", async (req, res) => {
+  const result = await sendGmail(req.body);
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error });
+  }
+  const status = result.sent ? 201 : 200;
+  return res.status(status).json(result);
+});
+
+app.post("/gmail/send/:draftId/approve", async (req, res) => {
+  const result = await approveGmailDraft(req.params.draftId);
+  if (!result.ok) {
+    return res.status(404).json({ error: result.error });
+  }
+  const status = result.sent ? 201 : 200;
+  return res.status(status).json(result);
+});
+
+app.post("/gmail/sync", async (req, res) => {
+  const result = await syncGmailHistory(req.body);
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.json({
+    person_id: result.person_id,
+    threads: result.threads,
+    events_added: result.events_added,
+    errors: result.errors,
+  });
 });
 
 app.post("/narration", async (req, res) => {

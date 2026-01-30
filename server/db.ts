@@ -150,6 +150,23 @@ export const PEOPLE_PROJECT_RELATIONSHIPS = [
 ] as const;
 export type PeopleProjectRelationship = (typeof PEOPLE_PROJECT_RELATIONSHIPS)[number];
 
+export const CONVERSATION_EVENT_CHANNELS = [
+  "imessage",
+  "email",
+  "meeting",
+  "call",
+  "note",
+] as const;
+export type ConversationEventChannel = (typeof CONVERSATION_EVENT_CHANNELS)[number];
+
+export const CONVERSATION_EVENT_DIRECTIONS = [
+  "inbound",
+  "outbound",
+  "bidirectional",
+] as const;
+export type ConversationEventDirection =
+  (typeof CONVERSATION_EVENT_DIRECTIONS)[number];
+
 export type PersonRow = {
   id: string;
   name: string;
@@ -217,6 +234,37 @@ export type PersonProject = {
 export type PersonDetails = Person & {
   identifiers: PersonIdentifier[];
   projects: PersonProject[];
+};
+
+export type ConversationEventRow = {
+  id: string;
+  person_id: string;
+  channel: ConversationEventChannel;
+  direction: ConversationEventDirection;
+  summary: string | null;
+  content: string | null;
+  external_id: string | null;
+  metadata: string;
+  occurred_at: string;
+  synced_at: string;
+};
+
+export type ConversationEventMetadata = Record<string, unknown>;
+
+export type ConversationEvent = Omit<ConversationEventRow, "metadata"> & {
+  metadata: ConversationEventMetadata;
+};
+
+export type CreateConversationEventInput = {
+  person_id: string;
+  channel: ConversationEventChannel;
+  direction: ConversationEventDirection;
+  summary?: string | null;
+  content?: string | null;
+  external_id?: string | null;
+  metadata?: ConversationEventMetadata | null;
+  occurred_at: string;
+  synced_at?: string;
 };
 
 export type CreatePersonInput = {
@@ -1070,6 +1118,26 @@ function initSchema(database: Database.Database) {
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_people_projects_unique
       ON people_projects(person_id, project_id);
+
+    CREATE TABLE IF NOT EXISTS conversation_events (
+      id TEXT PRIMARY KEY,
+      person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+      channel TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      summary TEXT,
+      content TEXT,
+      external_id TEXT,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      occurred_at TEXT NOT NULL,
+      synced_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_conversation_events_person
+      ON conversation_events(person_id, occurred_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_events_dedup
+      ON conversation_events(channel, external_id);
+    CREATE INDEX IF NOT EXISTS idx_conversation_events_channel
+      ON conversation_events(person_id, channel);
 
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY,
@@ -3048,6 +3116,59 @@ export function resolvePersonByIdentifier(params: {
     .get(params.type, normalized) as { person_id: string } | undefined;
   if (!row) return null;
   return getPersonDetails(row.person_id);
+}
+
+function normalizeConversationText(value?: string | null): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function toConversationEvent(row: ConversationEventRow): ConversationEvent {
+  return {
+    id: row.id,
+    person_id: row.person_id,
+    channel: row.channel,
+    direction: row.direction,
+    summary: row.summary,
+    content: row.content,
+    external_id: row.external_id,
+    metadata: parseJsonRecord(row.metadata),
+    occurred_at: row.occurred_at,
+    synced_at: row.synced_at,
+  };
+}
+
+export function createConversationEvent(
+  input: CreateConversationEventInput
+): ConversationEvent | null {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const row: ConversationEventRow = {
+    id: crypto.randomUUID(),
+    person_id: input.person_id,
+    channel: input.channel,
+    direction: input.direction,
+    summary: normalizeConversationText(input.summary),
+    content: normalizeConversationText(input.content),
+    external_id: normalizeConversationText(input.external_id),
+    metadata: JSON.stringify(input.metadata ?? {}),
+    occurred_at: input.occurred_at,
+    synced_at: input.synced_at ?? now,
+  };
+
+  const result = database
+    .prepare(
+      `INSERT INTO conversation_events
+        (id, person_id, channel, direction, summary, content, external_id, metadata, occurred_at, synced_at)
+       VALUES
+        (@id, @person_id, @channel, @direction, @summary, @content, @external_id, @metadata, @occurred_at, @synced_at)
+       ON CONFLICT(channel, external_id) DO NOTHING`
+    )
+    .run(row);
+
+  if (result.changes === 0) return null;
+  return toConversationEvent(row);
 }
 
 function normalizeSuggestionEvidenceInput(
@@ -5538,6 +5659,19 @@ function normalizeDecisionArrayInput(value: unknown): ShiftHandoffDecision[] {
     decisions.push({ decision, rationale });
   }
   return decisions;
+}
+
+function parseJsonRecord(value: string | null): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
 function parseJsonStringArray(value: string | null): string[] {
