@@ -28,11 +28,11 @@ tags:
   - voice
   - pipecat
 estimate_hours: 1.5
-status: you_review
+status: done
 depends_on:
   - WO-2026-252
   - WO-2026-254
 created_at: 2026-01-29
-updated_at: 2026-01-29
+updated_at: 2026-01-30
 era: v2
 ---

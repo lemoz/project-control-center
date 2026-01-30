@@ -15,9 +15,9 @@ tags:
   - auto-generated
   - from-scope-creep
 estimate_hours: 0.5
-status: you_review
+status: done
 created_at: 2026-01-29
-updated_at: 2026-01-29
+updated_at: 2026-01-30
 depends_on: []
 era: v2
 ---

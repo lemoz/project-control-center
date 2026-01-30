@@ -28,9 +28,9 @@ tags:
   - settings
   - gating
 estimate_hours: 4
-status: you_review
+status: done
 created_at: 2026-01-27
-updated_at: 2026-01-29
+updated_at: 2026-01-30
 depends_on: []
 era: v2
 ---

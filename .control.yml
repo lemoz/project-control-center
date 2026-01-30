@@ -30,5 +30,5 @@ success_metrics:
     notes: "12/19 recent terminal runs - trending up from 36% historical"
   - name: WOs completed
     target: 200
-    current: 140
+    current: 163
 

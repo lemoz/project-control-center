@@ -39,3 +39,16 @@ This is the foundational spike for meeting integration. Validate that Recall.ai 
 3. The web page can use ElevenLabs ConversationAPI for voice
 
 Measure latency end-to-end: participant speaks → bot hears → bot responds → participant hears.
+
+## Credentials & Configuration (AVAILABLE)
+
+All credentials are configured in `.env` — the builder has full access:
+
+- **Recall.ai API key**: `CONTROL_CENTER_RECALL_API_KEY` in `.env`
+- **Recall.ai auth prefix**: `CONTROL_CENTER_RECALL_API_PREFIX=Token` in `.env`
+- **Recall.ai bot creation endpoint**: `CONTROL_CENTER_RECALL_CREATE_URL=https://us-west-2.recall.ai/api/v1/bot/` in `.env`
+- **Recall.ai API docs**: https://docs.recall.ai — auth header is `Authorization: Token <key>`
+- **ElevenLabs API key**: `ELEVENLABS_API_KEY` in `.env`
+- **ElevenLabs agent ID**: `NEXT_PUBLIC_ELEVENLABS_AGENT_ID` in `.env`
+- **External API calls**: YES — this run is allowed to call Recall.ai and ElevenLabs APIs. Sandbox is disabled (`PCC_BUILDER_SANDBOX=none`).
+- **Env var config reference**: `.env.example` has the full schema for RECALL and ELEVENLABS vars
