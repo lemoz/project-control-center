@@ -5,12 +5,12 @@ goal: Import contacts from macOS Contacts.app and the legacy Auto_SMS_mac contac
 context:
   - server/mac_connector.ts (Contacts.app read via AppleScript, from WO-2026-261)
   - server/db.ts (people tables from WO-2026-260)
-  - "~/.imessage_crm/contacts.db (legacy Auto_SMS_mac contact data)"
+  - ~/.imessage_crm/contacts.db (legacy Auto_SMS_mac contact data)
   - Auto_SMS_mac/src/contacts/contact.py (contact data model)
   - Auto_SMS_mac/src/database/contacts_db.py (legacy DB schema)
 acceptance_criteria:
-  - "POST /mac/contacts/import — bulk import from Contacts.app via mac_connector"
-  - "POST /mac/contacts/import-legacy — import from ~/.imessage_crm/contacts.db"
+  - POST /mac/contacts/import — bulk import from Contacts.app via mac_connector
+  - POST /mac/contacts/import-legacy — import from ~/.imessage_crm/contacts.db
   - Dedup by normalized phone and email (uses identifier resolution from WO-2026-260)
   - "Merge strategy: PCC data wins for existing fields, Mac/legacy fills gaps"
   - "Import report returned: { imported: number, updated: number, skipped: number, errors: Array<{ name, reason }> }"
@@ -30,7 +30,7 @@ tags:
   - mac
   - contacts
 estimate_hours: 3
-status: ready
+status: you_review
 created_at: 2026-01-30
 updated_at: 2026-01-30
 depends_on:

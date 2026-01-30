@@ -188,6 +188,7 @@ import {
   getMacStatus,
   sendMacMessage,
 } from "./mac_connector.js";
+import { importLegacyContacts, importMacContacts } from "./contacts_import.js";
 import {
   cancelCall,
   confirmCall,
@@ -1165,6 +1166,32 @@ app.get("/mac/contacts", async (_req, res) => {
     return res.status(result.status).json({ error: result.error });
   }
   return res.json({ contacts: result.data });
+});
+
+app.post("/mac/contacts/import", async (req, res) => {
+  const dryRunValue = req.body?.dry_run ?? req.body?.dryRun;
+  if (dryRunValue !== undefined && typeof dryRunValue !== "boolean") {
+    return res.status(400).json({ error: "`dry_run` must be a boolean" });
+  }
+  const dryRun = dryRunValue ?? false;
+  const result = await importMacContacts({ dryRun });
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.json(result.report);
+});
+
+app.post("/mac/contacts/import-legacy", async (req, res) => {
+  const dryRunValue = req.body?.dry_run ?? req.body?.dryRun;
+  if (dryRunValue !== undefined && typeof dryRunValue !== "boolean") {
+    return res.status(400).json({ error: "`dry_run` must be a boolean" });
+  }
+  const dryRun = dryRunValue ?? false;
+  const result = await importLegacyContacts({ dryRun });
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.json(result.report);
 });
 
 app.get("/mac/calendar/upcoming", async (req, res) => {
