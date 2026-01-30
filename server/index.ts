@@ -165,6 +165,13 @@ import {
   refreshMeetingStatus,
 } from "./meeting_connector.js";
 import {
+  getMacCalendarUpcoming,
+  getMacContacts,
+  getMacRecentMessages,
+  getMacStatus,
+  sendMacMessage,
+} from "./mac_connector.js";
+import {
   getEscalationDeferral,
   getExplicitPreferences,
   getLastEscalationAt,
@@ -792,6 +799,46 @@ app.post("/meetings/leave", async (_req, res) => {
     return res.status(result.status).json({ error: result.error });
   }
   return res.json({ meeting: result.meeting });
+});
+
+app.post("/mac/messages/send", async (req, res) => {
+  const result = await sendMacMessage(req.body);
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.status(201).json({ sent: result.data });
+});
+
+app.get("/mac/messages/recent", async (req, res) => {
+  const result = await getMacRecentMessages(req.query);
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.json({ messages: result.data });
+});
+
+app.get("/mac/contacts", async (_req, res) => {
+  const result = await getMacContacts();
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.json({ contacts: result.data });
+});
+
+app.get("/mac/calendar/upcoming", async (req, res) => {
+  const result = await getMacCalendarUpcoming(req.query);
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.json({ events: result.data });
+});
+
+app.get("/mac/status", async (_req, res) => {
+  const result = await getMacStatus();
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.json({ status: result.data });
 });
 
 app.post("/narration", async (req, res) => {
