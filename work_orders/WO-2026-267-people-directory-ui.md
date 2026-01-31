@@ -3,25 +3,25 @@ id: WO-2026-267
 title: People directory UI
 goal: Build a top-level /people page in the Next.js app for managing project contacts — full CRUD, project associations, Mac Contacts import, and inline conversation history timeline.
 context:
-  - "app/ directory (Next.js app router)"
+  - app/ directory (Next.js app router)
   - server/db.ts (people API from WO-2026-260)
   - server/conversation_sync.ts (conversation history from WO-2026-262)
   - server/contacts_import.ts (Mac import from WO-2026-263)
   - "Existing UI patterns: app/projects/[id]/page.tsx, app/work-orders/page.tsx"
   - "Component patterns: components/ directory"
 acceptance_criteria:
-  - "Top-level /people route accessible from main navigation"
+  - Top-level /people route accessible from main navigation
   - "People list page: searchable, filterable by project/tag/starred, sortable by name/last interaction"
   - "Contact detail panel (drawer or page): personal info, identifiers, project associations, conversation timeline"
-  - "Add/edit/delete contacts with form validation"
-  - "Add/remove identifiers (phone, email) with type and label"
-  - "Associate contacts with projects (select project + relationship type)"
-  - "Import from Mac Contacts button (calls POST /mac/contacts/import, shows import report)"
-  - "Import from legacy iMessage CRM button (calls POST /mac/contacts/import-legacy)"
-  - "Star/unstar contacts (starred contacts get background sync)"
+  - Add/edit/delete contacts with form validation
+  - Add/remove identifiers (phone, email) with type and label
+  - Associate contacts with projects (select project + relationship type)
+  - Import from Mac Contacts button (calls POST /mac/contacts/import, shows import report)
+  - Import from legacy iMessage CRM button (calls POST /mac/contacts/import-legacy)
+  - Star/unstar contacts (starred contacts get background sync)
   - "Inline conversation history timeline per contact: shows iMessage, email, meeting, call events chronologically"
-  - "Conversation timeline filterable by channel"
-  - "Responsive layout following existing app design patterns"
+  - Conversation timeline filterable by channel
+  - Responsive layout following existing app design patterns
 non_goals:
   - Real-time message composition from UI (v1 is view-only for conversations)
   - Contact merge UI (dedup is handled by import logic)
@@ -37,9 +37,9 @@ tags:
   - nextjs
   - frontend
 estimate_hours: 5
-status: ready
+status: you_review
 created_at: 2026-01-30
-updated_at: 2026-01-30
+updated_at: 2026-01-31
 depends_on:
   - WO-2026-260
   - WO-2026-262

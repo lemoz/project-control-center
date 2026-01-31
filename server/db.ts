@@ -3231,8 +3231,8 @@ export function listPeople(filters: PeopleListFilters = {}): Person[] {
   const q = typeof filters.q === "string" ? filters.q.trim() : "";
   if (q) {
     const needle = `%${q}%`;
-    clauses.push("(name LIKE ? OR nickname LIKE ?)");
-    params.push(needle, needle);
+    clauses.push("(name LIKE ? OR nickname LIKE ? OR company LIKE ? OR role LIKE ?)");
+    params.push(needle, needle, needle, needle);
   }
 
   const projectId = typeof filters.projectId === "string" ? filters.projectId.trim() : "";
