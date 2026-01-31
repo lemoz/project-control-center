@@ -101,6 +101,19 @@ type WorkOrderDetailsResponse = {
   work_order: WorkOrderDetails;
 };
 
+type MeetingOutputMediaState = {
+  enabled: boolean;
+  mode: string;
+  last_error: string | null;
+  meeting_id: string | null;
+  project_id: string | null;
+};
+
+type MeetingOutputMediaResponse = {
+  meeting: { status: string } | null;
+  output_media: MeetingOutputMediaState;
+};
+
 type LiveOrbitalCanvasProps = {
   data: VisualizationData;
   loading: boolean;
@@ -126,6 +139,14 @@ export function LiveOrbitalCanvas({
   const [highlightedWorkOrderId, setHighlightedWorkOrderId] = useState<string | null>(null);
   const [showAllWOs, setShowAllWOs] = useState(false);
   const [securityHoldFirst, setSecurityHoldFirst] = useState(false);
+  const [screenShareState, setScreenShareState] = useState<MeetingOutputMediaState | null>(
+    null
+  );
+  const [screenShareMeetingStatus, setScreenShareMeetingStatus] = useState<string | null>(
+    null
+  );
+  const [screenShareError, setScreenShareError] = useState<string | null>(null);
+  const [screenShareBusy, setScreenShareBusy] = useState(false);
   const lastFrame = useRef<number | null>(null);
   const followAnimationRef = useRef<number | null>(null);
   const autoSelectRef = useRef<string | null>(null);
@@ -292,6 +313,40 @@ export function LiveOrbitalCanvas({
   }, [selectedWorkOrderNode?.projectId, selectedWorkOrderNode?.workOrderId]);
 
   useEffect(() => {
+    let active = true;
+    const loadScreenShare = async () => {
+      try {
+        const res = await fetch("/api/meetings/output-media", { cache: "no-store" });
+        const json = (await res.json().catch(() => null)) as
+          | MeetingOutputMediaResponse
+          | { error?: string }
+          | null;
+        if (!res.ok) {
+          throw new Error((json as { error?: string } | null)?.error || "failed to load state");
+        }
+        if (active) {
+          setScreenShareState(json?.output_media ?? null);
+          setScreenShareMeetingStatus(json?.meeting?.status ?? null);
+          setScreenShareError(json?.output_media?.last_error ?? null);
+        }
+      } catch (err) {
+        if (active) {
+          setScreenShareError(
+            err instanceof Error ? err.message : "screen share status unavailable"
+          );
+        }
+      }
+    };
+
+    void loadScreenShare();
+    const interval = setInterval(loadScreenShare, 10000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!selectedWorkOrderNode) return;
     const handlePointerDown = (event: PointerEvent) => {
       const panel = detailPanelRef.current;
@@ -315,6 +370,36 @@ export function LiveOrbitalCanvas({
     lastInteractionRef.current = Date.now();
     setMode("follow");
   }, []);
+
+  const toggleScreenShare = useCallback(async () => {
+    if (!project?.id) return;
+    const nextEnabled = !(screenShareState?.enabled ?? false);
+    setScreenShareBusy(true);
+    setScreenShareError(null);
+    try {
+      const res = await fetch("/api/meetings/output-media", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: nextEnabled,
+          mode: "screen_share",
+          project_id: project.id,
+        }),
+      });
+      const json = (await res.json().catch(() => null)) as
+        | { output_media?: MeetingOutputMediaState; error?: string }
+        | null;
+      if (!res.ok) {
+        throw new Error(json?.error || "screen share update failed");
+      }
+      setScreenShareState(json?.output_media ?? null);
+      setScreenShareError(json?.output_media?.last_error ?? null);
+    } catch (err) {
+      setScreenShareError(err instanceof Error ? err.message : "screen share update failed");
+    } finally {
+      setScreenShareBusy(false);
+    }
+  }, [project?.id, screenShareState?.enabled]);
 
   const startFollowAnimation = useCallback(
     (targetOffsetX: number, targetOffsetY: number) => {
@@ -911,6 +996,33 @@ export function LiveOrbitalCanvas({
           zIndex: 5,
         }}
       >
+        {/* Screen share toggle */}
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <button
+            type="button"
+            className={screenShareState?.enabled ? "btn" : "btnSecondary"}
+            style={{ fontSize: 12, padding: "4px 10px" }}
+            onClick={toggleScreenShare}
+            disabled={screenShareBusy || !project}
+            title={screenShareState?.enabled ? "Stop screen share" : "Start screen share"}
+          >
+            {screenShareBusy
+              ? "Updating..."
+              : screenShareState?.enabled
+                ? "Stop screen share"
+                : "Start screen share"}
+          </button>
+          <span className="muted" style={{ fontSize: 11 }}>
+            {screenShareState?.enabled ? "On" : "Off"}
+            {screenShareMeetingStatus ? ` · ${formatRunStatus(screenShareMeetingStatus)}` : ""}
+          </span>
+        </div>
+        {screenShareError && (
+          <div className="error" style={{ fontSize: 11 }}>
+            {screenShareError}
+          </div>
+        )}
+
         {/* Filter toggle */}
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <button

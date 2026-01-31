@@ -23,9 +23,9 @@ tags:
   - video
   - future
 estimate_hours: 4
-status: ready
+status: you_review
 created_at: 2026-01-29
-updated_at: 2026-01-30
+updated_at: 2026-01-31
 depends_on:
   - WO-2026-246
 era: v2

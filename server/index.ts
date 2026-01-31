@@ -70,6 +70,7 @@ import {
   listEscalations,
   listSecurityIncidents,
   listProjectCommunications,
+  listMeetingCommunicationsById,
   listSmsContacts,
   listGlobalShifts,
   listConstitutionSuggestions,
@@ -181,9 +182,12 @@ import {
   saveVoiceSettings,
 } from "./voice_settings.js";
 import {
+  getMeetingOutputMediaState,
   joinMeeting,
   leaveMeeting,
   refreshMeetingStatus,
+  startMeetingOutputMedia,
+  stopMeetingOutputMedia,
 } from "./meeting_connector.js";
 import {
   getMacCalendarUpcoming,
@@ -1146,12 +1150,69 @@ app.get("/meetings/active", async (_req, res) => {
   return res.json({ meeting });
 });
 
+app.get("/meetings/output-media", async (_req, res) => {
+  const meeting = await refreshMeetingStatus();
+  const outputMedia = getMeetingOutputMediaState();
+  return res.json({ meeting, output_media: outputMedia });
+});
+
+app.post("/meetings/output-media", async (req, res) => {
+  const enabled =
+    typeof req.body?.enabled === "boolean"
+      ? req.body.enabled
+      : typeof req.body?.active === "boolean"
+        ? req.body.active
+        : null;
+  if (enabled === null) {
+    return res.status(400).json({ error: "`enabled` must be a boolean" });
+  }
+
+  const payload = {
+    enabled,
+    mode: typeof req.body?.mode === "string" ? req.body.mode : undefined,
+    project_id:
+      typeof req.body?.project_id === "string" ? req.body.project_id.trim() : undefined,
+    meeting_id:
+      typeof req.body?.meeting_id === "string" ? req.body.meeting_id.trim() : undefined,
+    output_url:
+      typeof req.body?.output_url === "string" ? req.body.output_url.trim() : undefined,
+  };
+
+  const result = enabled
+    ? await startMeetingOutputMedia(payload)
+    : await stopMeetingOutputMedia(payload);
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  return res.json({ output_media: result.output_media });
+});
+
 app.post("/meetings/leave", async (_req, res) => {
   const result = await leaveMeeting();
   if (!result.ok) {
     return res.status(result.status).json({ error: result.error });
   }
   return res.json({ meeting: result.meeting });
+});
+
+app.get("/meetings/notes", (req, res) => {
+  const meetingId =
+    typeof req.query.meeting_id === "string" ? req.query.meeting_id.trim() : "";
+  if (!meetingId) {
+    return res.status(400).json({ error: "`meeting_id` is required" });
+  }
+  const projectId =
+    typeof req.query.project_id === "string" ? req.query.project_id.trim() : null;
+  const limitRaw = typeof req.query.limit === "string" ? Number(req.query.limit) : NaN;
+  const limit =
+    Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(200, Math.trunc(limitRaw)) : 60;
+  const communications = listMeetingCommunicationsById({
+    meetingId,
+    projectId,
+    limit,
+    order: "desc",
+  });
+  return res.json({ communications });
 });
 
 app.post("/mac/messages/send", async (req, res) => {
