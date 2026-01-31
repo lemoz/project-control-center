@@ -97,6 +97,24 @@ class PccClient:
             f"/projects/{project_id}/shift-context",
         )
 
+    async def resolve_people_by_emails(
+        self,
+        emails: Sequence[str],
+        *,
+        project_id: str | None = None,
+    ) -> Mapping[str, object]:
+        cleaned = [email.strip() for email in emails if isinstance(email, str)]
+        cleaned = [email for email in cleaned if email]
+        if not cleaned:
+            return {"participants": []}
+        payload: dict[str, object] = {"emails": cleaned}
+        if project_id:
+            payload["project_id"] = project_id
+        response = await self._request_json("POST", "/people/resolve", json=payload)
+        if isinstance(response, Mapping):
+            return response
+        return {"participants": []}
+
     async def send_communication(
         self,
         *,
@@ -259,14 +277,69 @@ def summarize_global_context(context: Mapping[str, object]) -> str:
     return summary
 
 
-async def build_system_prompt(pcc: PccClient) -> str:
+def summarize_participants(payload: Mapping[str, object]) -> str:
+    participants_value = payload.get("participants")
+    if not isinstance(participants_value, list):
+        return ""
+    lines: list[str] = []
+    for entry in participants_value:
+        if not isinstance(entry, Mapping):
+            continue
+        email = _coerce_str(entry.get("email")) or ""
+        person = entry.get("person")
+        if not isinstance(person, Mapping):
+            if email:
+                lines.append(f"- {email}: unknown")
+            continue
+        name = _coerce_str(person.get("name")) or "Unknown"
+        role = _coerce_str(person.get("role"))
+        company = _coerce_str(person.get("company"))
+        relationship = _coerce_str(person.get("relationship"))
+        detail_parts: list[str] = []
+        if role and company:
+            detail_parts.append(f"{role} at {company}")
+        elif role:
+            detail_parts.append(role)
+        elif company:
+            detail_parts.append(company)
+        if relationship:
+            detail_parts.append(f"relationship: {relationship}")
+        detail = f" ({', '.join(detail_parts)})" if detail_parts else ""
+        if email:
+            lines.append(f"- {email}: {name}{detail}")
+        else:
+            lines.append(f"- {name}{detail}")
+    if not lines:
+        return ""
+    return "Participants:\n" + "\n".join(lines)
+
+
+async def build_system_prompt(
+    pcc: PccClient,
+    *,
+    attendee_emails: Sequence[str] | None = None,
+    project_id: str | None = None,
+) -> str:
     try:
         context = await pcc.get_global_context()
         summary = summarize_global_context(context)
     except Exception as exc:
         LOG.warning("Failed to fetch global context: %s", exc)
         summary = "Global context is unavailable."
-    return f"{BASE_SYSTEM_PROMPT}\nPortfolio summary:\n{summary}\n"
+    participant_summary = ""
+    if attendee_emails:
+        try:
+            resolved = await pcc.resolve_people_by_emails(
+                attendee_emails, project_id=project_id
+            )
+            participant_summary = summarize_participants(resolved)
+        except Exception as exc:
+            LOG.warning("Failed to resolve meeting participants: %s", exc)
+            participant_summary = ""
+    sections = [BASE_SYSTEM_PROMPT, "Portfolio summary:", summary]
+    if participant_summary:
+        sections.append(participant_summary)
+    return "\n".join(sections) + "\n"
 
 
 PCC_TOOL_DEFINITIONS = [
@@ -354,6 +427,11 @@ PCC_TOOL_DEFINITIONS = [
             "properties": {
                 "project_id": {"type": "string", "description": "Project id."},
                 "meeting_id": {"type": "string", "description": "Meeting id."},
+                "attendee_emails": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional attendee emails.",
+                },
                 "note": {"type": "string", "description": "Note to store."},
                 "summary": {
                     "type": "string",
@@ -388,6 +466,11 @@ PCC_TOOL_DEFINITIONS = [
             "properties": {
                 "project_id": {"type": "string", "description": "Project id."},
                 "meeting_id": {"type": "string", "description": "Meeting id."},
+                "attendee_emails": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional attendee emails.",
+                },
                 "title": {"type": "string", "description": "Action item title."},
                 "description": {
                     "type": "string",
@@ -433,6 +516,11 @@ PCC_TOOL_DEFINITIONS = [
             "properties": {
                 "project_id": {"type": "string", "description": "Project id."},
                 "meeting_id": {"type": "string", "description": "Meeting id."},
+                "attendee_emails": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional attendee emails.",
+                },
                 "summary": {"type": "string", "description": "Meeting summary text."},
                 "meeting_title": {"type": "string", "description": "Meeting title."},
                 "meeting_started_at": {
@@ -461,7 +549,31 @@ PCC_TOOL_DEFINITIONS = [
 ]
 
 
-def create_tool_callbacks(client: PccClient) -> dict[str, ToolCallback]:
+def create_tool_callbacks(
+    client: PccClient,
+    *,
+    default_attendees: Sequence[str] | None = None,
+) -> dict[str, ToolCallback]:
+    default_attendee_list = [
+        email.strip()
+        for email in (default_attendees or [])
+        if isinstance(email, str) and email.strip()
+    ]
+
+    def resolve_attendees(params: Mapping[str, object] | None) -> list[str]:
+        if params:
+            for key in (
+                "attendee_emails",
+                "attendees",
+                "participant_emails",
+                "participants",
+                "emails",
+            ):
+                value = _get_param(params, key)
+                attendees = _coerce_str_list(value)
+                if attendees:
+                    return attendees
+        return default_attendee_list
     async def get_global_context_tool(_: Mapping[str, object] | None = None) -> object:
         try:
             return await client.get_global_context()
@@ -551,6 +663,7 @@ def create_tool_callbacks(client: PccClient) -> dict[str, ToolCallback]:
             meeting_title=meeting_title,
             meeting_started_at=meeting_started_at,
             meeting_ended_at=None,
+            attendee_emails=resolve_attendees(params),
             recorded_at=recorded_at,
             kind="note",
         )
@@ -603,6 +716,7 @@ def create_tool_callbacks(client: PccClient) -> dict[str, ToolCallback]:
             meeting_title=meeting_title,
             meeting_started_at=meeting_started_at,
             meeting_ended_at=None,
+            attendee_emails=resolve_attendees(params),
             recorded_at=recorded_at,
             kind="action_item",
         )
@@ -755,6 +869,7 @@ def create_tool_callbacks(client: PccClient) -> dict[str, ToolCallback]:
             meeting_title=meeting_title,
             meeting_started_at=meeting_started_at,
             meeting_ended_at=meeting_ended_at,
+            attendee_emails=resolve_attendees(params),
             recorded_at=recorded_at,
             kind="summary",
         )
@@ -803,8 +918,10 @@ def build_tool_definitions() -> list[dict[str, Any]]:
 
 def build_tool_callbacks(
     client: PccClient,
+    *,
+    default_attendees: Sequence[str] | None = None,
 ) -> dict[str, Callable[..., Awaitable[object]]]:
-    callbacks = create_tool_callbacks(client)
+    callbacks = create_tool_callbacks(client, default_attendees=default_attendees)
 
     def wrap(callback: ToolCallback) -> Callable[..., Awaitable[object]]:
         async def _wrapped(
@@ -1000,6 +1117,7 @@ def _build_meeting_payload(
     meeting_title: str | None,
     meeting_started_at: str | None,
     meeting_ended_at: str | None,
+    attendee_emails: list[str] | None,
     recorded_at: str,
     kind: str,
 ) -> dict[str, object]:
@@ -1014,6 +1132,8 @@ def _build_meeting_payload(
         payload["meeting_started_at"] = meeting_started_at
     if meeting_ended_at:
         payload["meeting_ended_at"] = meeting_ended_at
+    if attendee_emails:
+        payload["attendee_emails"] = attendee_emails
     return payload
 
 

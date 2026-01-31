@@ -37,6 +37,7 @@ Optional:
 - `MEETING_ID` (meeting identifier for linking notes/action items)
 - `MEETING_TITLE` (optional meeting title metadata)
 - `MEETING_STARTED_AT` (ISO timestamp when meeting started)
+- `MEETING_ATTENDEE_EMAILS` (comma-separated attendee emails for people resolution)
 
 Audio config (Recall.ai defaults):
 - `VOICE_AUDIO_SAMPLE_RATE` (default: `16000`)

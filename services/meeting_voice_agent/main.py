@@ -45,6 +45,7 @@ class ServiceConfig:
     meeting_id: Optional[str]
     meeting_title: Optional[str]
     meeting_started_at: Optional[str]
+    meeting_attendee_emails: list[str]
 
 
 @dataclass(frozen=True)
@@ -312,6 +313,21 @@ def parse_float_env(name: str, default: float) -> float:
         return default
 
 
+def parse_list_env(name: str) -> list[str]:
+    raw = env(name)
+    if raw is None:
+        return []
+    parts = [item.strip() for item in raw.replace(";", ",").split(",")]
+    return [item for item in parts if item]
+
+
+def load_attendee_emails() -> list[str]:
+    primary = parse_list_env("MEETING_ATTENDEE_EMAILS")
+    if primary:
+        return primary
+    return parse_list_env("MEETING_ATTENDEES")
+
+
 def load_audio_config() -> AudioConfig:
     return AudioConfig(
         sample_rate=parse_int_env("VOICE_AUDIO_SAMPLE_RATE", 16000),
@@ -343,6 +359,7 @@ def load_config() -> ServiceConfig:
         meeting_id=env("MEETING_ID"),
         meeting_title=env("MEETING_TITLE"),
         meeting_started_at=env("MEETING_STARTED_AT"),
+        meeting_attendee_emails=load_attendee_emails(),
     )
 
 
@@ -849,9 +866,15 @@ async def main() -> None:
 
     pcc = PccClient(config.pcc_base_url)
     try:
-        system_prompt = await build_system_prompt(pcc)
+        system_prompt = await build_system_prompt(
+            pcc,
+            attendee_emails=config.meeting_attendee_emails,
+            project_id=config.meeting_project_id,
+        )
         tool_defs = build_tool_definitions()
-        tool_callbacks = build_tool_callbacks(pcc)
+        tool_callbacks = build_tool_callbacks(
+            pcc, default_attendees=config.meeting_attendee_emails
+        )
         tracker = MeetingSummaryTracker(
             MeetingDefaults(
                 project_id=config.meeting_project_id,
