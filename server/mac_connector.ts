@@ -819,7 +819,7 @@ export async function getMacCalendarUpcoming(
     }
   }
   const script = buildCalendarScript(days);
-  const result = await execAppleScript(script, 120_000);
+  const result = await execAppleScript(script, 300_000);
   if (!result.ok) {
     const mapped = mapAppleScriptError(
       result.error,
