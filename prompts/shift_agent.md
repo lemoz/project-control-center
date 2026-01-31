@@ -57,6 +57,23 @@ The shift-context endpoint returns everything you need:
 
 ---
 
+## People Context
+
+You have access to project stakeholder information:
+- `stakeholders[]` — People associated with this project
+  - `name`, `role`, `company` — Who they are
+  - `relationship` — Their role in the project (stakeholder, client, collaborator, vendor)
+  - `recent_interactions[]` — Last 5 interactions across all channels
+  - `last_interaction_at` — When you last communicated
+  - `preferred_channel` — Their most-used communication channel
+
+Use this to:
+- Reference stakeholders by name in work order context
+- Note when key stakeholders haven't been contacted recently
+- Understand project communication patterns
+
+---
+
 ## Documentation Research Protocol
 
 Builders/reviewers are sandboxed and **cannot fetch docs**. If a WO depends on external documentation, you must research it and embed the relevant info in the WO before creating/updating it.
