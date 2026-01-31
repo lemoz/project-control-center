@@ -8,12 +8,12 @@ context:
   - server/db.ts (people tables from WO-2026-260)
   - server/conversation_sync.ts (conversation_events from WO-2026-262)
   - prompts/shift_agent.md (shift agent prompt to document people fields)
-  - "Meeting agent resolves participants to people records"
+  - Meeting agent resolves participants to people records
 acceptance_criteria:
   - "ShiftContext extended with people section: project stakeholders with names, roles, and last interaction"
   - "GlobalContextResponse extended with people_summary: total contacts, active contacts (interacted in last 7 days), unread/pending items"
   - "Meeting agent context includes participant resolution: map meeting attendee emails to people records"
-  - "Shift agent prompt (prompts/shift_agent.md) updated to document available people fields and how to use them"
+  - Shift agent prompt (prompts/shift_agent.md) updated to document available people fields and how to use them
   - "Project stakeholder context: when building shift context for a project, include associated people with their relationship type"
   - "Recent interactions summary: last 5 interactions per stakeholder included in context"
   - Context assembly is efficient (single query with JOINs, not N+1)
@@ -31,9 +31,9 @@ tags:
   - people
   - shift
 estimate_hours: 3
-status: ready
+status: you_review
 created_at: 2026-01-30
-updated_at: 2026-01-30
+updated_at: 2026-01-31
 depends_on:
   - WO-2026-260
   - WO-2026-262

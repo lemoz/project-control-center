@@ -406,17 +406,27 @@ function mapAppleScriptError(
 }
 
 function execAppleScript(
-  script: string
+  script: string,
+  timeoutMs = 30_000
 ): Promise<{ ok: true; stdout: string } | { ok: false; error: string }> {
+  const tmpFile = path.join(os.tmpdir(), `pcc-as-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.scpt`);
+  fs.writeFileSync(tmpFile, script, "utf-8");
   return new Promise((resolve) => {
     execFile(
       "osascript",
-      ["-e", script],
-      { maxBuffer: 5 * 1024 * 1024, timeout: 30_000 },
+      [tmpFile],
+      { maxBuffer: 5 * 1024 * 1024, timeout: timeoutMs },
       (error, stdout, stderr) => {
+        try { fs.unlinkSync(tmpFile); } catch {}
         if (error) {
-          const trimmed = stderr.trim() || error.message || "AppleScript execution failed.";
-          resolve({ ok: false, error: trimmed });
+          const detail = [
+            stderr.trim(),
+            error.message,
+            (error as NodeJS.ErrnoException).code,
+            error.killed ? "killed" : "",
+            (error as { signal?: string }).signal ?? "",
+          ].filter(Boolean).join(" | ");
+          resolve({ ok: false, error: detail || "AppleScript execution failed." });
           return;
         }
         resolve({ ok: true, stdout: stdout.trim() });
@@ -454,7 +464,7 @@ tell application "Contacts"
       try
         set phone_value to value of ph as text
       end try
-      set phone_json to "{\"label\":\"" & my json_escape(phone_label) & "\",\"value\":\"" & my json_escape(phone_value) & "\"}"
+      set phone_json to "{\\"label\\":\\"" & my json_escape(phone_label) & "\\",\\"value\\":\\"" & my json_escape(phone_value) & "\\"}"
       copy phone_json to end of phone_items
     end repeat
     set email_items to {}
@@ -467,12 +477,12 @@ tell application "Contacts"
       try
         set email_value to value of em as text
       end try
-      set email_json to "{\"label\":\"" & my json_escape(email_label) & "\",\"value\":\"" & my json_escape(email_value) & "\"}"
+      set email_json to "{\\"label\\":\\"" & my json_escape(email_label) & "\\",\\"value\\":\\"" & my json_escape(email_value) & "\\"}"
       copy email_json to end of email_items
     end repeat
     set phones_json to "[" & my join_items(phone_items, ",") & "]"
     set emails_json to "[" & my join_items(email_items, ",") & "]"
-    set contact_json to "{\"name\":\"" & my json_escape(contact_name) & "\",\"phones\":" & phones_json & ",\"emails\":" & emails_json & "}"
+    set contact_json to "{\\"name\\":\\"" & my json_escape(contact_name) & "\\",\\"phones\\":" & phones_json & ",\\"emails\\":" & emails_json & "}"
     copy contact_json to end of contact_items
   end repeat
 end tell
@@ -509,14 +519,14 @@ tell application "Calendar"
       if event_location is "" then
         set location_json to "null"
       else
-        set location_json to "\"" & my json_escape(event_location) & "\""
+        set location_json to "\\"" & my json_escape(event_location) & "\\""
       end if
       if event_notes is "" then
         set notes_json to "null"
       else
-        set notes_json to "\"" & my json_escape(event_notes) & "\""
+        set notes_json to "\\"" & my json_escape(event_notes) & "\\""
       end if
-      set event_json to "{\"title\":\"" & my json_escape(event_title) & "\",\"start\":" & event_start & ",\"end\":" & event_end & ",\"location\":" & location_json & ",\"notes\":" & notes_json & ",\"calendar\":\"" & my json_escape(cal_name) & "\"}"
+      set event_json to "{\\"title\\":\\"" & my json_escape(event_title) & "\\",\\"start\\":" & event_start & ",\\"end\\":" & event_end & ",\\"location\\":" & location_json & ",\\"notes\\":" & notes_json & ",\\"calendar\\":\\"" & my json_escape(cal_name) & "\\"}"
       copy event_json to end of event_items
     end repeat
   end repeat
@@ -764,7 +774,7 @@ export async function getMacRecentMessages(
 
 export async function getMacContacts(): Promise<MacActionResult<MacContact[]>> {
   const script = buildContactsScript();
-  const result = await execAppleScript(script);
+  const result = await execAppleScript(script, 300_000);
   if (!result.ok) {
     const mapped = mapAppleScriptError(
       result.error,
@@ -809,7 +819,7 @@ export async function getMacCalendarUpcoming(
     }
   }
   const script = buildCalendarScript(days);
-  const result = await execAppleScript(script);
+  const result = await execAppleScript(script, 120_000);
   if (!result.ok) {
     const mapped = mapAppleScriptError(
       result.error,

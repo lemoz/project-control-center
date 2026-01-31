@@ -303,6 +303,46 @@ export type ConversationSummary = {
   sync_status: PeopleSyncStatus[];
 };
 
+export type StakeholderInteraction = {
+  channel: ConversationChannel;
+  direction: ConversationDirection;
+  summary: string | null;
+  occurred_at: string;
+};
+
+export type StakeholderContext = {
+  person_id: string;
+  name: string;
+  role: string | null;
+  company: string | null;
+  relationship: PeopleProjectRelationship;
+  recent_interactions: StakeholderInteraction[];
+  last_interaction_at: string | null;
+  preferred_channel: ConversationChannel | null;
+};
+
+export type PeopleSummaryContact = {
+  name: string;
+  last_interaction: string;
+  interaction_count_7d: number;
+};
+
+export type PeopleSummary = {
+  total_contacts: number;
+  active_contacts_7d: number;
+  pending_items: number;
+  top_contacts: PeopleSummaryContact[];
+};
+
+export type ResolvedPersonMatch = {
+  email: string;
+  person_id: string;
+  name: string;
+  role: string | null;
+  company: string | null;
+  relationship: PeopleProjectRelationship | null;
+};
+
 export type PeopleSyncStatusRow = {
   person_id: string;
   channel: ConversationChannel;
@@ -3231,8 +3271,8 @@ export function listPeople(filters: PeopleListFilters = {}): Person[] {
   const q = typeof filters.q === "string" ? filters.q.trim() : "";
   if (q) {
     const needle = `%${q}%`;
-    clauses.push("(name LIKE ? OR nickname LIKE ?)");
-    params.push(needle, needle);
+    clauses.push("(name LIKE ? OR nickname LIKE ? OR company LIKE ? OR role LIKE ?)");
+    params.push(needle, needle, needle, needle);
   }
 
   const projectId = typeof filters.projectId === "string" ? filters.projectId.trim() : "";
@@ -3383,6 +3423,56 @@ export function resolvePersonByIdentifier(params: {
   return getPersonDetails(row.person_id);
 }
 
+export function resolvePeopleByEmails(
+  emails: string[],
+  params: { projectId?: string } = {}
+): ResolvedPersonMatch[] {
+  const normalized = emails
+    .map((email) => normalizeEmail(email))
+    .filter((value): value is string => Boolean(value));
+  if (!normalized.length) return [];
+
+  const unique = Array.from(new Set(normalized));
+  const placeholders = unique.map(() => "?").join(", ");
+  const database = getDb();
+  const baseQuery = `
+    SELECT
+      people_identifiers.normalized_value AS email,
+      people.id AS person_id,
+      people.name AS name,
+      people.role AS role,
+      people.company AS company,
+      ${params.projectId ? "people_projects.relationship" : "NULL"} AS relationship
+    FROM people_identifiers
+    JOIN people ON people.id = people_identifiers.person_id
+    ${params.projectId ? "LEFT JOIN people_projects ON people_projects.person_id = people.id AND people_projects.project_id = ?" : ""}
+    WHERE people_identifiers.type = 'email'
+      AND people_identifiers.normalized_value IN (${placeholders})
+  `;
+  const rows = database
+    .prepare(baseQuery)
+    .all(
+      ...(params.projectId ? [params.projectId] : []),
+      ...unique
+    ) as Array<{
+    email: string;
+    person_id: string;
+    name: string;
+    role: string | null;
+    company: string | null;
+    relationship: PeopleProjectRelationship | null;
+  }>;
+
+  return rows.map((row) => ({
+    email: row.email,
+    person_id: row.person_id,
+    name: row.name,
+    role: row.role ?? null,
+    company: row.company ?? null,
+    relationship: row.relationship ?? null,
+  }));
+}
+
 function normalizeConversationText(value?: string | null): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -3524,6 +3614,253 @@ export function listConversationEvents(query: ConversationEventQuery): Conversat
     .all(...params, limit, offset) as ConversationEventRow[];
 
   return rows.map((row) => toConversationEvent(row));
+}
+
+export function listProjectStakeholders(
+  projectId: string,
+  options: { limit?: number; interactionLimit?: number } = {}
+): StakeholderContext[] {
+  if (!projectId.trim()) return [];
+  const limit =
+    typeof options.limit === "number" && Number.isFinite(options.limit)
+      ? Math.max(1, Math.min(50, Math.trunc(options.limit)))
+      : 10;
+  const interactionLimit =
+    typeof options.interactionLimit === "number" && Number.isFinite(options.interactionLimit)
+      ? Math.max(1, Math.min(20, Math.trunc(options.interactionLimit)))
+      : 5;
+  const database = getDb();
+  const rows = database
+    .prepare(
+      `WITH stakeholder_base AS (
+         SELECT
+           people_projects.person_id AS person_id,
+           people_projects.relationship AS relationship,
+           people.name AS name,
+           people.role AS role,
+           people.company AS company
+         FROM people_projects
+         JOIN people ON people.id = people_projects.person_id
+         WHERE people_projects.project_id = ?
+       ),
+       stakeholders AS (
+         SELECT
+           stakeholder_base.person_id AS person_id,
+           stakeholder_base.relationship AS relationship,
+           stakeholder_base.name AS name,
+           stakeholder_base.role AS role,
+           stakeholder_base.company AS company,
+           MAX(conversation_events.occurred_at) AS last_interaction_at
+         FROM stakeholder_base
+         LEFT JOIN conversation_events
+           ON conversation_events.person_id = stakeholder_base.person_id
+         GROUP BY stakeholder_base.person_id
+         ORDER BY
+           last_interaction_at IS NULL,
+           last_interaction_at DESC,
+           stakeholder_base.name ASC
+         LIMIT ?
+       ),
+       ranked_interactions AS (
+         SELECT
+           conversation_events.person_id AS person_id,
+           conversation_events.channel AS channel,
+           conversation_events.direction AS direction,
+           conversation_events.summary AS summary,
+           conversation_events.occurred_at AS occurred_at,
+           ROW_NUMBER() OVER (
+             PARTITION BY conversation_events.person_id
+             ORDER BY conversation_events.occurred_at DESC
+           ) AS interaction_rank
+         FROM conversation_events
+         JOIN stakeholders ON stakeholders.person_id = conversation_events.person_id
+       ),
+       preferred_channel_counts AS (
+         SELECT
+           conversation_events.person_id AS person_id,
+           conversation_events.channel AS channel,
+           COUNT(*) AS channel_count
+         FROM conversation_events
+         JOIN stakeholders ON stakeholders.person_id = conversation_events.person_id
+         GROUP BY conversation_events.person_id, conversation_events.channel
+       ),
+       preferred_channels AS (
+         SELECT person_id, channel
+         FROM (
+           SELECT
+             person_id,
+             channel,
+             ROW_NUMBER() OVER (
+               PARTITION BY person_id
+               ORDER BY channel_count DESC, channel ASC
+             ) AS channel_rank
+           FROM preferred_channel_counts
+         )
+         WHERE channel_rank = 1
+       )
+       SELECT
+         stakeholders.person_id AS person_id,
+         stakeholders.name AS name,
+         stakeholders.role AS role,
+         stakeholders.company AS company,
+         stakeholders.relationship AS relationship,
+         stakeholders.last_interaction_at AS last_interaction_at,
+         preferred_channels.channel AS preferred_channel,
+         ranked_interactions.channel AS interaction_channel,
+         ranked_interactions.direction AS interaction_direction,
+         ranked_interactions.summary AS interaction_summary,
+         ranked_interactions.occurred_at AS interaction_occurred_at
+       FROM stakeholders
+       LEFT JOIN preferred_channels ON preferred_channels.person_id = stakeholders.person_id
+       LEFT JOIN ranked_interactions
+         ON ranked_interactions.person_id = stakeholders.person_id
+         AND ranked_interactions.interaction_rank <= ?
+       ORDER BY
+         stakeholders.last_interaction_at IS NULL,
+         stakeholders.last_interaction_at DESC,
+         stakeholders.name ASC,
+         ranked_interactions.occurred_at DESC`
+    )
+    .all(projectId, limit, interactionLimit) as Array<{
+    person_id: string;
+    name: string;
+    role: string | null;
+    company: string | null;
+    relationship: PeopleProjectRelationship;
+    last_interaction_at: string | null;
+    preferred_channel: ConversationChannel | null;
+    interaction_channel: ConversationChannel | null;
+    interaction_direction: ConversationDirection | null;
+    interaction_summary: string | null;
+    interaction_occurred_at: string | null;
+  }>;
+
+  const byPerson = new Map<string, StakeholderContext>();
+  for (const row of rows) {
+    let entry = byPerson.get(row.person_id);
+    if (!entry) {
+      entry = {
+        person_id: row.person_id,
+        name: row.name,
+        role: row.role ?? null,
+        company: row.company ?? null,
+        relationship: row.relationship,
+        recent_interactions: [],
+        last_interaction_at: row.last_interaction_at ?? null,
+        preferred_channel: row.preferred_channel ?? null,
+      };
+      byPerson.set(row.person_id, entry);
+    }
+    if (
+      row.interaction_channel &&
+      row.interaction_direction &&
+      row.interaction_occurred_at
+    ) {
+      entry.recent_interactions.push({
+        channel: row.interaction_channel,
+        direction: row.interaction_direction,
+        summary: row.interaction_summary ?? null,
+        occurred_at: row.interaction_occurred_at,
+      });
+    }
+  }
+
+  return Array.from(byPerson.values());
+}
+
+export function getPeopleSummary(
+  params: { activeWindowDays?: number; topLimit?: number } = {}
+): PeopleSummary {
+  const database = getDb();
+  const windowDays =
+    typeof params.activeWindowDays === "number" && Number.isFinite(params.activeWindowDays)
+      ? Math.max(1, Math.trunc(params.activeWindowDays))
+      : 7;
+  const topLimit =
+    typeof params.topLimit === "number" && Number.isFinite(params.topLimit)
+      ? Math.max(1, Math.min(20, Math.trunc(params.topLimit)))
+      : 5;
+  const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const totalRow = database
+    .prepare("SELECT COUNT(*) as count FROM people")
+    .get() as { count?: number } | undefined;
+  const totalContacts = Number.isFinite(totalRow?.count ?? null)
+    ? Number(totalRow?.count ?? 0)
+    : 0;
+
+  const activeRow = database
+    .prepare(
+      `SELECT COUNT(DISTINCT person_id) as count
+       FROM conversation_events
+       WHERE occurred_at >= ?`
+    )
+    .get(since) as { count?: number } | undefined;
+  const activeContacts = Number.isFinite(activeRow?.count ?? null)
+    ? Number(activeRow?.count ?? 0)
+    : 0;
+
+  const pendingRow = database
+    .prepare(
+      `WITH ranked AS (
+         SELECT
+           person_id,
+           direction,
+           ROW_NUMBER() OVER (PARTITION BY person_id ORDER BY occurred_at DESC) AS rn
+         FROM conversation_events
+       )
+       SELECT COUNT(*) as count
+       FROM ranked
+       WHERE rn = 1 AND direction = 'inbound'`
+    )
+    .get() as { count?: number } | undefined;
+  const pendingItems = Number.isFinite(pendingRow?.count ?? null)
+    ? Number(pendingRow?.count ?? 0)
+    : 0;
+
+  const topRows = database
+    .prepare(
+      `WITH recent AS (
+         SELECT person_id, occurred_at
+         FROM conversation_events
+         WHERE occurred_at >= ?
+       ),
+       counts AS (
+         SELECT
+           person_id,
+           COUNT(*) AS interaction_count_7d,
+           MAX(occurred_at) AS last_interaction
+         FROM recent
+         GROUP BY person_id
+       )
+       SELECT
+         people.name AS name,
+         counts.last_interaction AS last_interaction,
+         counts.interaction_count_7d AS interaction_count_7d
+       FROM counts
+       JOIN people ON people.id = counts.person_id
+       ORDER BY
+         counts.interaction_count_7d DESC,
+         counts.last_interaction DESC,
+         people.name ASC
+       LIMIT ?`
+    )
+    .all(since, topLimit) as Array<{
+    name: string;
+    last_interaction: string;
+    interaction_count_7d: number;
+  }>;
+
+  return {
+    total_contacts: totalContacts,
+    active_contacts_7d: activeContacts,
+    pending_items: pendingItems,
+    top_contacts: topRows.map((row) => ({
+      name: row.name,
+      last_interaction: row.last_interaction,
+      interaction_count_7d: row.interaction_count_7d ?? 0,
+    })),
+  };
 }
 
 export function listPeopleSyncStatus(personId: string): PeopleSyncStatus[] {
