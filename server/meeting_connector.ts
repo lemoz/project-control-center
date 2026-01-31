@@ -7,6 +7,7 @@ export type MeetingState = {
   url: string | null;
   bot_id: string | null;
   bot_name: string | null;
+  meeting_id: string | null;
   started_at: string | null;
   ended_at: string | null;
   last_error: string | null;
@@ -17,7 +18,25 @@ export type MeetingActionResult =
   | { ok: true; meeting: MeetingState }
   | { ok: false; status: number; error: string };
 
+export type OutputMediaMode = "camera" | "screen_share";
+
+export type MeetingOutputMediaState = {
+  enabled: boolean;
+  mode: OutputMediaMode;
+  project_id: string | null;
+  meeting_id: string | null;
+  output_url: string | null;
+  output_media_id: string | null;
+  last_error: string | null;
+  updated_at: string;
+};
+
+export type OutputMediaActionResult =
+  | { ok: true; output_media: MeetingOutputMediaState }
+  | { ok: false; status: number; error: string };
+
 const MEETING_STATUS_KEY = "meeting_status_v1";
+const MEETING_OUTPUT_MEDIA_KEY = "meeting_output_media_v1";
 const DEFAULT_BOT_NAME = "PCC Agent";
 const DEFAULT_AUDIO_FORMAT = "pcm_s16le";
 
@@ -33,6 +52,16 @@ type RecallConfig = {
   leaveBodyTemplate: string | null;
   statusUrlTemplate: string | null;
   statusMethod: string;
+};
+
+type OutputMediaConfig = {
+  startUrl: string;
+  startMethod: string;
+  startBodyTemplate: string;
+  stopUrlTemplate: string | null;
+  stopMethod: string;
+  stopBodyTemplate: string | null;
+  outputUrl: string | null;
 };
 
 type AudioConfig = {
@@ -91,6 +120,16 @@ function normalizeStatus(value: unknown): MeetingStatus {
   return "ended";
 }
 
+function normalizeOutputMediaMode(value: unknown): OutputMediaMode {
+  if (typeof value !== "string") return "screen_share";
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "camera") return "camera";
+  if (normalized === "screen_share" || normalized === "screen-share" || normalized === "screenshare") {
+    return "screen_share";
+  }
+  return "screen_share";
+}
+
 function normalizeString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -104,6 +143,7 @@ function normalizeMeetingState(value: unknown): MeetingState {
       url: null,
       bot_id: null,
       bot_name: null,
+      meeting_id: null,
       started_at: null,
       ended_at: null,
       last_error: null,
@@ -116,8 +156,35 @@ function normalizeMeetingState(value: unknown): MeetingState {
     url: normalizeString(record.url),
     bot_id: normalizeString(record.bot_id),
     bot_name: normalizeString(record.bot_name),
+    meeting_id: normalizeString(record.meeting_id ?? record.meetingId),
     started_at: normalizeString(record.started_at),
     ended_at: normalizeString(record.ended_at),
+    last_error: normalizeString(record.last_error),
+    updated_at: normalizeString(record.updated_at) ?? nowIso(),
+  };
+}
+
+function normalizeOutputMediaState(value: unknown): MeetingOutputMediaState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      enabled: false,
+      mode: "screen_share",
+      project_id: null,
+      meeting_id: null,
+      output_url: null,
+      output_media_id: null,
+      last_error: null,
+      updated_at: nowIso(),
+    };
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    enabled: record.enabled === true,
+    mode: normalizeOutputMediaMode(record.mode),
+    project_id: normalizeString(record.project_id),
+    meeting_id: normalizeString(record.meeting_id),
+    output_url: normalizeString(record.output_url),
+    output_media_id: normalizeString(record.output_media_id),
     last_error: normalizeString(record.last_error),
     updated_at: normalizeString(record.updated_at) ?? nowIso(),
   };
@@ -140,6 +207,14 @@ function saveMeetingState(state: MeetingState): MeetingState {
   return normalized;
 }
 
+function saveMeetingOutputMediaState(
+  state: MeetingOutputMediaState
+): MeetingOutputMediaState {
+  const normalized = normalizeOutputMediaState(state);
+  setSetting(MEETING_OUTPUT_MEDIA_KEY, JSON.stringify(normalized));
+  return normalized;
+}
+
 function updateMeetingState(patch: Partial<MeetingState>): MeetingState {
   const current = getMeetingState();
   const updated: MeetingState = {
@@ -149,12 +224,44 @@ function updateMeetingState(patch: Partial<MeetingState>): MeetingState {
     url: patch.url === undefined ? current.url : patch.url,
     bot_id: patch.bot_id === undefined ? current.bot_id : patch.bot_id,
     bot_name: patch.bot_name === undefined ? current.bot_name : patch.bot_name,
+    meeting_id: patch.meeting_id === undefined ? current.meeting_id : patch.meeting_id,
     started_at: patch.started_at === undefined ? current.started_at : patch.started_at,
     ended_at: patch.ended_at === undefined ? current.ended_at : patch.ended_at,
     last_error: patch.last_error === undefined ? current.last_error : patch.last_error,
     updated_at: nowIso(),
   };
   return saveMeetingState(updated);
+}
+
+function updateMeetingOutputMediaState(
+  patch: Partial<MeetingOutputMediaState>
+): MeetingOutputMediaState {
+  const current = getMeetingOutputMediaState();
+  const updated: MeetingOutputMediaState = {
+    ...current,
+    ...patch,
+    enabled: patch.enabled === undefined ? current.enabled : patch.enabled,
+    mode: patch.mode ? normalizeOutputMediaMode(patch.mode) : current.mode,
+    project_id: patch.project_id === undefined ? current.project_id : patch.project_id,
+    meeting_id: patch.meeting_id === undefined ? current.meeting_id : patch.meeting_id,
+    output_url: patch.output_url === undefined ? current.output_url : patch.output_url,
+    output_media_id:
+      patch.output_media_id === undefined ? current.output_media_id : patch.output_media_id,
+    last_error: patch.last_error === undefined ? current.last_error : patch.last_error,
+    updated_at: nowIso(),
+  };
+  return saveMeetingOutputMediaState(updated);
+}
+
+export function getMeetingOutputMediaState(): MeetingOutputMediaState {
+  const row = getSetting(MEETING_OUTPUT_MEDIA_KEY);
+  if (!row) return normalizeOutputMediaState(null);
+  try {
+    const parsed: unknown = JSON.parse(row.value);
+    return normalizeOutputMediaState(parsed);
+  } catch {
+    return normalizeOutputMediaState(null);
+  }
 }
 
 function isValidGoogleMeetUrl(value: string): boolean {
@@ -237,6 +344,31 @@ function resolveRecallConfig(): { ok: true; config: RecallConfig } | { ok: false
   };
 }
 
+function resolveOutputMediaConfig():
+  | { ok: true; config: OutputMediaConfig }
+  | { ok: false; error: string } {
+  const startUrl = env("CONTROL_CENTER_RECALL_OUTPUT_MEDIA_START_URL");
+  if (!startUrl) {
+    return { ok: false, error: "Recall output media start URL not configured." };
+  }
+  const startBodyTemplate = env("CONTROL_CENTER_RECALL_OUTPUT_MEDIA_START_BODY");
+  if (!startBodyTemplate) {
+    return { ok: false, error: "Recall output media start body template not configured." };
+  }
+  return {
+    ok: true,
+    config: {
+      startUrl,
+      startMethod: (env("CONTROL_CENTER_RECALL_OUTPUT_MEDIA_START_METHOD") ?? "POST").toUpperCase(),
+      startBodyTemplate,
+      stopUrlTemplate: env("CONTROL_CENTER_RECALL_OUTPUT_MEDIA_STOP_URL"),
+      stopMethod: (env("CONTROL_CENTER_RECALL_OUTPUT_MEDIA_STOP_METHOD") ?? "POST").toUpperCase(),
+      stopBodyTemplate: env("CONTROL_CENTER_RECALL_OUTPUT_MEDIA_STOP_BODY"),
+      outputUrl: env("CONTROL_CENTER_RECALL_OUTPUT_MEDIA_URL"),
+    },
+  };
+}
+
 function buildRecallHeaders(config: RecallConfig): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -301,6 +433,69 @@ function parseBotId(payload: unknown): string | null {
       normalizeString(nested.id) ??
       normalizeString(nested.bot_id) ??
       normalizeString(nested.botId)
+    );
+  }
+  return null;
+}
+
+function parseMeetingId(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  const direct =
+    normalizeString(record.meeting_id) ?? normalizeString(record.meetingId);
+  if (direct) return direct;
+
+  const extractNested = (value: unknown): string | null => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const nested = value as Record<string, unknown>;
+    return (
+      normalizeString(nested.meeting_id) ??
+      normalizeString(nested.meetingId) ??
+      normalizeString(nested.id)
+    );
+  };
+
+  const meeting = record.meeting;
+  const meetingId = extractNested(meeting);
+  if (meetingId) return meetingId;
+
+  const data = record.data;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const dataRecord = data as Record<string, unknown>;
+    const dataDirect =
+      normalizeString(dataRecord.meeting_id) ?? normalizeString(dataRecord.meetingId);
+    if (dataDirect) return dataDirect;
+    const dataMeetingId = extractNested(dataRecord.meeting);
+    if (dataMeetingId) return dataMeetingId;
+  }
+
+  return null;
+}
+
+function parseOutputMediaId(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  const direct =
+    normalizeString(record.output_media_id) ??
+    normalizeString(record.outputMediaId) ??
+    normalizeString(record.id);
+  if (direct) return direct;
+  const data = record.data;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const nested = data as Record<string, unknown>;
+    return (
+      normalizeString(nested.output_media_id) ??
+      normalizeString(nested.outputMediaId) ??
+      normalizeString(nested.id)
+    );
+  }
+  const outputMedia = record.output_media ?? record.outputMedia;
+  if (outputMedia && typeof outputMedia === "object" && !Array.isArray(outputMedia)) {
+    const nested = outputMedia as Record<string, unknown>;
+    return (
+      normalizeString(nested.id) ??
+      normalizeString(nested.output_media_id) ??
+      normalizeString(nested.outputMediaId)
     );
   }
   return null;
@@ -392,6 +587,10 @@ export async function joinMeeting(payload: unknown): Promise<MeetingActionResult
     normalizeString(record.bot_name) ??
     normalizeString(record.botName) ??
     null;
+  const meetingId =
+    normalizeString(record.meeting_id) ??
+    normalizeString(record.meetingId) ??
+    null;
   if (!url) return { ok: false, status: 400, error: "`url` is required." };
   if (!isValidGoogleMeetUrl(url)) {
     return { ok: false, status: 400, error: "`url` must be a Google Meet URL." };
@@ -438,6 +637,7 @@ export async function joinMeeting(payload: unknown): Promise<MeetingActionResult
     url,
     bot_name: resolvedBotName,
     bot_id: null,
+    meeting_id: meetingId,
     started_at: nowIso(),
     ended_at: null,
     last_error: null,
@@ -454,6 +654,7 @@ export async function joinMeeting(payload: unknown): Promise<MeetingActionResult
     updateMeetingState({
       status: "ended",
       ended_at: nowIso(),
+      meeting_id: meetingId,
       last_error: recallResponse.error,
     });
     return {
@@ -466,10 +667,12 @@ export async function joinMeeting(payload: unknown): Promise<MeetingActionResult
   const botId = parseBotId(recallResponse.payload);
   const recallStatus = parseRecallStatus(recallResponse.payload) ?? "active";
   const endedAt = recallStatus === "ended" ? nowIso() : null;
+  const resolvedMeetingId = parseMeetingId(recallResponse.payload) ?? meetingId;
   const updated = updateMeetingState({
     status: recallStatus,
     bot_id: botId,
     ended_at: endedAt,
+    meeting_id: resolvedMeetingId,
     last_error: null,
   });
   return { ok: true, meeting: updated };
@@ -531,6 +734,11 @@ export async function leaveMeeting(): Promise<MeetingActionResult> {
     ended_at: nowIso(),
     last_error: null,
   });
+  updateMeetingOutputMediaState({
+    enabled: false,
+    output_media_id: null,
+    last_error: null,
+  });
   return { ok: true, meeting: updated };
 }
 
@@ -557,10 +765,190 @@ export async function refreshMeetingStatus(): Promise<MeetingState> {
     return updateMeetingState({ last_error: recallResponse.error });
   }
   const recallStatus = parseRecallStatus(recallResponse.payload);
-  if (!recallStatus || recallStatus === current.status) return current;
-  return updateMeetingState({
-    status: recallStatus,
-    ended_at: recallStatus === "ended" ? nowIso() : current.ended_at,
+  const recallMeetingId = parseMeetingId(recallResponse.payload);
+  if (!recallStatus && !recallMeetingId) return current;
+
+  const patch: Partial<MeetingState> = {};
+  if (recallStatus && recallStatus !== current.status) {
+    patch.status = recallStatus;
+    patch.ended_at = recallStatus === "ended" ? nowIso() : current.ended_at;
+    patch.last_error = null;
+  }
+  if (recallMeetingId && recallMeetingId !== current.meeting_id) {
+    patch.meeting_id = recallMeetingId;
+  }
+  if (!Object.keys(patch).length) return current;
+
+  const updated = updateMeetingState(patch);
+  if (recallMeetingId) {
+    const outputMedia = getMeetingOutputMediaState();
+    if (outputMedia.meeting_id !== recallMeetingId) {
+      updateMeetingOutputMediaState({ meeting_id: recallMeetingId });
+    }
+  }
+  return updated;
+}
+
+function readOutputMediaInput(payload: unknown): {
+  mode: OutputMediaMode;
+  projectId: string | null;
+  meetingId: string | null;
+  outputUrl: string | null;
+} {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { mode: "screen_share", projectId: null, meetingId: null, outputUrl: null };
+  }
+  const record = payload as Record<string, unknown>;
+  const mode = normalizeOutputMediaMode(record.mode ?? record.type);
+  const projectId =
+    normalizeString(record.project_id) ?? normalizeString(record.projectId);
+  const meetingId =
+    normalizeString(record.meeting_id) ?? normalizeString(record.meetingId);
+  const outputUrl =
+    normalizeString(record.output_url) ??
+    normalizeString(record.outputUrl) ??
+    normalizeString(record.output_media_url) ??
+    normalizeString(record.outputMediaUrl) ??
+    normalizeString(record.url);
+  return { mode, projectId, meetingId, outputUrl };
+}
+
+export async function startMeetingOutputMedia(
+  payload: unknown
+): Promise<OutputMediaActionResult> {
+  const input = readOutputMediaInput(payload);
+  const meeting = getMeetingState();
+  if (!meeting.bot_id) {
+    return { ok: false, status: 409, error: "Meeting bot is not active." };
+  }
+  const recallConfigResult = resolveRecallConfig();
+  if (!recallConfigResult.ok) {
+    return { ok: false, status: 500, error: recallConfigResult.error };
+  }
+  const outputConfigResult = resolveOutputMediaConfig();
+  if (!outputConfigResult.ok) {
+    return { ok: false, status: 500, error: outputConfigResult.error };
+  }
+  const outputUrl = input.outputUrl ?? outputConfigResult.config.outputUrl;
+  const resolvedMeetingId = input.meetingId ?? meeting.meeting_id;
+  if (!outputUrl) {
+    return { ok: false, status: 500, error: "Output media URL not configured." };
+  }
+
+  const templateValues = {
+    meeting_url: meeting.url ?? "",
+    bot_id: meeting.bot_id ?? "",
+    bot_name: meeting.bot_name ?? "",
+    output_media_url: outputUrl,
+    output_media_mode: input.mode,
+    mode: input.mode,
+    output_media_id: getMeetingOutputMediaState().output_media_id ?? "",
+  };
+  const bodyResult = parseTemplateJson(
+    outputConfigResult.config.startBodyTemplate,
+    templateValues
+  );
+  if (!bodyResult.ok) {
+    return { ok: false, status: 500, error: bodyResult.error };
+  }
+
+  const recallResponse = await requestRecall({
+    url: outputConfigResult.config.startUrl,
+    method: outputConfigResult.config.startMethod,
+    headers: buildRecallHeaders(recallConfigResult.config),
+    body: bodyResult.body,
+  });
+
+  if (!recallResponse.ok) {
+    updateMeetingOutputMediaState({
+      enabled: false,
+      mode: input.mode,
+      project_id: input.projectId,
+      meeting_id: resolvedMeetingId,
+      output_url: outputUrl,
+      output_media_id: null,
+      last_error: recallResponse.error,
+    });
+    return { ok: false, status: recallResponse.status, error: recallResponse.error };
+  }
+
+  const outputMediaId = parseOutputMediaId(recallResponse.payload);
+  const updated = updateMeetingOutputMediaState({
+    enabled: true,
+    mode: input.mode,
+    project_id: input.projectId,
+    meeting_id: resolvedMeetingId,
+    output_url: outputUrl,
+    output_media_id: outputMediaId,
     last_error: null,
   });
+  return { ok: true, output_media: updated };
+}
+
+export async function stopMeetingOutputMedia(
+  payload?: unknown
+): Promise<OutputMediaActionResult> {
+  const input = readOutputMediaInput(payload ?? null);
+  const current = getMeetingOutputMediaState();
+  const recallConfigResult = resolveRecallConfig();
+  const outputConfigResult = resolveOutputMediaConfig();
+
+  const basePatch: Partial<MeetingOutputMediaState> = {
+    enabled: false,
+    mode: input.mode ?? current.mode,
+    project_id: input.projectId ?? current.project_id,
+    meeting_id: input.meetingId ?? current.meeting_id,
+    output_url: input.outputUrl ?? current.output_url,
+    output_media_id: null,
+    last_error: null,
+  };
+
+  if (!recallConfigResult.ok || !outputConfigResult.ok) {
+    const updated = updateMeetingOutputMediaState(basePatch);
+    return { ok: true, output_media: updated };
+  }
+
+  const stopUrlTemplate = outputConfigResult.config.stopUrlTemplate;
+  if (!stopUrlTemplate) {
+    const updated = updateMeetingOutputMediaState(basePatch);
+    return { ok: true, output_media: updated };
+  }
+
+  const meeting = getMeetingState();
+  const templateValues = {
+    meeting_url: meeting.url ?? "",
+    bot_id: meeting.bot_id ?? "",
+    bot_name: meeting.bot_name ?? "",
+    output_media_id: current.output_media_id ?? "",
+    output_media_url: current.output_url ?? "",
+  };
+  let body: unknown | undefined;
+  if (outputConfigResult.config.stopBodyTemplate) {
+    const bodyResult = parseTemplateJson(
+      outputConfigResult.config.stopBodyTemplate,
+      templateValues
+    );
+    if (!bodyResult.ok) {
+      return { ok: false, status: 500, error: bodyResult.error };
+    }
+    body = bodyResult.body;
+  }
+
+  const url = renderTemplate(stopUrlTemplate, templateValues);
+  const recallResponse = await requestRecall({
+    url,
+    method: outputConfigResult.config.stopMethod,
+    headers: buildRecallHeaders(recallConfigResult.config),
+    body,
+  });
+  if (!recallResponse.ok) {
+    updateMeetingOutputMediaState({
+      ...basePatch,
+      last_error: recallResponse.error,
+    });
+    return { ok: false, status: recallResponse.status, error: recallResponse.error };
+  }
+
+  const updated = updateMeetingOutputMediaState(basePatch);
+  return { ok: true, output_media: updated };
 }

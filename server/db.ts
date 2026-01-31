@@ -4858,6 +4858,55 @@ export function listProjectCommunications(
   return rows;
 }
 
+function parseMeetingPayload(payload: string | null): Record<string, unknown> | null {
+  if (!payload) return null;
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+export function listMeetingCommunicationsById(params: {
+  meetingId: string;
+  projectId?: string | null;
+  limit?: number;
+  order?: "asc" | "desc";
+}): ProjectCommunicationRow[] {
+  const database = getDb();
+  const clauses = ["payload IS NOT NULL", "intent IN ('message', 'status')"];
+  const values: Array<string | number> = [];
+  const meetingId = params.meetingId;
+  const meetingIdPattern = `%\"meeting_id\":\"${meetingId}\"%`;
+  const meetingIdPatternSpaced = `%\"meeting_id\": \"${meetingId}\"%`;
+  clauses.push("(payload LIKE ? OR payload LIKE ?)");
+  values.push(meetingIdPattern, meetingIdPatternSpaced);
+  if (params.projectId) {
+    clauses.push("project_id = ?");
+    values.push(params.projectId);
+  }
+  const whereClause = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const order = params.order === "asc" ? "ASC" : "DESC";
+  const limit =
+    typeof params.limit === "number" && Number.isFinite(params.limit)
+      ? Math.max(1, Math.min(200, Math.trunc(params.limit)))
+      : 100;
+  const rows = database
+    .prepare(
+      `SELECT * FROM escalations ${whereClause} ORDER BY created_at ${order} LIMIT ?`
+    )
+    .all(...values, limit) as ProjectCommunicationRow[];
+
+  return rows.filter((row) => {
+    const payload = parseMeetingPayload(row.payload);
+    return payload?.meeting_id === params.meetingId;
+  });
+}
+
 export function updateProjectCommunication(
   id: string,
   patch: Partial<
