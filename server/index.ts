@@ -91,6 +91,7 @@ import {
   normalizePhone,
   PEOPLE_IDENTIFIER_TYPES,
   PEOPLE_PROJECT_RELATIONSHIPS,
+  resolvePeopleByEmails,
   resolvePersonByIdentifier,
   setProjectStar,
   updateProjectAutoShift,
@@ -2008,6 +2009,43 @@ app.get("/people/resolve", (req, res) => {
   });
   if (!person) return res.status(404).json({ error: "person not found" });
   return res.json({ person });
+});
+
+app.post("/people/resolve", (req, res) => {
+  const rawEmails = req.body?.emails ?? req.body?.attendees ?? req.body?.attendee_emails;
+  if (!Array.isArray(rawEmails)) {
+    return res.status(400).json({ error: "`emails` must be an array of strings" });
+  }
+  const emails = rawEmails
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean);
+  if (!emails.length) {
+    return res.status(400).json({ error: "`emails` must include at least one email" });
+  }
+  const projectId =
+    typeof req.body?.project_id === "string" ? req.body.project_id.trim() : "";
+  const matches = resolvePeopleByEmails(
+    emails,
+    projectId ? { projectId } : {}
+  );
+  const matchesByEmail = new Map(matches.map((match) => [match.email, match]));
+  const participants = emails.map((email) => {
+    const normalized = normalizeEmail(email);
+    if (!normalized) return { email, person: null };
+    const match = matchesByEmail.get(normalized);
+    if (!match) return { email: normalized, person: null };
+    return {
+      email: normalized,
+      person: {
+        id: match.person_id,
+        name: match.name,
+        role: match.role ?? null,
+        company: match.company ?? null,
+        relationship: match.relationship ?? null,
+      },
+    };
+  });
+  return res.json({ participants });
 });
 
 app.get("/people", (req, res) => {

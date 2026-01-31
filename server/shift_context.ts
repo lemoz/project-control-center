@@ -5,12 +5,14 @@ import {
   findProjectById,
   getDb,
   listProjectCommunications,
+  listProjectStakeholders,
   listTracks,
   listRunsByProject,
   type EscalationStatus,
   type ProjectCommunicationIntent,
   type ProjectCommunicationScope,
   type RunRow,
+  type StakeholderContext,
   type Track,
 } from "./db.js";
 import { getGlobalBudget, getProjectBudget, type BudgetStatus } from "./budgeting.js";
@@ -123,6 +125,7 @@ export type ShiftContext = {
     recent_done: WorkOrderSummary[];
     blocked: WorkOrderSummary[];
   };
+  stakeholders: StakeholderContext[];
   tracks: TrackContext;
   recent_runs: Array<{
     id: string;
@@ -186,6 +189,8 @@ type ShiftContextOptions = {
 
 const DEFAULT_RUN_HISTORY_LIMIT = 10;
 const DEFAULT_ACTIVE_RUN_SCAN_LIMIT = 100;
+const DEFAULT_STAKEHOLDER_LIMIT = 10;
+const DEFAULT_STAKEHOLDER_INTERACTION_LIMIT = 5;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const TERMINAL_RUN_STATUSES = new Set<RunRow["status"]>([
   "merged",
@@ -217,6 +222,10 @@ export function buildShiftContext(
     dependencyLookups
   );
   const trackContext = assembleTrackContext(tracks, workOrders);
+  const stakeholders = listProjectStakeholders(project.id, {
+    limit: DEFAULT_STAKEHOLDER_LIMIT,
+    interactionLimit: DEFAULT_STAKEHOLDER_INTERACTION_LIMIT,
+  });
 
   const now = new Date();
   const runHistoryLimit = options.runHistoryLimit ?? DEFAULT_RUN_HISTORY_LIMIT;
@@ -294,6 +303,7 @@ export function buildShiftContext(
       success_metrics: normalizeSuccessMetrics(successMetrics),
     },
     work_orders: workOrderState,
+    stakeholders,
     tracks: trackContext,
     recent_runs: recentRuns,
     constitution,

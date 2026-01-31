@@ -1,6 +1,7 @@
 import {
   getActiveShift,
   listEscalations,
+  getPeopleSummary,
   listProjectCommunications,
   type EscalationRow,
   type EscalationStatus,
@@ -8,6 +9,7 @@ import {
   type ProjectCommunicationRow,
   type ProjectCommunicationScope,
   type ProjectRow,
+  type PeopleSummary,
   type RunRow,
   type ProjectLifecycleStatus,
 } from "./db.js";
@@ -131,6 +133,7 @@ export type GlobalContextResponse = {
   communications_queue: CommunicationQueueGroup[];
   escalation_queue: EscalationQueueItem[];
   global_session: GlobalAgentSessionSummary | null;
+  people_summary: PeopleSummary;
   resources: {
     budget_used_today: number;
   };
@@ -173,12 +176,22 @@ const STALLED_RUN_DAYS = 3;
 const FAILURE_STREAK_THRESHOLD = 3;
 const RECENT_RUN_WINDOW = 10;
 const LONG_RUNNING_SHIFT_HOURS = 2;
+const PEOPLE_SUMMARY_CACHE_MS = 5 * 60 * 1000;
 const LIFECYCLE_PRIORITY_WEIGHT: Record<ProjectLifecycleStatus, number> = {
   active: 0,
   stable: 1,
   maintenance: 2,
   archived: 4,
 };
+
+const EMPTY_PEOPLE_SUMMARY: PeopleSummary = {
+  total_contacts: 0,
+  active_contacts_7d: 0,
+  pending_items: 0,
+  top_contacts: [],
+};
+
+let cachedPeopleSummary: { value: PeopleSummary; expiresAt: number } | null = null;
 
 function parseEscalationRecord(raw: string | null): EscalationRecord | null {
   if (!raw) return null;
@@ -417,6 +430,23 @@ function parseBudgetUsedToday(): number {
   return getBudgetUsedTodayOverride();
 }
 
+function getCachedPeopleSummary(): PeopleSummary {
+  const nowMs = Date.now();
+  if (cachedPeopleSummary && cachedPeopleSummary.expiresAt > nowMs) {
+    return cachedPeopleSummary.value;
+  }
+  try {
+    const summary = getPeopleSummary({ activeWindowDays: 7, topLimit: 5 });
+    cachedPeopleSummary = {
+      value: summary,
+      expiresAt: nowMs + PEOPLE_SUMMARY_CACHE_MS,
+    };
+    return summary;
+  } catch {
+    return EMPTY_PEOPLE_SUMMARY;
+  }
+}
+
 export function buildGlobalContextResponse(): GlobalContextResponse {
   const now = new Date();
   const preferences = getUserPreferences();
@@ -425,6 +455,7 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
   );
   const globalBudget = getGlobalBudget();
   const activeSession = getActiveGlobalAgentSession();
+  const peopleSummary = getCachedPeopleSummary();
   const summaries = syncAndListRepoSummaries();
   const globalCommunications = listProjectCommunications({
     toScope: "global",
@@ -689,6 +720,7 @@ export function buildGlobalContextResponse(): GlobalContextResponse {
           updated_at: activeSession.updated_at,
         }
       : null,
+    people_summary: peopleSummary,
     resources: {
       budget_used_today: parseBudgetUsedToday(),
     },
