@@ -467,6 +467,13 @@ a {
   height: 16px;
 }
 
+.voice-waveform {
+  width: 96px;
+  height: 20px;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
 .voice-speaking span {
   width: 3px;
   height: 8px;

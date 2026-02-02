@@ -112,6 +112,10 @@ export function useVoiceAgent() {
   const conversationControls = conversation as ConversationAliases;
   const status: Status = conversation.status;
   const isSpeaking = conversation.isSpeaking;
+  const getOutputByteFrequencyData = useCallback(
+    () => conversation.getOutputByteFrequencyData(),
+    [conversation]
+  );
 
   const ensureMicrophoneAccess = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -249,6 +253,7 @@ export function useVoiceAgent() {
     sendTextMessage,
     sendSystemMessage,
     sendContextualUpdate,
+    getOutputByteFrequencyData,
   };
 }
 
