@@ -78,12 +78,12 @@ export type AgentType = "builder" | "reviewer" | "shift_agent" | "global_agent";
 
 export type AgentMonitoringSettings = {
   builder: {
-    networkAccess: "sandboxed" | "whitelist";
+    networkAccess: "sandboxed" | "whitelist" | "full";
     monitorEnabled: boolean;
     autoKillOnThreat: boolean;
   };
   reviewer: {
-    networkAccess: "sandboxed";
+    networkAccess: "sandboxed" | "full";
     monitorEnabled: boolean;
     autoKillOnThreat: boolean;
   };
@@ -173,13 +173,13 @@ const ShiftSchedulerSettingsSchema = z.object({
 });
 
 const BuilderMonitoringSchema = z.object({
-  networkAccess: z.enum(["sandboxed", "whitelist"]).default("sandboxed"),
+  networkAccess: z.enum(["sandboxed", "whitelist", "full"]).default("sandboxed"),
   monitorEnabled: z.boolean().default(true),
   autoKillOnThreat: z.boolean().default(true),
 });
 
 const ReviewerMonitoringSchema = z.object({
-  networkAccess: z.literal("sandboxed").default("sandboxed"),
+  networkAccess: z.enum(["sandboxed", "full"]).default("sandboxed"),
   monitorEnabled: z.boolean().default(true),
   autoKillOnThreat: z.boolean().default(true),
 });

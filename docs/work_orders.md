@@ -39,6 +39,7 @@ Metadata requirements:
 
 Optional fields (can be added to the frontmatter as needed):
 - `base_branch`: default base branch for runs when no run-level override is provided.
+- `reviewer_snapshot`: reviewer repo snapshot mode. Use `full` to include gitignored assets; default is `tracked` (git-tracked files only).
 
 ### Dependencies
 Example:
@@ -63,7 +64,7 @@ Everything below the frontmatter is free-form detail/spec.
 ## Run flow
 1. Builder agent runs against a single Ready Work Order.
 2. Builder produces: git diff, summary, tests status, risks.
-3. Fresh reviewer agent reviews Work Order + diff, and may run read-only inspection commands against a sanitized repo snapshot (e.g., excludes `.env*`, private keys).
+3. Fresh reviewer agent reviews Work Order + diff, and may run read-only inspection commands against a sanitized repo snapshot (e.g., excludes `.env*`, private keys). Set `reviewer_snapshot: full` when the reviewer must inspect gitignored local assets.
 4. If reviewer requests changes, builder loops until approval.
 5. Tester gate runs automated checks (browser E2E smoke at minimum).
 6. Only after Reviewer + Tester pass, an approved summary is surfaced to you in `you_review`.

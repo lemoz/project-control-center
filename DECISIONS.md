@@ -26,6 +26,10 @@ Key architectural/product choices and why. This file should stay short and curre
 - **Decision:** Reviewer may run read-only shell commands against a sanitized repo snapshot when needed (in addition to Work Order + diff).
 - **Why:** Avoids “diff-only” blind spots (e.g., no-op diffs, missing surrounding context) and improves convergence without granting write access.
 
+## Opt-in full reviewer snapshots for asset-heavy work orders
+- **Decision:** Reviewer snapshots default to git-tracked files; Work Orders can opt into full worktree snapshots with `reviewer_snapshot: full`.
+- **Why:** Enables verification of required local assets without globally copying large gitignored directories.
+
 ## Summary-first review UX
 - **Decision:** UI shows run summary, files changed list, tests status, and reviewer verdict; diffs only on demand.
 - **Why:** Keep human loop lightweight while preserving escape hatches.

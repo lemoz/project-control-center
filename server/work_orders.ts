@@ -21,6 +21,9 @@ export type WorkOrderStatus = (typeof WORK_ORDER_STATUSES)[number];
 const WorkOrderStatusSchema = z.enum(WORK_ORDER_STATUSES);
 const WORK_ORDER_ERAS = ["v0", "v1", "v2"] as const;
 const WORK_ORDER_ERA_SET = new Set<string>(WORK_ORDER_ERAS);
+const REVIEWER_SNAPSHOT_MODES = ["tracked", "full"] as const;
+export type ReviewerSnapshotMode = (typeof REVIEWER_SNAPSHOT_MODES)[number];
+const REVIEWER_SNAPSHOT_MODE_SET = new Set<ReviewerSnapshotMode>(REVIEWER_SNAPSHOT_MODES);
 
 const MinimalFrontmatterSchema = z
   .object({
@@ -41,6 +44,7 @@ const FrontmatterSchema = z
     priority: z.coerce.number().int().min(1).max(5).optional(),
     tags: z.array(z.string()).optional(),
     base_branch: z.string().optional(),
+    reviewer_snapshot: z.string().optional(),
     estimate_hours: z.coerce.number().optional(),
     status: WorkOrderStatusSchema.optional(),
     created_at: z.string().optional(),
@@ -61,6 +65,7 @@ export type WorkOrder = {
   priority: number;
   tags: string[];
   base_branch: string | null;
+  reviewer_snapshot: ReviewerSnapshotMode | null;
   estimate_hours: number | null;
   status: WorkOrderStatus;
   created_at: string;
@@ -87,6 +92,7 @@ export type WorkOrderCreateInput = {
   depends_on?: string[];
   era?: string;
   base_branch?: string;
+  reviewer_snapshot?: ReviewerSnapshotMode;
 };
 
 export type WorkOrderPatchInput = Partial<{
@@ -99,6 +105,7 @@ export type WorkOrderPatchInput = Partial<{
   priority: number;
   tags: string[];
   base_branch: string | null;
+  reviewer_snapshot: ReviewerSnapshotMode | null;
   estimate_hours: number | null;
   status: WorkOrderStatus;
   depends_on: string[];
@@ -197,6 +204,15 @@ function normalizeOptionalString(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
+function normalizeReviewerSnapshot(value: unknown): ReviewerSnapshotMode | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return REVIEWER_SNAPSHOT_MODE_SET.has(trimmed as ReviewerSnapshotMode)
+    ? (trimmed as ReviewerSnapshotMode)
+    : null;
+}
+
 function buildMetadataWarnings(frontmatter: Record<string, unknown>): string[] {
   const warnings: string[] = [];
   const hasEra = Object.prototype.hasOwnProperty.call(frontmatter, "era");
@@ -218,6 +234,14 @@ function buildMetadataWarnings(frontmatter: Record<string, unknown>): string[] {
     warnings.push("Missing `depends_on` (expected array).");
   } else if (!Array.isArray(frontmatter.depends_on)) {
     warnings.push("Invalid `depends_on` (expected array).");
+  }
+
+  const hasReviewerSnapshot = Object.prototype.hasOwnProperty.call(
+    frontmatter,
+    "reviewer_snapshot"
+  );
+  if (hasReviewerSnapshot && !normalizeReviewerSnapshot(frontmatter.reviewer_snapshot)) {
+    warnings.push("Invalid `reviewer_snapshot` (expected tracked or full).");
   }
 
   return warnings;
@@ -280,6 +304,7 @@ function normalizeWorkOrder(
   const depends_on = normalizeStringArray(data.depends_on);
   const era =
     typeof data.era === "string" && data.era.trim() ? data.era.trim() : null;
+  const reviewer_snapshot = normalizeReviewerSnapshot(data.reviewer_snapshot);
 
   const rc = readyCheck(rawFrontmatter);
   const validation_warnings = buildMetadataWarnings(rawFrontmatter);
@@ -295,6 +320,7 @@ function normalizeWorkOrder(
     priority,
     tags,
     base_branch,
+    reviewer_snapshot,
     estimate_hours,
     status,
     created_at,
@@ -679,6 +705,7 @@ export function createWorkOrder(
   const era =
     typeof input.era === "string" && input.era.trim() ? input.era.trim() : null;
   const base_branch = normalizeOptionalString(input.base_branch);
+  const reviewer_snapshot = normalizeReviewerSnapshot(input.reviewer_snapshot);
 
   const frontmatter: Record<string, unknown> = {
     id,
@@ -699,6 +726,9 @@ export function createWorkOrder(
   };
   if (base_branch) {
     frontmatter.base_branch = base_branch;
+  }
+  if (reviewer_snapshot) {
+    frontmatter.reviewer_snapshot = reviewer_snapshot;
   }
 
   const body = `\n\n## Notes\n- \n`;
@@ -823,6 +853,18 @@ export function patchWorkOrder(
       frontmatter.base_branch = normalized;
     } else {
       delete frontmatter.base_branch;
+    }
+  }
+  if (patch.reviewer_snapshot !== undefined) {
+    const normalized = normalizeOptionalString(patch.reviewer_snapshot);
+    if (!normalized) {
+      delete frontmatter.reviewer_snapshot;
+    } else if (!REVIEWER_SNAPSHOT_MODE_SET.has(normalized as ReviewerSnapshotMode)) {
+      throw new WorkOrderError("Invalid reviewer_snapshot", "invalid", {
+        allowed: REVIEWER_SNAPSHOT_MODES,
+      });
+    } else {
+      frontmatter.reviewer_snapshot = normalized;
     }
   }
   if (patch.estimate_hours !== undefined) {

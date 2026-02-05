@@ -137,6 +137,7 @@ const MERGE_LOCK_POLL_MS = 2000;
 const MERGE_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TOKEN_CHARS_PER_TOKEN = 4;
+const MAX_REVIEWER_DIFF_CHARS = 12_000;
 
 const DENY_BASENAME_PREFIXES = [".env"];
 const DENY_BASENAMES = new Set([
@@ -165,6 +166,13 @@ function estimateTokenCount(text: string): number {
   const trimmed = text.trim();
   if (!trimmed) return 0;
   return Math.max(1, Math.round(trimmed.length / TOKEN_CHARS_PER_TOKEN));
+}
+
+function clampText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const suffix = "\n\n[diff truncated; see diff.patch for full context]\n";
+  const sliceLength = Math.max(0, maxChars - suffix.length);
+  return `${text.slice(0, sliceLength)}${suffix}`;
 }
 
 function estimateUsageFromArtifacts(
@@ -774,7 +782,7 @@ function buildPatchForChangedFiles(
     const aExists = fs.existsSync(aPath);
     const bExists = fs.existsSync(bPath);
 
-    const args = ["diff", "--no-index", "--relative", "--no-prefix", "--binary"];
+    const args = ["diff", "--no-index", "--relative", "--no-prefix"];
     if (aExists && bExists) args.push(aRel, bRel);
     else if (!aExists && bExists) args.push("/dev/null", bRel);
     else if (aExists && !bExists) args.push(aRel, "/dev/null");
@@ -1155,7 +1163,7 @@ function listChangedFilesFromGit(repoPath: string, baseRef: string, headRef: str
 }
 
 function buildGitDiffPatch(repoPath: string, baseRef: string, headRef: string): string {
-  const result = runGit(["diff", "--no-prefix", "--binary", `${baseRef}...${headRef}`], {
+  const result = runGit(["diff", "--no-prefix", `${baseRef}...${headRef}`], {
     cwd: repoPath,
     allowFailure: true,
   });
@@ -1527,7 +1535,8 @@ function buildCodexExecArgs(params: {
   return args;
 }
 
-type BuilderNetworkAccess = "sandboxed" | "whitelist";
+type BuilderNetworkAccess = "sandboxed" | "whitelist" | "full";
+type ReviewerNetworkAccess = "sandboxed" | "full";
 
 function resolveBuilderSandboxMode(networkAccess: BuilderNetworkAccess): SandboxMode {
   if (networkAccess === "whitelist") return "workspace-write-whitelist";
@@ -2062,7 +2071,7 @@ function buildBuilderPrompt(params: {
   constitution?: string;
   iterationHistory?: RunIterationHistoryEntry[];
   escalationContext?: EscalationRecord | null;
-  networkAccess?: "sandboxed" | "whitelist";
+  networkAccess?: "sandboxed" | "whitelist" | "full";
 }) {
   const feedback = params.reviewerFeedback?.trim();
   const testFailureOutput = params.testFailureOutput?.trim();
@@ -2088,9 +2097,11 @@ function buildBuilderPrompt(params: {
     : "";
   const networkAccess = params.networkAccess ?? "sandboxed";
   const networkLine =
-    networkAccess === "whitelist"
-      ? "- Network access is restricted to a whitelist of domains; all other requests are blocked and logged.\n"
-      : "- No internet access: you cannot fetch URLs, external documentation, or call external APIs.\n";
+    networkAccess === "full"
+      ? "- Full internet access is enabled; you may fetch URLs and call external APIs when needed.\n"
+      : networkAccess === "whitelist"
+        ? "- Network access is restricted to a whitelist of domains; all other requests are blocked and logged.\n"
+        : "- No internet access: you cannot fetch URLs, external documentation, or call external APIs.\n";
   const executionEnvironmentBlock =
     `## Execution Environment\n\n` +
     `- You are running in a sandboxed workspace with limited filesystem access.\n` +
@@ -2218,6 +2229,7 @@ function buildReviewerPrompt(params: {
   constitution?: string;
   builderChanges?: BuilderChange[];
   builderChangesPath?: string;
+  networkAccess?: ReviewerNetworkAccess;
 }) {
   const constitutionBlock = formatConstitutionBlock(params.constitution ?? "");
   const builderChanges = params.builderChanges ?? [];
@@ -2263,10 +2275,15 @@ function buildReviewerPrompt(params: {
     `\`\`\`bash\n` +
     `curl -s "http://localhost:4010/repos" | jq '.[].id'\n` +
     `\`\`\`\n\n`;
+  const networkAccess = params.networkAccess ?? "sandboxed";
+  const networkLine =
+    networkAccess === "full"
+      ? "- Full internet access is enabled for source verification.\n"
+      : "- No internet access: you cannot fetch URLs, external documentation, or call external APIs.\n";
   const executionEnvironmentBlock =
     `## Execution Environment\n\n` +
     `- You are running in a sandboxed, read-only environment for the repo snapshot at ./repo/.\n` +
-    `- No internet access: you cannot fetch URLs, external documentation, or call external APIs.\n` +
+    networkLine +
     `- All required context must come from the Work Order; use the diff and repo snapshot only to verify changes.\n\n`;
   return (
     `You are a fresh Reviewer agent.\n\n` +
@@ -2887,7 +2904,14 @@ export async function runRun(runId: string) {
     const builderNetworkAccess = builderMonitoring.networkAccess as BuilderNetworkAccess;
     const builderSandboxMode = resolveBuilderSandboxMode(builderNetworkAccess);
     const builderNetworkMode: NetworkMode =
-      builderNetworkAccess === "whitelist" ? "sandbox" : "none";
+      builderNetworkAccess === "full"
+        ? "full"
+        : builderNetworkAccess === "whitelist"
+          ? "sandbox"
+          : "none";
+    const reviewerNetworkAccess = reviewerMonitoring.networkAccess as ReviewerNetworkAccess;
+    const reviewerNetworkMode: NetworkMode =
+      reviewerNetworkAccess === "full" ? "full" : "none";
     const builderStreamMonitor = builderMonitoring.monitorEnabled
       ? new StreamMonitor({
           log: (line) => log(line),
@@ -3245,6 +3269,7 @@ export async function runRun(runId: string) {
                 outputPath: builderOutputPath,
                 logPath: builderLogPath,
                 sandbox: getBuilderSandboxMode(),
+                networkMode: builderNetworkMode,
                 model: builderModel,
                 cliPath: runnerSettings.builder.cliPath,
                 streamMonitor: builderStreamMonitor ?? undefined,
@@ -3531,10 +3556,18 @@ export async function runRun(runId: string) {
 
       const reviewerRepoSnapshot = path.join(reviewerDir, "repo");
       try {
-        const copied = copyGitTrackedSnapshot(worktreePath, reviewerRepoSnapshot);
-        if (copied === 0) {
+        const reviewerSnapshotMode =
+          workOrder.reviewer_snapshot === "full" ? "full" : "tracked";
+        log(`Reviewer snapshot mode: ${reviewerSnapshotMode}`);
+        if (reviewerSnapshotMode === "full") {
           fs.rmSync(reviewerRepoSnapshot, { recursive: true, force: true });
           copySnapshot(worktreePath, reviewerRepoSnapshot);
+        } else {
+          const copied = copyGitTrackedSnapshot(worktreePath, reviewerRepoSnapshot);
+          if (copied === 0) {
+            fs.rmSync(reviewerRepoSnapshot, { recursive: true, force: true });
+            copySnapshot(worktreePath, reviewerRepoSnapshot);
+          }
         }
       } catch {
         // ignore; reviewer can still use diff-only review
@@ -3550,15 +3583,20 @@ export async function runRun(runId: string) {
         // ignore; reviewer can still rely on prompt summary
       }
 
+      const reviewerDiffPatch = clampText(
+        diffPatch || "(no changes detected)",
+        MAX_REVIEWER_DIFF_CHARS
+      );
       const reviewerPrompt = buildReviewerPrompt({
         workOrderId: workOrder.id,
         workOrderMarkdown,
-        diffPatch: diffPatch || "(no changes detected)",
+        diffPatch: reviewerDiffPatch,
         constitution: reviewerConstitution.content,
         builderChanges,
         builderChangesPath: fs.existsSync(reviewerBuilderResultPath)
           ? "builder_result.json"
           : undefined,
+        networkAccess: reviewerNetworkAccess,
       });
       const reviewerPromptPath = path.join(reviewerDir, "prompt.txt");
       fs.writeFileSync(reviewerPromptPath, reviewerPrompt, "utf8");
@@ -3577,6 +3615,7 @@ export async function runRun(runId: string) {
               outputPath: reviewerOutputPath,
               logPath: reviewerLogPath,
               sandbox: getReviewerSandboxMode(),
+              networkMode: reviewerNetworkMode,
               skipGitRepoCheck: true,
               model: reviewerModel,
               cliPath: runnerSettings.reviewer.cliPath,
@@ -4029,11 +4068,16 @@ export async function runRun(runId: string) {
         // ignore
       }
 
+      const mergeReviewerDiffPatch = clampText(
+        resolvedDiff || "(no changes detected)",
+        MAX_REVIEWER_DIFF_CHARS
+      );
       const mergeReviewerPrompt = buildReviewerPrompt({
         workOrderId: workOrder.id,
         workOrderMarkdown,
-        diffPatch: resolvedDiff || "(no changes detected)",
+        diffPatch: mergeReviewerDiffPatch,
         constitution: reviewerConstitution.content,
+        networkAccess: reviewerNetworkAccess,
       });
       const mergeReviewerPromptPath = path.join(mergeReviewerDir, "prompt.txt");
       fs.writeFileSync(mergeReviewerPromptPath, mergeReviewerPrompt, "utf8");
@@ -4059,6 +4103,7 @@ export async function runRun(runId: string) {
               outputPath: mergeReviewerOutputPath,
               logPath: mergeReviewerLogPath,
               sandbox: getReviewerSandboxMode(),
+              networkMode: reviewerNetworkMode,
               skipGitRepoCheck: true,
               model: reviewerModel,
               cliPath: runnerSettings.reviewer.cliPath,

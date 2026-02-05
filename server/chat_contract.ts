@@ -132,6 +132,7 @@ export const WorkOrderCreatePayloadSchema = z
     depends_on: z.array(z.string()).optional(),
     era: z.string().optional(),
     base_branch: z.string().optional(),
+    reviewer_snapshot: z.enum(["tracked", "full"]).optional(),
   })
   .strict();
 
@@ -146,6 +147,7 @@ export const WorkOrderPatchSchema = z
     priority: z.number().int().min(1).max(5).optional(),
     tags: z.array(z.string()).optional(),
     base_branch: z.string().nullable().optional(),
+    reviewer_snapshot: z.enum(["tracked", "full"]).nullable().optional(),
     estimate_hours: z.number().nullable().optional(),
     status: WorkOrderStatusSchema.optional(),
     depends_on: z.array(z.string()).optional(),
