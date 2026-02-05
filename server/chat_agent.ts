@@ -73,7 +73,7 @@ function recordChatCost(params: {
   logPath: string;
   description?: string;
 }): void {
-  const model = params.model.trim() || "gpt-5.2-codex";
+  const model = params.model.trim() || "gpt-5.3-codex";
   const usage = parseCodexTokenUsageFromLog(params.logPath);
   recordCostEntry({
     projectId: params.projectId,
@@ -106,6 +106,7 @@ const DEFAULT_ACCESS: ChatAccess = {
   cli: "off",
   network: "none",
 };
+const CODEX_REASONING_EFFORT_CONFIG = 'model_reasoning_effort="xhigh"';
 
 function suggestionContextMessageLimit(): number {
   return getChatSuggestionContextMessageLimit();
@@ -540,6 +541,7 @@ async function runCodexExecJson(params: CodexExecParams): Promise<void> {
   const args: string[] = ["--ask-for-approval", "never", "exec", "--json"];
   const model = params.model?.trim();
   if (model) args.push("--model", model);
+  args.push("-c", CODEX_REASONING_EFFORT_CONFIG);
 
   args.push(
     "--sandbox",

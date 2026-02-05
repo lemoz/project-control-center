@@ -150,7 +150,7 @@ function chooseModel(recordModel: string, logHints: string[]): string {
   for (const hint of logHints) {
     if (resolvePricing(hint)) return hint;
   }
-  return "gpt-5.2-codex";
+  return "gpt-5.3-codex";
 }
 
 function loadWorkOrderContent(runDir: string, workOrderId: string, repoRoot: string): string {
@@ -229,7 +229,7 @@ console.log(
 );
 console.log(
   `- Pricing: ${formatPricingSummary([
-    "gpt-5.2-codex",
+    "gpt-5.3-codex",
     "claude-3-5-sonnet",
     "claude-3-opus",
   ])}.`

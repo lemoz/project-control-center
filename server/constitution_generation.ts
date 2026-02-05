@@ -160,6 +160,7 @@ const FILTER_MESSAGE_MAX_CHARS = 280;
 const FILTER_SUMMARY_MAX_CHARS = 1200;
 const FILTER_DEFAULT_CODEX_MODEL = "gpt-4o-mini";
 const FILTER_LATENCY_WARN_MS = 30_000;
+const CODEX_REASONING_EFFORT_CONFIG = 'model_reasoning_effort="xhigh"';
 
 const INSIGHT_CATEGORIES = ["decision", "style", "anti", "success", "communication"] as const;
 const INSIGHT_SCOPES = ["global", "project"] as const;
@@ -1422,6 +1423,7 @@ async function runCodexExecJson(params: CodexExecParams): Promise<void> {
   const args: string[] = ["--ask-for-approval", "never", "exec", "--json"];
   const model = params.model?.trim();
   if (model) args.push("--model", model);
+  args.push("-c", CODEX_REASONING_EFFORT_CONFIG);
 
   args.push(
     "--sandbox",

@@ -26,10 +26,11 @@ const DEFAULT_COST_PRICING: ModelPricing[] = [
     match: (model) => model.includes("gpt-4"),
   },
   {
-    id: "gpt-5.2-codex",
+    id: "gpt-5.3-codex",
     input_cost_per_1k: 0.015,
     output_cost_per_1k: 0.06,
-    match: (model) => model.includes("gpt-5.2-codex"),
+    // Keep compatibility with historical runs that logged gpt-5.2-codex.
+    match: (model) => model.includes("gpt-5.3-codex") || model.includes("gpt-5.2-codex"),
   },
 ];
 

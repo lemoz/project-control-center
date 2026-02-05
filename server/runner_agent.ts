@@ -1500,7 +1500,7 @@ function buildCodexExecArgs(params: {
   networkMode?: NetworkMode;
 }): string[] {
   const args: string[] = ["--ask-for-approval", "never", "exec", "--json"];
-  const model = params.model?.trim() || "gpt-5.2-codex";
+  const model = params.model?.trim() || "gpt-5.3-codex";
   args.push("--model", model);
 
   const networkMode = params.networkMode ?? "full";
@@ -1516,7 +1516,7 @@ function buildCodexExecArgs(params: {
 
   // Set reasoning effort level (xhigh for maximum thinking)
   const reasoningEffort = params.reasoningEffort?.trim() || "xhigh";
-  args.push("-c", `model_reasoning_effort=${reasoningEffort}`);
+  args.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
 
   args.push(
     "--sandbox",
@@ -2869,8 +2869,8 @@ export async function runRun(runId: string) {
     }
 
     const runnerSettings = resolveRunnerSettingsForRepo(repoPath).effective;
-    const builderModel = runnerSettings.builder.model.trim() || "gpt-5.2-codex";
-    const reviewerModel = runnerSettings.reviewer.model.trim() || "gpt-5.2-codex";
+    const builderModel = runnerSettings.builder.model.trim() || "gpt-5.3-codex";
+    const reviewerModel = runnerSettings.reviewer.model.trim() || "gpt-5.3-codex";
     const runDir = run.run_dir;
     ensureDir(runDir);
     ensureDir(path.join(runDir, "builder"));

@@ -19,7 +19,8 @@ import { buildInitiativePlanPrompt } from "./prompts/initiative_plan.js";
 
 const execFileAsync = promisify(execFile);
 
-const DEFAULT_CODEX_MODEL = "gpt-5.2-codex";
+const DEFAULT_CODEX_MODEL = "gpt-5.3-codex";
+const CODEX_REASONING_EFFORT_CONFIG = 'model_reasoning_effort="xhigh"';
 const CLAUDE_PLAN_MODEL = "claude-3-5-sonnet-20241022";
 const CLAUDE_TIMEOUT_MS = 60_000;
 const CODEX_TIMEOUT_MS = 60_000;
@@ -299,6 +300,8 @@ async function runCodexPrompt(params: {
     "--json",
     "--model",
     params.model,
+    "-c",
+    CODEX_REASONING_EFFORT_CONFIG,
     "--sandbox",
     "read-only",
     "--output-schema",
