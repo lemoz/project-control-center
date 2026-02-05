@@ -484,6 +484,7 @@ export function VoiceWidget() {
     sendSystemMessage,
     sendContextualUpdate,
     getOutputByteFrequencyData,
+    getInputByteFrequencyData,
   } = useVoiceAgent();
   const canvasState = useCanvasVoiceState();
   const [textOnly, setTextOnly] = useState(false);
@@ -917,9 +918,11 @@ export function VoiceWidget() {
       >
         <span>Status: {statusText}</span>
         <SpeakingIndicator
-          active={isConnected && isSpeaking}
+          active={isConnected}
           hidden={textOnly}
+          isSpeaking={isSpeaking}
           getOutputByteFrequencyData={getOutputByteFrequencyData}
+          getInputByteFrequencyData={getInputByteFrequencyData}
         />
       </div>
 
