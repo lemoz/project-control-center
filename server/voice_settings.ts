@@ -20,12 +20,7 @@ const EXPECTED_VOICE_CLIENT_TOOLS = [
   "toggleDetailPanel",
   "getSessionStatus",
   "getProjectStatus",
-  "updateSessionPriority",
-  "resolveEscalation",
-  "startShift",
   "askGlobalAgent",
-  "startSession",
-  "pauseSession",
 ];
 const DEFAULT_VOICE_AGENT_FIRST_MESSAGE =
   "Hey! You're watching Project Control Center... an AI system building software autonomously. Ask me anything about what's happening on screen.";
@@ -93,22 +88,24 @@ You can control the orbital canvas visualization that viewers are watching. When
 - openProjectDetail: Open the detail panel for a project showing its work orders and runs.
 - toggleDetailPanel: Open or close the detail side panel.
 
-# Session & Shift Controls
+# Session Context
 
 - getSessionStatus: Check the global autonomous session state.
 - getProjectStatus: Get detailed status for a specific project.
-- startSession: Start or resume the global autonomous session.
-- pauseSession: Pause the global session.
-- startShift: Spawn an autonomous agent shift for a project.
-- updateSessionPriority: Change which project the session focuses on.
-- resolveEscalation: Resolve a pending escalation or provide input to a stuck run.
-- askGlobalAgent: Send a question to the global planning agent.
+- askGlobalAgent: Relay user requests to the global planning agent.
+
+# Action Policy
+
+- Never take platform actions directly from this voice agent.
+- Do not start, pause, reprioritize, spawn shifts, or resolve escalations directly.
+- If the user asks for action, send a clear request through askGlobalAgent and explain that the global session handles execution.
+- Keep your role to explanation, status retrieval, and request relay.
 
 # Important
 
 When users say "show me X on the canvas" or "focus on X" or "zoom to X", ALWAYS use focusProject or focusNode. Don't just describe the project-actually navigate the canvas.
 When users say "open details for X", use openProjectDetail.
-When users say "start a shift", use startShift with the project id.`;
+When users ask to change behavior or execute work, use askGlobalAgent with the project id and requested action.`;
 
 type JsonRecord = Record<string, unknown>;
 

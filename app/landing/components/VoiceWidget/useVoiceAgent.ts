@@ -33,15 +33,15 @@ function formatTimestamp(value: Date): string {
 
 function buildSessionGreeting(session: CanvasVoiceSession): string {
   if (session.status === "onboarding") {
-    return "Welcome to Project Control Center. You're onboarding the global session. Ask me to continue setup or review the briefing.";
+    return "Welcome to Project Control Center. You're onboarding the global session. I can explain the status and relay requests to the global planner.";
   }
   if (session.status === "autonomous") {
-    return "Welcome back. The global session is running autonomously. Ask what's happening for the latest update or tell me what to focus on.";
+    return "Welcome back. The global session is running autonomously. Ask what's happening for the latest update or ask me to relay a request to the global planner.";
   }
   if (session.status === "paused") {
-    return "Welcome back. The global session is paused. Ask what's happening for context or tell me to resume and reprioritize.";
+    return "Welcome back. The global session is paused. Ask for context and I can relay resume or priority requests to the global planner.";
   }
-  return "Welcome back. There's no active global session yet. Ask me to start onboarding or review the portfolio.";
+  return "Welcome back. There's no active global session yet. Ask me to review the portfolio or relay an instruction to the global planner.";
 }
 
 function normalizeErrorMessage(error: unknown): string {

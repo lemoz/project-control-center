@@ -554,6 +554,20 @@ async function fetchActiveSession(): Promise<{
 }
 
 export function createVoiceClientTools() {
+  const relayToGlobalAgent = async (
+    instruction: string,
+    fallbackError: string,
+    successMessage = "Sent message to the global agent."
+  ) => {
+    const trimmed = instruction.trim();
+    if (!trimmed) return "Request details are required.";
+    const response = await postJson("/api/chat/global", { content: trimmed });
+    if (!response.ok) {
+      return extractErrorMessage(response.payload, fallbackError);
+    }
+    return successMessage;
+  };
+
   return {
     focusNode: async ({ nodeId }: FocusNodeArgs) => {
       if (!nodeId || typeof nodeId !== "string") {
@@ -697,49 +711,14 @@ export function createVoiceClientTools() {
       if (!project || typeof project !== "string") {
         return "Project name is required.";
       }
-      try {
-        const sessionRes = await fetch("/api/global/sessions/active", { cache: "no-store" });
-        const sessionJson = (await sessionRes
-          .json()
-          .catch(() => null)) as ActiveSessionResponse | null;
-        if (!sessionRes.ok) return "Unable to load the global session.";
-        const session = sessionJson?.session;
-        if (!session) return "No active global session.";
-        const trimmed = project.trim();
-        const normalized = normalizeMatch(trimmed);
-        const current = Array.isArray(session.priority_projects)
-          ? session.priority_projects
-          : [];
-        const next = [
-          trimmed,
-          ...current.filter((entry) => normalizeMatch(entry) !== normalized),
-        ];
-        const briefingSummary = updateBriefingSummary(
-          session.briefing_summary,
-          next,
-          note
-        );
-        const patchRes = await fetch(
-          `/api/global/sessions/${encodeURIComponent(session.id)}`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              priority_projects: next,
-              briefing_summary: briefingSummary,
-            }),
-          }
-        );
-        if (!patchRes.ok) {
-          const errorJson = await patchRes.json().catch(() => null);
-          return typeof errorJson?.error === "string"
-            ? errorJson.error
-            : "Failed to update session priorities.";
-        }
-        return `Updated session priorities: ${next.join(", ")}.`;
-      } catch {
-        return "Failed to update session priorities.";
-      }
+      const trimmedProject = project.trim();
+      if (!trimmedProject) return "Project name is required.";
+      const noteText = typeof note === "string" && note.trim() ? ` Note: ${note.trim()}.` : "";
+      return relayToGlobalAgent(
+        `Please prioritize project "${trimmedProject}" in the global session.${noteText}`,
+        "Failed to relay priority update to the global agent.",
+        `Relayed priority request for ${trimmedProject} to the global agent.`
+      );
     },
     resolveEscalation: async ({
       escalationId,
@@ -751,177 +730,30 @@ export function createVoiceClientTools() {
       if (!trimmedResolution && !inputs) {
         return "Resolution details are required.";
       }
-      const normalizedProject = project ? normalizeMatch(project) : null;
-      const state = getCanvasVoiceState();
-      const candidates = state.escalations ?? [];
-      let escalation = escalationId
-        ? candidates.find((entry) => entry.id === escalationId)
-        : null;
-      if (!escalation && normalizedProject) {
-        escalation = candidates.find(
-          (entry) =>
-            normalizeMatch(entry.projectName) === normalizedProject ||
-            normalizeMatch(entry.projectId) === normalizedProject
-        );
+      const parts: string[] = [];
+      if (escalationId) parts.push(`Escalation ID: ${escalationId}.`);
+      if (project) parts.push(`Project: ${project}.`);
+      if (trimmedResolution) parts.push(`Requested resolution: ${trimmedResolution}.`);
+      if (inputs && Object.keys(inputs).length > 0) {
+        parts.push(`Inputs: ${JSON.stringify(inputs)}.`);
       }
-      if (!escalation && !escalationId) {
-        escalation = candidates[0] ?? null;
-      }
-      if (!escalation) {
-        try {
-          const res = await fetch("/api/global/context", { cache: "no-store" });
-          const json = (await res.json().catch(() => null)) as GlobalContextResponse | null;
-          if (res.ok && json?.projects?.length) {
-            if (escalationId) {
-              for (const projectEntry of json.projects) {
-                const match = projectEntry.escalations.find(
-                  (entry) => entry.id === escalationId
-                );
-                if (match) {
-                  escalation = {
-                    id: match.id,
-                    projectId: projectEntry.id,
-                    projectName: projectEntry.name,
-                    type: match.type,
-                    summary: match.summary,
-                  };
-                  break;
-                }
-              }
-            } else {
-              for (const projectEntry of json.projects) {
-                const match = normalizedProject
-                  ? normalizeMatch(projectEntry.name) === normalizedProject ||
-                    normalizeMatch(projectEntry.id) === normalizedProject
-                  : false;
-                if (!normalizedProject && projectEntry.escalations.length) {
-                  escalation = {
-                    id: projectEntry.escalations[0].id,
-                    projectId: projectEntry.id,
-                    projectName: projectEntry.name,
-                    type: projectEntry.escalations[0].type,
-                    summary: projectEntry.escalations[0].summary,
-                  };
-                  break;
-                }
-                if (match && projectEntry.escalations.length) {
-                  escalation = {
-                    id: projectEntry.escalations[0].id,
-                    projectId: projectEntry.id,
-                    projectName: projectEntry.name,
-                    type: projectEntry.escalations[0].type,
-                    summary: projectEntry.escalations[0].summary,
-                  };
-                  break;
-                }
-              }
-            }
-          }
-        } catch {
-          // ignore
-        }
-      }
-      const resolvedId = escalation?.id ?? escalationId;
-      if (!resolvedId) return "No escalation found to resolve.";
-      let runEscalationInputs: EscalationInput[] | null = null;
-      let isRunEscalation = escalation?.type === "run_input";
-      if (!isRunEscalation) {
-        try {
-          const runRes = await fetch(`/api/runs/${encodeURIComponent(resolvedId)}`, {
-            cache: "no-store",
-          });
-          if (runRes.ok) {
-            const runJson = (await runRes.json().catch(() => null)) as
-              | { escalation?: unknown }
-              | null;
-            runEscalationInputs = parseRunEscalationInputs(runJson?.escalation);
-            if (runEscalationInputs.length > 0) {
-              isRunEscalation = true;
-            }
-          }
-        } catch {
-          // ignore run lookup failures
-        }
-      }
-      if (isRunEscalation) {
-        try {
-          if (!runEscalationInputs) {
-            const runRes = await fetch(`/api/runs/${encodeURIComponent(resolvedId)}`, {
-              cache: "no-store",
-            });
-            const runJson = (await runRes.json().catch(() => null)) as
-              | { escalation?: unknown }
-              | null;
-            runEscalationInputs = parseRunEscalationInputs(runJson?.escalation);
-          }
-          const escalationInputs = runEscalationInputs ?? [];
-          let resolvedInputs = inputs;
-          if (!resolvedInputs && trimmedResolution && escalationInputs.length === 1) {
-            resolvedInputs = { [escalationInputs[0].key]: trimmedResolution };
-          }
-          if (!resolvedInputs) {
-            const labels = escalationInputs.map((entry) => entry.label).join(", ");
-            return labels
-              ? `Run escalation needs inputs: ${labels}.`
-              : "Run escalation needs structured inputs.";
-          }
-          const inputRes = await fetch(
-            `/api/runs/${encodeURIComponent(resolvedId)}/provide-input`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                inputs: resolvedInputs,
-                resolution_notes: trimmedResolution || undefined,
-              }),
-            }
-          );
-          if (!inputRes.ok) {
-            const errorJson = await inputRes.json().catch(() => null);
-            return typeof errorJson?.error === "string"
-              ? errorJson.error
-              : "Failed to resolve run escalation.";
-          }
-          return "Provided input for the run escalation.";
-        } catch {
-          return "Failed to resolve run escalation.";
-        }
-      }
-      try {
-        const res = await fetch(
-          `/api/escalations/${encodeURIComponent(resolvedId)}/resolve`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              resolution: trimmedResolution || inputs || "resolved",
-            }),
-          }
-        );
-        if (!res.ok) {
-          const errorJson = await res.json().catch(() => null);
-          return typeof errorJson?.error === "string"
-            ? errorJson.error
-            : "Failed to resolve escalation.";
-        }
-        return "Escalation resolved.";
-      } catch {
-        return "Failed to resolve escalation.";
-      }
+      return relayToGlobalAgent(
+        `Please handle this escalation request via the global session. ${parts.join(" ")}`.trim(),
+        "Failed to relay escalation request to the global agent.",
+        "Relayed escalation request to the global agent."
+      );
     },
     startShift: async ({ projectId }: StartShiftArgs) => {
       if (!projectId || typeof projectId !== "string") {
         return "Missing project id.";
       }
       const trimmed = projectId.trim();
-      const response = await postJson(
-        `/api/projects/${encodeURIComponent(trimmed)}/shifts/spawn`,
-        {}
+      if (!trimmed) return "Missing project id.";
+      return relayToGlobalAgent(
+        `Please start a shift for project "${trimmed}" when ready.`,
+        "Failed to relay shift request to the global agent.",
+        `Relayed shift request for ${trimmed} to the global agent.`
       );
-      if (!response.ok) {
-        return extractErrorMessage(response.payload, "Failed to start shift.");
-      }
-      return `Started shift for ${trimmed}.`;
     },
     askGlobalAgent: async ({ question }: AskGlobalAgentArgs) => {
       if (!question || typeof question !== "string") {
@@ -938,69 +770,18 @@ export function createVoiceClientTools() {
       return "Sent message to the global agent.";
     },
     startSession: async () => {
-      const active = await fetchActiveSession();
-      if (active.error) {
-        return active.error;
-      }
-
-      let session = active.session;
-      if (!session) {
-        const created = await postJson("/api/global/sessions", {});
-        if (!created.ok) {
-          return extractErrorMessage(created.payload, "Failed to create global session.");
-        }
-        if (created.payload && typeof created.payload === "object") {
-          const record = created.payload as {
-            session?: unknown;
-            active_session?: unknown;
-          };
-          session = parseSessionSummary(record.session ?? record.active_session ?? null);
-        }
-      }
-
-      if (!session) {
-        return "Global session unavailable.";
-      }
-
-      if (session.state === "autonomous") {
-        return "Global session already running.";
-      }
-      if (session.state === "briefing") {
-        const resume = Boolean(session.paused_at);
-        const response = await postJson(
-          `/api/global/sessions/${encodeURIComponent(session.id)}/start`,
-          resume ? { resume: true } : {}
-        );
-        if (!response.ok) {
-          return extractErrorMessage(response.payload, "Failed to start session.");
-        }
-        return resume ? "Global session resumed." : "Global session started.";
-      }
-      if (session.state === "onboarding") {
-        return "Global session onboarding incomplete. Finish onboarding first.";
-      }
-      return "Global session not ready to start.";
+      return relayToGlobalAgent(
+        "Please start or resume the global session when appropriate.",
+        "Failed to relay start-session request to the global agent.",
+        "Relayed start-session request to the global agent."
+      );
     },
     pauseSession: async () => {
-      const active = await fetchActiveSession();
-      if (active.error) {
-        return active.error;
-      }
-      const session = active.session;
-      if (!session) {
-        return "No active global session.";
-      }
-      if (session.state !== "autonomous") {
-        return "Global session is not running.";
-      }
-      const response = await postJson(
-        `/api/global/sessions/${encodeURIComponent(session.id)}/pause`,
-        {}
+      return relayToGlobalAgent(
+        "Please pause the global session when safe to do so.",
+        "Failed to relay pause-session request to the global agent.",
+        "Relayed pause-session request to the global agent."
       );
-      if (!response.ok) {
-        return extractErrorMessage(response.payload, "Failed to pause session.");
-      }
-      return "Global session paused.";
     },
   };
 }
