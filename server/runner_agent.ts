@@ -2667,7 +2667,20 @@ function findConflictingRun(params: {
   return pool[0] || null;
 }
 
-function getTestScriptInfo(repoPath: string): { hasTests: boolean; message: string } {
+type TestScriptInfo =
+  | { hasTests: false; message: string }
+  | { hasTests: true; command: string; args: string[]; label: string };
+
+function isDisabledTestScript(script: string): boolean {
+  const normalized = script.toLowerCase();
+  return (
+    normalized.includes("tests disabled") ||
+    normalized.includes("test disabled") ||
+    normalized.includes("run npm run test:e2e manually")
+  );
+}
+
+function getTestScriptInfo(repoPath: string): TestScriptInfo {
   const pkgPath = path.join(repoPath, "package.json");
   if (!fs.existsSync(pkgPath)) {
     return { hasTests: false, message: "No package.json found." };
@@ -2684,12 +2697,46 @@ function getTestScriptInfo(repoPath: string): { hasTests: boolean; message: stri
     typeof pkg === "object" && pkg && "scripts" in pkg
       ? (pkg as { scripts?: Record<string, string> }).scripts
       : undefined;
-  const hasTest = !!scripts?.test;
-  if (!hasTest) {
-    return { hasTests: false, message: "No test script; skipping." };
+
+  const unitScript = scripts?.["test:unit"]?.trim();
+  if (unitScript) {
+    return {
+      hasTests: true,
+      command: "npm run test:unit",
+      args: ["run", "test:unit"],
+      label: "npm run test:unit",
+    };
   }
 
-  return { hasTests: true, message: "test script present" };
+  const e2eScript = scripts?.["test:e2e"]?.trim();
+  const testScript = scripts?.test?.trim();
+
+  if (testScript && !isDisabledTestScript(testScript)) {
+    return {
+      hasTests: true,
+      command: "npm test",
+      args: ["test"],
+      label: "npm test",
+    };
+  }
+
+  if (e2eScript) {
+    return {
+      hasTests: true,
+      command: "npm run test:e2e",
+      args: ["run", "test:e2e"],
+      label: "npm run test:e2e",
+    };
+  }
+
+  if (testScript) {
+    return {
+      hasTests: false,
+      message: "Default test script is disabled and no runnable test fallback was found.",
+    };
+  }
+
+  return { hasTests: false, message: "No runnable test scripts found; skipping." };
 }
 
 async function runRepoTests(
@@ -2705,7 +2752,7 @@ async function runRepoTests(
   }
 
   const logPath = options?.logPath ?? path.join(runDir, "tests", "npm-test.log");
-  const label = options?.label ?? "npm test";
+  const label = options?.label ?? testInfo.label;
   ensureDir(path.dirname(logPath));
   const logStream = fs.createWriteStream(logPath, { flags: "a" });
   logStream.write(`[${nowIso()}] ${label} start (iter ${iteration})\n`);
@@ -2713,7 +2760,7 @@ async function runRepoTests(
 
   // Apply port offset to avoid collisions when multiple runs execute in parallel
   const portOffset = getPortOffset(runId);
-  const child = spawn(npmCommand(), ["test"], {
+  const child = spawn(npmCommand(), testInfo.args, {
     cwd: repoPath,
     env: {
       ...getProcessEnv(),
@@ -2752,7 +2799,7 @@ async function runRepoTests(
 
   return [
     {
-      command: "npm test",
+      command: testInfo.command,
       passed: exitCode === 0,
       output: outputTail,
     },
@@ -4275,15 +4322,20 @@ export async function runRun(runId: string) {
         allowFailure: true,
       });
       if (!status.stdout.trim()) return true;
-      log("Main repo dirty; cleaning before merge");
-      runGit(["merge", "--abort"], { cwd: repoPath, allowFailure: true, log });
-      runGit(["reset", "--hard", "HEAD"], { cwd: repoPath, log });
-      runGit(["clean", "-fd"], { cwd: repoPath, log });
-      const cleaned = runGit(["status", "--porcelain"], {
-        cwd: repoPath,
-        allowFailure: true,
-      });
-      return !cleaned.stdout.trim();
+      log("Main repo has uncommitted changes; refusing to auto-clean before merge.");
+      const dirtyLines = status.stdout
+        .trim()
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const previewCount = Math.min(20, dirtyLines.length);
+      for (const line of dirtyLines.slice(0, previewCount)) {
+        log(`[dirty-main] ${line}`);
+      }
+      if (dirtyLines.length > previewCount) {
+        log(`[dirty-main] ... ${dirtyLines.length - previewCount} more entries`);
+      }
+      return false;
     };
 
     try {
