@@ -173,7 +173,9 @@ import {
   upsertNetworkWhitelistEntry,
 } from "./settings.js";
 import {
+  getVoiceAgentDebugSnapshot,
   getSavedVoiceSettings,
+  parseVoiceAgentSyncPatch,
   getVoiceSettingsResponse,
   getVoiceStatus,
   mergeVoiceSettings,
@@ -181,6 +183,7 @@ import {
   requestElevenLabsSignedUrl,
   resolveElevenLabsCredentials,
   saveVoiceSettings,
+  syncVoiceAgentConfiguration,
 } from "./voice_settings.js";
 import {
   getMeetingOutputMediaState,
@@ -1583,6 +1586,29 @@ app.patch("/settings/voice", async (req, res) => {
   } catch (err) {
     return res.status(400).json({
       error: err instanceof Error ? err.message : "invalid voice settings",
+    });
+  }
+});
+
+app.get("/settings/voice/agent/debug", async (_req, res) => {
+  try {
+    const snapshot = await getVoiceAgentDebugSnapshot();
+    return res.json(snapshot);
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "failed to load voice agent debug snapshot",
+    });
+  }
+});
+
+app.post("/settings/voice/agent/sync", async (req, res) => {
+  try {
+    const patch = parseVoiceAgentSyncPatch(req.body ?? {});
+    const result = await syncVoiceAgentConfiguration(patch);
+    return res.json(result);
+  } catch (err) {
+    return res.status(400).json({
+      error: err instanceof Error ? err.message : "failed to sync voice agent configuration",
     });
   }
 });

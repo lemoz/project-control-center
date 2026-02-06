@@ -26,6 +26,58 @@ type VoiceSettingsResponse = {
   error?: string;
 };
 
+type VoiceToolAliasMismatch = {
+  expected: string;
+  configured: string;
+};
+
+type VoiceAgentDebugResponse = {
+  fetchedAt: string;
+  configuredAgentId: string;
+  agent: {
+    id: string;
+    name: string | null;
+    promptPath: string | null;
+    firstMessage: string | null;
+    systemPromptPreview: string | null;
+    systemPromptLength: number;
+    toolIds: string[];
+    builtInTools: string[];
+  };
+  resolvedTools: Array<{
+    id: string;
+    name: string;
+    type: string | null;
+  }>;
+  toolAudit: {
+    expectedClientTools: string[];
+    configuredClientTools: string[];
+    missingClientTools: string[];
+    aliasMismatches: VoiceToolAliasMismatch[];
+    extraConfiguredTools: string[];
+  };
+  warnings: string[];
+};
+
+type VoiceAgentSyncResponse = {
+  syncedAt: string;
+  updated: boolean;
+  dryRun: boolean;
+  applied: {
+    promptUpdated: boolean;
+    firstMessageUpdated: boolean;
+    toolsUpdated: boolean;
+    promptLength: number;
+    firstMessageLength: number;
+    toolNames: string[];
+    toolIds: string[];
+    builtInTools: string[];
+  };
+  warnings: string[];
+  snapshot: VoiceAgentDebugResponse;
+  error?: string;
+};
+
 export function VoiceSettingsForm() {
   const [saved, setSaved] = useState<VoiceSettingsResponse["saved"]>({
     apiKeyConfigured: false,
@@ -47,6 +99,12 @@ export function VoiceSettingsForm() {
   const [error, setError] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [agentDebug, setAgentDebug] = useState<VoiceAgentDebugResponse | null>(null);
+  const [agentDebugLoading, setAgentDebugLoading] = useState(false);
+  const [agentDebugError, setAgentDebugError] = useState<string | null>(null);
+  const [agentSyncing, setAgentSyncing] = useState(false);
+  const [agentSyncError, setAgentSyncError] = useState<string | null>(null);
+  const [agentSyncNotice, setAgentSyncNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -134,6 +192,55 @@ export function VoiceSettingsForm() {
       setSaving(false);
     }
   }, [clearApiKey, draftAgentId, draftApiKey, saved]);
+
+  const inspectAgent = useCallback(async () => {
+    setAgentDebugLoading(true);
+    setAgentDebugError(null);
+    try {
+      const res = await fetch("/api/settings/voice/agent/debug", { cache: "no-store" });
+      const json = (await res.json().catch(() => null)) as
+        | (VoiceAgentDebugResponse & { error?: string })
+        | null;
+      if (!res.ok) {
+        throw new Error(json?.error || "failed to inspect live agent");
+      }
+      if (!json) {
+        throw new Error("empty response from live agent inspection");
+      }
+      setAgentDebug(json);
+    } catch (e) {
+      setAgentDebug(null);
+      setAgentDebugError(e instanceof Error ? e.message : "failed to inspect live agent");
+    } finally {
+      setAgentDebugLoading(false);
+    }
+  }, []);
+
+  const syncAgent = useCallback(async () => {
+    setAgentSyncing(true);
+    setAgentSyncError(null);
+    setAgentSyncNotice(null);
+    try {
+      const res = await fetch("/api/settings/voice/agent/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const json = (await res.json().catch(() => null)) as VoiceAgentSyncResponse | null;
+      if (!res.ok || !json) {
+        throw new Error(json?.error || "failed to sync live agent");
+      }
+      setAgentDebug(json.snapshot);
+      setAgentSyncNotice(
+        `Synced agent config: ${json.applied.toolIds.length} tools, prompt ${json.applied.promptLength} chars.`
+      );
+      setTimeout(() => setAgentSyncNotice(null), 3500);
+    } catch (e) {
+      setAgentSyncError(e instanceof Error ? e.message : "failed to sync live agent");
+    } finally {
+      setAgentSyncing(false);
+    }
+  }, []);
 
   const envNote = useMemo(() => {
     const parts: string[] = [];
@@ -271,6 +378,115 @@ export function VoiceSettingsForm() {
                 : "Missing. Add the ElevenLabs agent ID to enable voice."}
             </div>
           </div>
+
+          <section
+            style={{
+              border: "1px solid rgba(255,255,255,0.08)",
+              borderRadius: 10,
+              padding: 12,
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontWeight: 600 }}>Agent Debug</div>
+                <div className="muted" style={{ fontSize: 12 }}>
+                  Inspect live ElevenLabs tool wiring and spot naming mismatches.
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => void syncAgent()}
+                  disabled={agentSyncing || agentDebugLoading}
+                >
+                  {agentSyncing ? "Syncing..." : "Sync PCC defaults"}
+                </button>
+                <button
+                  className="btnSecondary"
+                  type="button"
+                  onClick={() => void inspectAgent()}
+                  disabled={agentDebugLoading || agentSyncing}
+                >
+                  {agentDebugLoading ? "Inspecting..." : "Inspect live agent"}
+                </button>
+              </div>
+            </div>
+
+            {agentDebugError && <div className="error">{agentDebugError}</div>}
+            {agentSyncError && <div className="error">{agentSyncError}</div>}
+            {agentSyncNotice && <div className="badge">{agentSyncNotice}</div>}
+
+            {agentDebug && (
+              <>
+                <div className="muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+                  Agent: {agentDebug.agent.name || "(unnamed)"} ({agentDebug.agent.id})<br />
+                  Configured ID: {agentDebug.configuredAgentId}<br />
+                  Prompt path: {agentDebug.agent.promptPath || "unknown"}<br />
+                  Prompt length: {agentDebug.agent.systemPromptLength} chars
+                </div>
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <span
+                    className="badge"
+                    style={{
+                      background:
+                        agentDebug.toolAudit.missingClientTools.length > 0
+                          ? "var(--color-warning, #eab308)"
+                          : "var(--color-success, #22c55e)",
+                      color:
+                        agentDebug.toolAudit.missingClientTools.length > 0 ? "#000" : "#fff",
+                    }}
+                  >
+                    Missing tools: {agentDebug.toolAudit.missingClientTools.length}
+                  </span>
+                  <span className="badge">
+                    Alias mismatches: {agentDebug.toolAudit.aliasMismatches.length}
+                  </span>
+                  <span className="badge">
+                    Extra tools: {agentDebug.toolAudit.extraConfiguredTools.length}
+                  </span>
+                </div>
+
+                {agentDebug.toolAudit.missingClientTools.length > 0 && (
+                  <div className="muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+                    Missing: {agentDebug.toolAudit.missingClientTools.join(", ")}
+                  </div>
+                )}
+
+                {agentDebug.toolAudit.aliasMismatches.length > 0 && (
+                  <div className="muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+                    Alias mismatches:{" "}
+                    {agentDebug.toolAudit.aliasMismatches
+                      .map(
+                        (entry) => `${entry.configured} should be ${entry.expected}`
+                      )
+                      .join("; ")}
+                  </div>
+                )}
+
+                {agentDebug.warnings.length > 0 && (
+                  <div className="muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+                    Warnings: {agentDebug.warnings.join(" ")}
+                  </div>
+                )}
+
+                <details>
+                  <summary className="muted" style={{ cursor: "pointer" }}>
+                    Configured tool names
+                  </summary>
+                  <div className="muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+                    {agentDebug.toolAudit.configuredClientTools.length
+                      ? agentDebug.toolAudit.configuredClientTools.join(", ")
+                      : "No custom client tools detected."}
+                  </div>
+                </details>
+              </>
+            )}
+          </section>
         </>
       )}
     </section>
