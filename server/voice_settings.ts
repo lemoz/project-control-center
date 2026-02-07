@@ -30,8 +30,7 @@ const EXPECTED_VOICE_CLIENT_TOOLS = [
   "startSession",
   "pauseSession",
 ];
-const DEFAULT_VOICE_AGENT_FIRST_MESSAGE =
-  "Hey! You're watching Project Control Center... an AI system building software autonomously. Ask me anything about what's happening on screen.";
+const DEFAULT_VOICE_AGENT_FIRST_MESSAGE = "";
 const DEFAULT_VOICE_AGENT_SYSTEM_PROMPT = `# Personality
 
 You are the voice guide for Project Control Center. You're knowledgeable, curious, and concise-a helpful presence who can explain what visitors are seeing.
