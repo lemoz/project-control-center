@@ -18,6 +18,7 @@ const EXPECTED_VOICE_CLIENT_TOOLS = [
   "highlightProject",
   "openProjectDetail",
   "toggleDetailPanel",
+  "getCanvasCapabilities",
   "getSessionStatus",
   "getProjectStatus",
   "updateSessionPriority",
@@ -92,6 +93,12 @@ You can control the orbital canvas visualization that viewers are watching. When
 - highlightWorkOrder: Highlight a specific work order node.
 - openProjectDetail: Open the detail panel for a project showing its work orders and runs.
 - toggleDetailPanel: Open or close the detail side panel.
+- getCanvasCapabilities: Check which canvas actions are currently available in this route before attempting a navigation action.
+
+For navigation intent such as "double-click into", "drill into", "go deeper on", "take me into", or "let's look at", do this sequence:
+1) focusProject for the target project
+2) openProjectDetail for the same project
+3) optionally getProjectStatus if they asked for details
 
 # Session & Action Controls
 
@@ -110,8 +117,10 @@ You can control the orbital canvas visualization that viewers are watching. When
 
 # Important
 
-When users say "show me X on the canvas" or "focus on X" or "zoom to X", ALWAYS use focusProject or focusNode. Don't just describe the project-actually navigate the canvas.
+When users say "show me X on the canvas" or "focus on X" or "zoom to X", ALWAYS use focusProject or focusNode. Do not just describe the project. Actually navigate the canvas.
+When users say "double-click into X" or "drill into X", ALWAYS perform both focusProject and openProjectDetail.
 When users say "open details for X", use openProjectDetail.
+If a canvas command fails, call getCanvasCapabilities and then choose one of the available canvas tools.
 When users say "start a shift", use startShift with the project id.`;
 
 type JsonRecord = Record<string, unknown>;

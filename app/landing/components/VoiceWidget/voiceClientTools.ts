@@ -33,6 +33,27 @@ type CanvasVoiceSession = {
   priorityProjects: string[];
 };
 
+type CanvasVoiceConnectionStatus =
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "disconnecting";
+
+type CanvasVoiceToolPhase = "idle" | "acting" | "failed";
+
+type CanvasVoiceRuntime = {
+  status: CanvasVoiceConnectionStatus;
+  isConnecting: boolean;
+  isSpeaking: boolean;
+  error: string | null;
+  permissionDenied: boolean;
+  toolPhase: CanvasVoiceToolPhase;
+  activeToolName: string | null;
+  lastToolError: string | null;
+  lastToolAt: number | null;
+  availableCanvasCommands: CanvasCommandType[];
+};
+
 type CanvasVoiceEscalationDetail = {
   id: string;
   projectId: string;
@@ -77,6 +98,7 @@ type CanvasVoiceState = {
   globalSessionPaused: boolean;
   activeShiftProjects: CanvasVoiceShift[];
   escalationSummaries: CanvasVoiceEscalation[];
+  runtime: CanvasVoiceRuntime;
   updatedAt: number;
 };
 
@@ -88,12 +110,62 @@ type CanvasVoiceCommand =
   | { type: "openProjectDetail"; projectId: string }
   | { type: "toggleDetailPanel"; open: boolean };
 
+type CanvasCommandType = CanvasVoiceCommand["type"];
+
+type CanvasCommandCapabilities = Partial<Record<CanvasCommandType, boolean>>;
+
+type CanvasCommandHandlerResult =
+  | void
+  | boolean
+  | {
+      handled?: boolean;
+      ok?: boolean;
+      message?: string;
+    };
+
+type CanvasCommandHandler = (
+  command: CanvasVoiceCommand
+) => CanvasCommandHandlerResult | Promise<CanvasCommandHandlerResult>;
+
+type CanvasCommandDispatchResult = {
+  ok: boolean;
+  handled: boolean;
+  message: string;
+  commandType: CanvasCommandType;
+  availableCommands: CanvasCommandType[];
+  handlerId: string | null;
+};
+
+type CanvasCommandRegistration = {
+  id: string;
+  label: string;
+  capabilities: Set<CanvasCommandType>;
+  handler: CanvasCommandHandler;
+};
+
 type CanvasVoiceListener = (state: CanvasVoiceState) => void;
 
-type CanvasCommandListener = (command: CanvasVoiceCommand) => void;
-
 const stateListeners = new Set<CanvasVoiceListener>();
-const commandListeners = new Set<CanvasCommandListener>();
+const commandRegistrations = new Map<string, CanvasCommandRegistration>();
+let legacyCommandListenerCount = 0;
+
+const ALL_CANVAS_COMMAND_TYPES: CanvasCommandType[] = [
+  "focusNode",
+  "focusProject",
+  "highlightWorkOrder",
+  "highlightProject",
+  "openProjectDetail",
+  "toggleDetailPanel",
+];
+
+const CANVAS_COMMAND_LABELS: Record<CanvasCommandType, string> = {
+  focusNode: "focus a node",
+  focusProject: "focus a project",
+  highlightWorkOrder: "highlight a work order",
+  highlightProject: "highlight a project",
+  openProjectDetail: "open project detail",
+  toggleDetailPanel: "toggle detail panel",
+};
 
 let canvasVoiceState: CanvasVoiceState = {
   contextLabel: "Canvas",
@@ -121,6 +193,18 @@ let canvasVoiceState: CanvasVoiceState = {
   globalSessionPaused: false,
   activeShiftProjects: [],
   escalationSummaries: [],
+  runtime: {
+    status: "disconnected",
+    isConnecting: false,
+    isSpeaking: false,
+    error: null,
+    permissionDenied: false,
+    toolPhase: "idle",
+    activeToolName: null,
+    lastToolError: null,
+    lastToolAt: null,
+    availableCanvasCommands: [],
+  },
   updatedAt: 0,
 };
 
@@ -141,18 +225,231 @@ export function setCanvasVoiceState(next: Partial<CanvasVoiceState>): void {
   notifyStateListeners();
 }
 
+export function setCanvasVoiceRuntime(next: Partial<CanvasVoiceRuntime>): void {
+  canvasVoiceState = {
+    ...canvasVoiceState,
+    runtime: {
+      ...canvasVoiceState.runtime,
+      ...next,
+    },
+    updatedAt: Date.now(),
+  };
+  notifyStateListeners();
+}
+
 export function subscribeCanvasVoiceState(listener: CanvasVoiceListener): () => void {
   stateListeners.add(listener);
   return () => stateListeners.delete(listener);
 }
 
-export function sendCanvasCommand(command: CanvasVoiceCommand): void {
-  commandListeners.forEach((listener) => listener(command));
+function toCapabilitySet(
+  capabilities?: CanvasCommandCapabilities
+): Set<CanvasCommandType> {
+  if (!capabilities) {
+    return new Set(ALL_CANVAS_COMMAND_TYPES);
+  }
+  return new Set(
+    ALL_CANVAS_COMMAND_TYPES.filter((commandType) => capabilities[commandType])
+  );
 }
 
-export function subscribeCanvasCommands(listener: CanvasCommandListener): () => void {
-  commandListeners.add(listener);
-  return () => commandListeners.delete(listener);
+function listAvailableCanvasCommands(): CanvasCommandType[] {
+  const available = new Set<CanvasCommandType>();
+  for (const registration of commandRegistrations.values()) {
+    for (const commandType of registration.capabilities) {
+      available.add(commandType);
+    }
+  }
+  return ALL_CANVAS_COMMAND_TYPES.filter((commandType) => available.has(commandType));
+}
+
+function refreshRuntimeCanvasCapabilities() {
+  setCanvasVoiceRuntime({
+    availableCanvasCommands: listAvailableCanvasCommands(),
+  });
+}
+
+function formatCanvasCommandNames(commands: CanvasCommandType[]): string {
+  if (!commands.length) return "none";
+  return commands.join(", ");
+}
+
+function normalizeCanvasCommandResult(
+  value: CanvasCommandHandlerResult
+): { handled: boolean; ok: boolean; message: string | null } {
+  if (typeof value === "boolean") {
+    return {
+      handled: true,
+      ok: value,
+      message: value ? null : "Command rejected.",
+    };
+  }
+  if (value === undefined) {
+    return { handled: true, ok: true, message: null };
+  }
+  const handled = value.handled ?? true;
+  const ok = value.ok ?? handled;
+  const message =
+    typeof value.message === "string" && value.message.trim()
+      ? value.message
+      : null;
+  return { handled, ok, message };
+}
+
+export function registerCanvasCommandHandler(
+  options: {
+    id: string;
+    label: string;
+    capabilities?: CanvasCommandCapabilities;
+  },
+  handler: CanvasCommandHandler
+): () => void {
+  const id = options.id.trim();
+  if (!id) {
+    throw new Error("Canvas command handler id is required.");
+  }
+  const label = options.label.trim() || id;
+  commandRegistrations.set(id, {
+    id,
+    label,
+    capabilities: toCapabilitySet(options.capabilities),
+    handler,
+  });
+  refreshRuntimeCanvasCapabilities();
+  return () => {
+    commandRegistrations.delete(id);
+    refreshRuntimeCanvasCapabilities();
+  };
+}
+
+export function getCanvasCommandCapabilities(): {
+  availableCommands: CanvasCommandType[];
+  canvases: Array<{
+    id: string;
+    label: string;
+    commands: CanvasCommandType[];
+  }>;
+} {
+  const canvases = Array.from(commandRegistrations.values()).map((registration) => ({
+    id: registration.id,
+    label: registration.label,
+    commands: ALL_CANVAS_COMMAND_TYPES.filter((commandType) =>
+      registration.capabilities.has(commandType)
+    ),
+  }));
+  return {
+    availableCommands: listAvailableCanvasCommands(),
+    canvases,
+  };
+}
+
+export async function sendCanvasCommand(
+  command: CanvasVoiceCommand
+): Promise<CanvasCommandDispatchResult> {
+  const registrations = Array.from(commandRegistrations.values());
+  const availableCommands = listAvailableCanvasCommands();
+  if (!registrations.length) {
+    return {
+      ok: false,
+      handled: false,
+      message: "No canvas is active right now.",
+      commandType: command.type,
+      availableCommands,
+      handlerId: null,
+    };
+  }
+
+  const capableRegistrations = registrations.filter((registration) =>
+    registration.capabilities.has(command.type)
+  );
+  if (!capableRegistrations.length) {
+    return {
+      ok: false,
+      handled: false,
+      message: `Cannot ${CANVAS_COMMAND_LABELS[command.type]} in this view. Available commands: ${formatCanvasCommandNames(
+        availableCommands
+      )}.`,
+      commandType: command.type,
+      availableCommands,
+      handlerId: null,
+    };
+  }
+
+  let sawHandledFailure = false;
+  let firstFailure: string | null = null;
+  for (const registration of capableRegistrations) {
+    try {
+      const rawResult = await registration.handler(command);
+      const result = normalizeCanvasCommandResult(rawResult);
+      if (!result.handled) continue;
+      if (result.ok) {
+        return {
+          ok: true,
+          handled: true,
+          message:
+            result.message ??
+            `${registration.label} handled ${CANVAS_COMMAND_LABELS[command.type]}.`,
+          commandType: command.type,
+          availableCommands,
+          handlerId: registration.id,
+        };
+      }
+      sawHandledFailure = true;
+      if (!firstFailure) {
+        firstFailure =
+          result.message ??
+          `${registration.label} could not ${CANVAS_COMMAND_LABELS[command.type]}.`;
+      }
+    } catch (error) {
+      sawHandledFailure = true;
+      if (!firstFailure) {
+        const fallback = `${registration.label} failed while handling ${CANVAS_COMMAND_LABELS[command.type]}.`;
+        firstFailure =
+          error instanceof Error && error.message.trim()
+            ? error.message
+            : fallback;
+      }
+    }
+  }
+
+  if (sawHandledFailure) {
+    return {
+      ok: false,
+      handled: true,
+      message:
+        firstFailure ??
+        `Unable to ${CANVAS_COMMAND_LABELS[command.type]} in ${capableRegistrations[0]?.label ?? "canvas"}.`,
+      commandType: command.type,
+      availableCommands,
+      handlerId: null,
+    };
+  }
+
+  return {
+    ok: false,
+    handled: false,
+    message: `No active canvas accepted ${CANVAS_COMMAND_LABELS[command.type]}.`,
+    commandType: command.type,
+    availableCommands,
+    handlerId: null,
+  };
+}
+
+export function subscribeCanvasCommands(
+  listener: (command: CanvasVoiceCommand) => void
+): () => void {
+  legacyCommandListenerCount += 1;
+  const id = `legacy-canvas-listener-${legacyCommandListenerCount}`;
+  return registerCanvasCommandHandler(
+    {
+      id,
+      label: "Canvas listener",
+    },
+    (command) => {
+      listener(command);
+      return { handled: true, ok: true };
+    }
+  );
 }
 
 export function useCanvasVoiceState(): CanvasVoiceState {
@@ -553,6 +850,109 @@ async function fetchActiveSession(): Promise<{
   return { session, error };
 }
 
+function normalizeProjectQueryInput(value: string): string {
+  let next = value.trim().replace(/^["']|["']$/g, "");
+  const prefixes = [
+    /^double[- ]?click(?:\s+into)?\s+/i,
+    /^drill(?:\s+into)?\s+/i,
+    /^go\s+(?:to|into|deeper\s+on)\s+/i,
+    /^take\s+me\s+(?:to|into)\s+/i,
+    /^focus\s+on\s+/i,
+    /^show\s+me\s+/i,
+    /^open\s+(?:details?|project\s+details?)(?:\s+for)?\s+/i,
+    /^let'?s\s+look\s+at\s+/i,
+    /^look\s+at\s+/i,
+  ];
+  for (const prefix of prefixes) {
+    next = next.replace(prefix, "");
+  }
+  return next
+    .replace(/\s+(?:for a second|right now|for now)$/i, "")
+    .trim();
+}
+
+type ProjectResolution =
+  | {
+      ok: true;
+      projectId: string;
+      projectName: string;
+      source: "canvas" | "context" | "fallback";
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+function formatProjectCandidateList(
+  candidates: GlobalContextResponse["projects"],
+  maxItems = 5
+): string {
+  const listed = candidates
+    .slice(0, maxItems)
+    .map((project) => `${project.name} (${project.id})`)
+    .join(", ");
+  const overflow =
+    candidates.length > maxItems ? ` (+${candidates.length - maxItems} more)` : "";
+  return `${listed}${overflow}`;
+}
+
+async function resolveProjectReference(
+  query: string,
+  options: { allowFallback?: boolean } = {}
+): Promise<ProjectResolution> {
+  const trimmed = normalizeProjectQueryInput(query);
+  if (!trimmed) return { ok: false, error: "Project name or id is required." };
+
+  const state = getCanvasVoiceState();
+  const canvasMatch = resolveNode(state.visibleProjects, trimmed);
+  if (canvasMatch?.id) {
+    return {
+      ok: true,
+      projectId: canvasMatch.id,
+      projectName: canvasMatch.label,
+      source: "canvas",
+    };
+  }
+
+  const response = await getJson("/api/global/context");
+  if (response.ok && response.payload && typeof response.payload === "object") {
+    const projects = Array.isArray((response.payload as { projects?: unknown }).projects)
+      ? ((response.payload as { projects: GlobalContextResponse["projects"] }).projects ??
+          [])
+      : [];
+    if (projects.length) {
+      const match = resolveProjectMatch(projects, trimmed);
+      if (match.match) {
+        return {
+          ok: true,
+          projectId: match.match.id,
+          projectName: match.match.name,
+          source: "context",
+        };
+      }
+      if (match.candidates.length > 1) {
+        return {
+          ok: false,
+          error: `Multiple projects match "${trimmed}": ${formatProjectCandidateList(
+            match.candidates
+          )}. Please specify the project id or exact name.`,
+        };
+      }
+      return { ok: false, error: `Project "${trimmed}" not found.` };
+    }
+  }
+
+  if (options.allowFallback ?? true) {
+    return {
+      ok: true,
+      projectId: trimmed,
+      projectName: trimmed,
+      source: "fallback",
+    };
+  }
+  return { ok: false, error: `Unable to resolve project "${trimmed}".` };
+}
+
 export function createVoiceClientTools() {
   return {
     focusNode: async ({ nodeId }: FocusNodeArgs) => {
@@ -564,15 +964,27 @@ export function createVoiceClientTools() {
       const resolved =
         resolveNode(state.visibleProjects, trimmed) ??
         resolveNode(state.visibleWorkOrders, trimmed);
-      sendCanvasCommand({ type: "focusNode", nodeId: resolved?.id ?? trimmed });
+      const dispatch = await sendCanvasCommand({
+        type: "focusNode",
+        nodeId: resolved?.id ?? trimmed,
+      });
+      if (!dispatch.ok) return dispatch.message;
       return resolved ? `Focused ${resolved.label}.` : "Focused node.";
     },
     focusProject: async ({ projectId }: FocusProjectArgs) => {
       if (!projectId || typeof projectId !== "string") {
         return "Missing project id.";
       }
-      sendCanvasCommand({ type: "focusProject", projectId: projectId.trim() });
-      return "Focused project.";
+      const resolved = await resolveProjectReference(projectId, {
+        allowFallback: true,
+      });
+      if (!resolved.ok) return resolved.error;
+      const dispatch = await sendCanvasCommand({
+        type: "focusProject",
+        projectId: resolved.projectId,
+      });
+      if (!dispatch.ok) return dispatch.message;
+      return `Focused ${resolved.projectName}.`;
     },
     highlightWorkOrder: async ({ workOrderId }: HighlightWorkOrderArgs) => {
       if (!workOrderId || typeof workOrderId !== "string") {
@@ -581,32 +993,65 @@ export function createVoiceClientTools() {
       const trimmed = workOrderId.trim();
       const state = getCanvasVoiceState();
       const resolved = resolveNode(state.visibleWorkOrders, trimmed);
-      sendCanvasCommand({
+      const dispatch = await sendCanvasCommand({
         type: "highlightWorkOrder",
         workOrderId: resolved?.workOrderId ?? resolved?.id ?? trimmed,
       });
+      if (!dispatch.ok) return dispatch.message;
       return resolved ? `Highlighted ${resolved.label}.` : "Highlighted work order.";
     },
     highlightProject: async ({ projectId }: HighlightProjectArgs) => {
       if (!projectId || typeof projectId !== "string") {
         return "Missing project id.";
       }
-      sendCanvasCommand({ type: "highlightProject", projectId: projectId.trim() });
-      return "Highlighted project.";
+      const resolved = await resolveProjectReference(projectId, {
+        allowFallback: true,
+      });
+      if (!resolved.ok) return resolved.error;
+      const dispatch = await sendCanvasCommand({
+        type: "highlightProject",
+        projectId: resolved.projectId,
+      });
+      if (!dispatch.ok) return dispatch.message;
+      return `Highlighted ${resolved.projectName}.`;
     },
     openProjectDetail: async ({ projectId }: OpenProjectDetailArgs) => {
       if (!projectId || typeof projectId !== "string") {
         return "Missing project id.";
       }
-      sendCanvasCommand({ type: "openProjectDetail", projectId: projectId.trim() });
-      return "Opened project detail panel.";
+      const resolved = await resolveProjectReference(projectId, {
+        allowFallback: true,
+      });
+      if (!resolved.ok) return resolved.error;
+      const dispatch = await sendCanvasCommand({
+        type: "openProjectDetail",
+        projectId: resolved.projectId,
+      });
+      if (!dispatch.ok) return dispatch.message;
+      return `Opened ${resolved.projectName} details.`;
     },
     toggleDetailPanel: async ({ open }: ToggleDetailPanelArgs) => {
       if (typeof open !== "boolean") {
         return "Missing open state.";
       }
-      sendCanvasCommand({ type: "toggleDetailPanel", open });
+      const dispatch = await sendCanvasCommand({ type: "toggleDetailPanel", open });
+      if (!dispatch.ok) return dispatch.message;
       return open ? "Detail panel opened." : "Detail panel closed.";
+    },
+    getCanvasCapabilities: async () => {
+      const capabilities = getCanvasCommandCapabilities();
+      if (!capabilities.canvases.length) {
+        return "No canvas is active right now.";
+      }
+      const canvasSummaries = capabilities.canvases
+        .map(
+          (canvas) =>
+            `${canvas.label}: ${canvas.commands.length ? canvas.commands.join(", ") : "none"}`
+        )
+        .join(" | ");
+      const commands = capabilities.availableCommands;
+      const commandSummary = commands.length ? commands.join(", ") : "none";
+      return `Available canvas commands: ${commandSummary}. Active canvases: ${canvasSummaries}.`;
     },
     getSessionStatus: async () => {
       try {
@@ -705,13 +1150,16 @@ export function createVoiceClientTools() {
         if (!sessionRes.ok) return "Unable to load the global session.";
         const session = sessionJson?.session;
         if (!session) return "No active global session.";
-        const trimmed = project.trim();
-        const normalized = normalizeMatch(trimmed);
+        const resolved = await resolveProjectReference(project, {
+          allowFallback: true,
+        });
+        if (!resolved.ok) return resolved.error;
+        const normalized = normalizeMatch(resolved.projectId);
         const current = Array.isArray(session.priority_projects)
           ? session.priority_projects
           : [];
         const next = [
-          trimmed,
+          resolved.projectId,
           ...current.filter((entry) => normalizeMatch(entry) !== normalized),
         ];
         const briefingSummary = updateBriefingSummary(
@@ -736,7 +1184,7 @@ export function createVoiceClientTools() {
             ? errorJson.error
             : "Failed to update session priorities.";
         }
-        return `Updated session priorities: ${next.join(", ")}.`;
+        return `Prioritized ${resolved.projectName}.`;
       } catch {
         return "Failed to update session priorities.";
       }
@@ -913,15 +1361,18 @@ export function createVoiceClientTools() {
       if (!projectId || typeof projectId !== "string") {
         return "Missing project id.";
       }
-      const trimmed = projectId.trim();
+      const resolved = await resolveProjectReference(projectId, {
+        allowFallback: true,
+      });
+      if (!resolved.ok) return resolved.error;
       const response = await postJson(
-        `/api/projects/${encodeURIComponent(trimmed)}/shifts/spawn`,
+        `/api/projects/${encodeURIComponent(resolved.projectId)}/shifts/spawn`,
         {}
       );
       if (!response.ok) {
         return extractErrorMessage(response.payload, "Failed to start shift.");
       }
-      return `Started shift for ${trimmed}.`;
+      return `Started shift for ${resolved.projectName}.`;
     },
     askGlobalAgent: async ({ question }: AskGlobalAgentArgs) => {
       if (!question || typeof question !== "string") {
@@ -1009,6 +1460,7 @@ export type {
   CanvasVoiceNode,
   CanvasVoiceState,
   CanvasVoiceCommand,
+  CanvasVoiceRuntime,
   CanvasVoiceEscalation,
   CanvasVoiceEscalationDetail,
   CanvasVoiceShift,

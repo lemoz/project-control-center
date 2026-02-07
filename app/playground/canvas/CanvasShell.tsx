@@ -23,8 +23,8 @@ import type { RiverBubbleDetails } from "./visualizations/TimelineRiverViz";
 import type { HeatmapGrouping } from "./visualizations/HeatmapGridViz";
 import { selectWorkOrderNodes, type WorkOrderFilter } from "./visualizations/OrbitalGravityViz";
 import {
+  registerCanvasCommandHandler,
   setCanvasVoiceState,
-  subscribeCanvasCommands,
   type CanvasVoiceNode,
 } from "../../landing/components/VoiceWidget/voiceClientTools";
 
@@ -144,6 +144,10 @@ function formatActivity(value: Date | null): string {
 
 function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
+}
+
+function normalizeProjectQuery(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function toVoiceNode(node: VisualizationNode): CanvasVoiceNode {
@@ -313,6 +317,7 @@ export function CanvasShell() {
     transform,
     setTransform,
     selectedNode,
+    selectNode,
     hoveredNode,
     tooltipPosition,
     isPanning,
@@ -356,7 +361,7 @@ export function CanvasShell() {
   const focusCanvasNode = useCallback(
     (nodeId: string) => {
       const trimmed = nodeId.trim();
-      if (!trimmed) return;
+      if (!trimmed) return false;
       setMode("manual");
       let attempts = 0;
       const normalized = trimmed.toLowerCase();
@@ -379,6 +384,9 @@ export function CanvasShell() {
           (item) => item.type === "project" && matchesNormalized(item.label)
         ) ??
         null;
+
+      const initialMatch = resolveNode();
+      if (!initialMatch) return false;
 
       const attempt = () => {
         attempts += 1;
@@ -405,8 +413,30 @@ export function CanvasShell() {
       };
 
       window.requestAnimationFrame(attempt);
+      return true;
     },
     [canvasSize.height, canvasSize.width, combinedNodes, setTransform]
+  );
+
+  const resolveProjectNodeByQuery = useCallback(
+    (query: string): ProjectNode | null => {
+      const normalized = normalizeProjectQuery(query);
+      if (!normalized) return null;
+      const projectNodes = combinedNodes.filter(isProjectNode);
+      const exact = projectNodes.find((node) => {
+        const id = normalizeProjectQuery(node.id);
+        const name = normalizeProjectQuery(node.name);
+        return id === normalized || name === normalized;
+      });
+      if (exact) return exact;
+      const partialMatches = projectNodes.filter((node) => {
+        const id = normalizeProjectQuery(node.id);
+        const name = normalizeProjectQuery(node.name);
+        return id.includes(normalized) || name.includes(normalized);
+      });
+      return partialMatches.length === 1 ? partialMatches[0] : null;
+    },
+    [combinedNodes]
   );
 
   useEffect(() => {
@@ -586,23 +616,118 @@ export function CanvasShell() {
   }, [canvasSize.height, canvasSize.width, focusNode, mode, setTransform]);
 
   useEffect(() => {
-    return subscribeCanvasCommands((command) => {
-      if (command.type === "focusNode") {
-        focusCanvasNode(command.nodeId);
-        return;
+    return registerCanvasCommandHandler(
+      {
+        id: `playground-canvas:${selectedVizId}`,
+        label: "Playground canvas",
+        capabilities: {
+          focusNode: true,
+          focusProject: true,
+          highlightWorkOrder: true,
+          highlightProject: true,
+          openProjectDetail: true,
+          toggleDetailPanel: true,
+        },
+      },
+      (command) => {
+        if (command.type === "focusNode") {
+          const ok = focusCanvasNode(command.nodeId);
+          return {
+            handled: true,
+            ok,
+            message: ok
+              ? "Focused node on canvas."
+              : `Node "${command.nodeId}" is not visible on this canvas.`,
+          };
+        }
+        if (command.type === "focusProject") {
+          const target = resolveProjectNodeByQuery(command.projectId);
+          if (!target) {
+            return {
+              handled: true,
+              ok: false,
+              message: `Project "${command.projectId}" is not visible on this canvas.`,
+            };
+          }
+          const ok = focusCanvasNode(target.id);
+          return {
+            handled: true,
+            ok,
+            message: ok
+              ? "Focused project on canvas."
+              : `Project "${command.projectId}" is not visible on this canvas.`,
+          };
+        }
+        if (command.type === "highlightWorkOrder") {
+          const resolvedId =
+            data.workOrderNodes?.find((node) => node.workOrderId === command.workOrderId)?.id ??
+            data.workOrderNodes?.find((node) => node.id === command.workOrderId)?.id ??
+            null;
+          if (!resolvedId) {
+            return {
+              handled: true,
+              ok: false,
+              message: `Work order "${command.workOrderId}" is not visible on this canvas.`,
+            };
+          }
+          setHighlightedWorkOrderId(resolvedId);
+          return {
+            handled: true,
+            ok: true,
+            message: "Highlighted work order on canvas.",
+          };
+        }
+        if (command.type === "highlightProject") {
+          const target = resolveProjectNodeByQuery(command.projectId);
+          if (!target) {
+            return {
+              handled: true,
+              ok: false,
+              message: `Project "${command.projectId}" is not visible on this canvas.`,
+            };
+          }
+          selectNode(target.id);
+          return {
+            handled: true,
+            ok: true,
+            message: "Highlighted project on canvas.",
+          };
+        }
+        if (command.type === "openProjectDetail") {
+          const target = resolveProjectNodeByQuery(command.projectId);
+          if (!target) {
+            return {
+              handled: true,
+              ok: false,
+              message: `Project "${command.projectId}" is not visible on this canvas.`,
+            };
+          }
+          setDetailPanelOpen(true);
+          selectNode(target.id);
+          return {
+            handled: true,
+            ok: true,
+            message: "Opened project detail panel.",
+          };
+        }
+        if (command.type === "toggleDetailPanel") {
+          setDetailPanelOpen(command.open);
+          return {
+            handled: true,
+            ok: true,
+            message: command.open ? "Detail panel opened." : "Detail panel closed.",
+          };
+        }
+        return { handled: false };
       }
-      if (command.type === "highlightWorkOrder") {
-        const resolvedId =
-          data.workOrderNodes?.find((node) => node.workOrderId === command.workOrderId)?.id ??
-          null;
-        setHighlightedWorkOrderId(resolvedId);
-        return;
-      }
-      if (command.type === "toggleDetailPanel") {
-        setDetailPanelOpen(command.open);
-      }
-    });
-  }, [data.workOrderNodes, focusCanvasNode]);
+    );
+  }, [
+    data.workOrderNodes,
+    focusCanvasNode,
+    resolveProjectNodeByQuery,
+    selectNode,
+    selectedVizId,
+  ]);
 
   const handlePointerDown = useCallback<PointerEventHandler<HTMLCanvasElement>>(
     (event) => {

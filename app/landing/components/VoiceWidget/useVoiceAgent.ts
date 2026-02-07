@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useConversation, type Status } from "@elevenlabs/react";
 import {
   createVoiceClientTools,
+  setCanvasVoiceRuntime,
   useCanvasVoiceState,
+  type CanvasVoiceRuntime,
   type CanvasVoiceSession,
 } from "./voiceClientTools";
 
@@ -60,6 +62,27 @@ function shouldTreatAsPermissionError(error: unknown): boolean {
   return false;
 }
 
+function normalizeRuntimeStatus(value: Status): CanvasVoiceRuntime["status"] {
+  if (value === "connected") return "connected";
+  if (value === "connecting") return "connecting";
+  if (value === "disconnecting") return "disconnecting";
+  return "disconnected";
+}
+
+function parseToolName(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as { tool_name?: unknown };
+  return typeof record.tool_name === "string" && record.tool_name.trim()
+    ? record.tool_name
+    : null;
+}
+
+function parseToolResponseError(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const record = payload as { is_error?: unknown };
+  return Boolean(record.is_error);
+}
+
 export function useVoiceAgent() {
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +101,12 @@ export function useVoiceAgent() {
     },
     onDisconnect: () => {
       setStarting(false);
+      setCanvasVoiceRuntime({
+        toolPhase: "idle",
+        activeToolName: null,
+        lastToolError: null,
+        lastToolAt: Date.now(),
+      });
     },
     onMessage: (message: ConversationMessage) => {
       setTranscript((prev) => {
@@ -99,6 +128,34 @@ export function useVoiceAgent() {
     },
     onError: (message) => {
       setError(typeof message === "string" ? message : "Voice agent error.");
+    },
+    onUnhandledClientToolCall: (payload) => {
+      const toolName = parseToolName(payload) ?? "unknown_tool";
+      setCanvasVoiceRuntime({
+        toolPhase: "failed",
+        activeToolName: toolName,
+        lastToolError: `Unhandled client tool call: ${toolName}.`,
+        lastToolAt: Date.now(),
+      });
+    },
+    onAgentToolRequest: (payload) => {
+      const toolName = parseToolName(payload);
+      setCanvasVoiceRuntime({
+        toolPhase: "acting",
+        activeToolName: toolName,
+        lastToolError: null,
+        lastToolAt: Date.now(),
+      });
+    },
+    onAgentToolResponse: (payload) => {
+      const toolName = parseToolName(payload);
+      const isError = parseToolResponseError(payload);
+      setCanvasVoiceRuntime({
+        toolPhase: isError ? "failed" : "idle",
+        activeToolName: isError ? toolName : null,
+        lastToolError: isError ? `${toolName ?? "Tool"} failed.` : null,
+        lastToolAt: Date.now(),
+      });
     },
   });
 
@@ -244,6 +301,16 @@ export function useVoiceAgent() {
     greetingSentRef.current = true;
     void sendSystemMessage(greeting);
   }, [canvasState.session, sendSystemMessage, status]);
+
+  useEffect(() => {
+    setCanvasVoiceRuntime({
+      status: normalizeRuntimeStatus(status),
+      isConnecting: starting || status === "connecting",
+      isSpeaking,
+      error,
+      permissionDenied,
+    });
+  }, [error, isSpeaking, permissionDenied, starting, status]);
 
   return {
     status,

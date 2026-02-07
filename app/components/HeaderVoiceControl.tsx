@@ -2,11 +2,53 @@
 
 import { useEffect, useRef, useState } from "react";
 import { VoiceWidget } from "../landing/components/VoiceWidget/VoiceWidget";
+import {
+  useCanvasVoiceState,
+  type CanvasVoiceRuntime,
+} from "../landing/components/VoiceWidget/voiceClientTools";
+
+type HeaderVoiceState =
+  | "idle"
+  | "connecting"
+  | "listening"
+  | "acting"
+  | "speaking"
+  | "error";
+
+function deriveHeaderVoiceState(
+  runtime: CanvasVoiceRuntime
+): HeaderVoiceState {
+  if (runtime.error || runtime.permissionDenied || runtime.toolPhase === "failed") {
+    return "error";
+  }
+  if (runtime.isConnecting || runtime.status === "connecting") return "connecting";
+  if (runtime.status === "connected" && runtime.toolPhase === "acting") return "acting";
+  if (runtime.status === "connected" && runtime.isSpeaking) return "speaking";
+  if (runtime.status === "connected") return "listening";
+  return "idle";
+}
+
+function labelForState(state: HeaderVoiceState): string {
+  if (state === "connecting") return "Connecting";
+  if (state === "acting") return "Acting";
+  if (state === "speaking") return "Speaking";
+  if (state === "listening") return "Listening";
+  if (state === "error") return "Error";
+  return "Idle";
+}
 
 export function HeaderVoiceControl() {
   const [open, setOpen] = useState(false);
   const [hasMountedWidget, setHasMountedWidget] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const canvasState = useCanvasVoiceState();
+  const voiceState = deriveHeaderVoiceState(canvasState.runtime);
+  const voiceLabel = labelForState(voiceState);
+  const activeToolLabel =
+    voiceState === "acting" && canvasState.runtime.activeToolName
+      ? ` (${canvasState.runtime.activeToolName})`
+      : "";
+  const titleLabel = `Voice guide (${voiceLabel}${activeToolLabel})`;
 
   useEffect(() => {
     if (!open) return;
@@ -45,13 +87,21 @@ export function HeaderVoiceControl() {
     >
       <button
         type="button"
-        className={"nav-voice-trigger" + (open ? " nav-voice-trigger--open" : "")}
+        className={
+          "nav-voice-trigger" +
+          (open ? " nav-voice-trigger--open" : "") +
+          ` nav-voice-trigger--${voiceState}`
+        }
         onClick={() => setOpen((prev) => !prev)}
-        aria-label={open ? "Close voice guide" : "Open voice guide"}
+        aria-label={
+          open
+            ? `Close voice guide (${voiceLabel.toLowerCase()})`
+            : `Open voice guide (${voiceLabel.toLowerCase()})`
+        }
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-controls="nav-voice-panel"
-        title="Voice guide"
+        title={titleLabel}
       >
         <svg
           width="16"
@@ -70,6 +120,9 @@ export function HeaderVoiceControl() {
           <line x1="8" y1="23" x2="16" y2="23" />
         </svg>
         <span className="nav-voice-label">Voice</span>
+        <span className={"nav-voice-status nav-voice-status--" + voiceState}>
+          {voiceLabel}
+        </span>
       </button>
 
       {hasMountedWidget && (

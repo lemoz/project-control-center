@@ -840,6 +840,92 @@ a {
   color: #e6e8ee;
 }
 
+.nav-voice-trigger--connecting {
+  border-color: rgba(56, 189, 248, 0.9);
+}
+
+.nav-voice-trigger--listening {
+  border-color: rgba(34, 197, 94, 0.9);
+}
+
+.nav-voice-trigger--acting {
+  border-color: rgba(251, 191, 36, 0.95);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.22);
+}
+
+.nav-voice-trigger--speaking {
+  border-color: rgba(59, 130, 246, 0.95);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.25);
+}
+
+.nav-voice-trigger--error {
+  border-color: rgba(239, 68, 68, 0.9);
+}
+
+.nav-voice-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  background: rgba(15, 19, 32, 0.92);
+  border: 1px solid rgba(43, 51, 71, 0.8);
+}
+
+.nav-voice-status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #64748b;
+}
+
+.nav-voice-status--connecting::before {
+  background: #38bdf8;
+  animation: navVoicePulse 1.1s ease-in-out infinite;
+}
+
+.nav-voice-status--connecting {
+  color: #bae6fd;
+}
+
+.nav-voice-status--listening::before {
+  background: #22c55e;
+}
+
+.nav-voice-status--listening {
+  color: #bbf7d0;
+}
+
+.nav-voice-status--acting::before {
+  background: #fbbf24;
+  animation: navVoicePulse 0.9s ease-in-out infinite;
+}
+
+.nav-voice-status--acting {
+  color: #fde68a;
+}
+
+.nav-voice-status--speaking::before {
+  background: #3b82f6;
+  animation: navVoicePulse 0.8s ease-in-out infinite;
+}
+
+.nav-voice-status--speaking {
+  color: #bfdbfe;
+}
+
+.nav-voice-status--error::before {
+  background: #ef4444;
+}
+
+.nav-voice-status--error {
+  color: #fecaca;
+}
+
 .nav-voice-panel {
   position: absolute;
   right: 0;
@@ -858,6 +944,18 @@ a {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
+}
+
+@keyframes navVoicePulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.35);
+    opacity: 0.75;
+  }
 }
 
 @media (max-width: 720px) {
@@ -928,6 +1026,11 @@ a {
 
   .nav-voice-label {
     display: none;
+  }
+
+  .nav-voice-status {
+    padding: 2px 5px;
+    font-size: 9px;
   }
 
   .nav-voice-panel {

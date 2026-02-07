@@ -26,8 +26,8 @@ import type {
   WorkOrderStatus,
 } from "../playground/canvas/types";
 import {
+  registerCanvasCommandHandler,
   setCanvasVoiceState,
-  subscribeCanvasCommands,
   type CanvasVoiceNode,
 } from "../landing/components/VoiceWidget/voiceClientTools";
 
@@ -63,6 +63,10 @@ function formatActivity(value: Date | null): string {
 
 function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
+}
+
+function normalizeProjectQuery(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function easeOutCubic(value: number): number {
@@ -324,10 +328,14 @@ export function LiveOrbitalCanvas({
         if (!res.ok) {
           throw new Error((json as { error?: string } | null)?.error || "failed to load state");
         }
+        const payload =
+          json && "output_media" in json
+            ? (json as MeetingOutputMediaResponse)
+            : null;
         if (active) {
-          setScreenShareState(json?.output_media ?? null);
-          setScreenShareMeetingStatus(json?.meeting?.status ?? null);
-          setScreenShareError(json?.output_media?.last_error ?? null);
+          setScreenShareState(payload?.output_media ?? null);
+          setScreenShareMeetingStatus(payload?.meeting?.status ?? null);
+          setScreenShareError(payload?.output_media?.last_error ?? null);
         }
       } catch (err) {
         if (active) {
@@ -437,7 +445,7 @@ export function LiveOrbitalCanvas({
   const focusCanvasNode = useCallback(
     (nodeId: string) => {
       const trimmed = nodeId.trim();
-      if (!trimmed) return;
+      if (!trimmed) return false;
       lastInteractionRef.current = Date.now();
       setMode("manual");
       let attempts = 0;
@@ -449,6 +457,9 @@ export function LiveOrbitalCanvas({
         workOrderNodes.find((node) => node.id.toLowerCase() === normalized) ??
         workOrderNodes.find((node) => node.workOrderId.toLowerCase() === normalized) ??
         null;
+
+      const initialMatch = resolveNode();
+      if (!initialMatch) return false;
 
       const attempt = () => {
         attempts += 1;
@@ -475,8 +486,26 @@ export function LiveOrbitalCanvas({
       };
 
       window.requestAnimationFrame(attempt);
+      return true;
     },
     [canvasSize.height, canvasSize.width, setTransform, workOrderNodes]
+  );
+
+  const matchesCurrentProject = useCallback(
+    (query: string) => {
+      if (!project) return false;
+      const normalized = normalizeProjectQuery(query);
+      if (!normalized) return false;
+      const projectId = normalizeProjectQuery(project.id);
+      const projectName = normalizeProjectQuery(project.name);
+      return (
+        normalized === projectId ||
+        normalized === projectName ||
+        projectId.includes(normalized) ||
+        projectName.includes(normalized)
+      );
+    },
+    [project]
   );
 
   useEffect(() => {
@@ -648,17 +677,151 @@ export function LiveOrbitalCanvas({
   }, [canvasSize.height, canvasSize.width, focusNode, hasActiveShift, mode, startFollowAnimation]);
 
   useEffect(() => {
-    return subscribeCanvasCommands((command) => {
-      if (command.type === "focusNode") {
-        focusCanvasNode(command.nodeId);
-        return;
+    return registerCanvasCommandHandler(
+      {
+        id: `live-orbital-canvas:${projectId ?? "none"}`,
+        label: project ? `${project.name} live canvas` : "Live canvas",
+        capabilities: {
+          focusNode: true,
+          focusProject: true,
+          highlightWorkOrder: true,
+          highlightProject: true,
+          openProjectDetail: true,
+          toggleDetailPanel: true,
+        },
+      },
+      (command) => {
+        if (command.type === "focusNode") {
+          const ok = focusCanvasNode(command.nodeId);
+          return {
+            handled: true,
+            ok,
+            message: ok
+              ? "Focused work order node."
+              : `Node "${command.nodeId}" is not visible in this live view.`,
+          };
+        }
+        if (command.type === "highlightWorkOrder") {
+          setHighlightedWorkOrderId(command.workOrderId);
+          return {
+            handled: true,
+            ok: true,
+            message: "Highlighted work order in live view.",
+          };
+        }
+        if (command.type === "focusProject") {
+          if (!matchesCurrentProject(command.projectId)) {
+            return {
+              handled: true,
+              ok: false,
+              message: `Project "${command.projectId}" is not the active live project.`,
+            };
+          }
+          if (focusNode) {
+            const ok = focusCanvasNode(focusNode.id);
+            return {
+              handled: true,
+              ok,
+              message: ok
+                ? "Focused active project context."
+                : "Unable to center live project context right now.",
+            };
+          }
+          return {
+            handled: true,
+            ok: true,
+            message: "Already in the requested live project.",
+          };
+        }
+        if (command.type === "highlightProject") {
+          if (!matchesCurrentProject(command.projectId)) {
+            return {
+              handled: true,
+              ok: false,
+              message: `Project "${command.projectId}" is not the active live project.`,
+            };
+          }
+          if (focusNode?.workOrderId) {
+            setHighlightedWorkOrderId(focusNode.workOrderId);
+          }
+          return {
+            handled: true,
+            ok: true,
+            message: "Highlighted active live project context.",
+          };
+        }
+        if (command.type === "openProjectDetail") {
+          if (!matchesCurrentProject(command.projectId)) {
+            return {
+              handled: true,
+              ok: false,
+              message: `Project "${command.projectId}" is not the active live project.`,
+            };
+          }
+          if (selectedWorkOrderNode) {
+            return {
+              handled: true,
+              ok: true,
+              message: "Live detail panel already open.",
+            };
+          }
+          if (focusNode) {
+            selectNode(focusNode.id);
+            return {
+              handled: true,
+              ok: true,
+              message: "Opened live detail panel for active work order.",
+            };
+          }
+          return {
+            handled: true,
+            ok: false,
+            message: "No active work order is available to open details.",
+          };
+        }
+        if (command.type === "toggleDetailPanel") {
+          if (!command.open) {
+            clearSelection();
+            return {
+              handled: true,
+              ok: true,
+              message: "Live detail panel closed.",
+            };
+          }
+          if (selectedWorkOrderNode) {
+            return {
+              handled: true,
+              ok: true,
+              message: "Live detail panel already open.",
+            };
+          }
+          if (focusNode) {
+            selectNode(focusNode.id);
+            return {
+              handled: true,
+              ok: true,
+              message: "Live detail panel opened.",
+            };
+          }
+          return {
+            handled: true,
+            ok: false,
+            message: "No active work order is available to open details.",
+          };
+        }
+        return { handled: false };
       }
-      if (command.type === "highlightWorkOrder") {
-        setHighlightedWorkOrderId(command.workOrderId);
-        return;
-      }
-    });
-  }, [focusCanvasNode]);
+    );
+  }, [
+    clearSelection,
+    focusCanvasNode,
+    focusNode,
+    matchesCurrentProject,
+    project,
+    projectId,
+    selectNode,
+    selectedWorkOrderNode,
+  ]);
 
   useEffect(() => {
     const render = () => {

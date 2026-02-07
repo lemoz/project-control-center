@@ -19,8 +19,8 @@ import type {
   VisualizationNode,
 } from "../playground/canvas/types";
 import {
+  registerCanvasCommandHandler,
   setCanvasVoiceState,
-  subscribeCanvasCommands,
   type CanvasVoiceEscalation,
   type CanvasVoiceNode,
   type CanvasVoiceShift,
@@ -119,6 +119,33 @@ function withAlpha(hex: string, alpha: number): string {
 function pulseColor(action?: string): string {
   if (!action) return PULSE_COLORS.DELEGATE;
   return PULSE_COLORS[action] ?? PULSE_COLORS.DELEGATE;
+}
+
+function normalizeProjectQuery(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function resolveProjectNodeByQuery(
+  projectNodes: ProjectNode[],
+  query: string
+): ProjectNode | null {
+  const normalized = normalizeProjectQuery(query);
+  if (!normalized) return null;
+  const byId = projectNodes.find(
+    (node) => normalizeProjectQuery(node.id) === normalized
+  );
+  if (byId) return byId;
+  const byName = projectNodes.find(
+    (node) => normalizeProjectQuery(node.name) === normalized
+  );
+  if (byName) return byName;
+  const partials = projectNodes.filter((node) => {
+    const id = normalizeProjectQuery(node.id);
+    const name = normalizeProjectQuery(node.name);
+    return id.includes(normalized) || name.includes(normalized);
+  });
+  if (partials.length === 1) return partials[0] ?? null;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +406,8 @@ export function GlobalOrbitalCanvas({
       focusedNode: voiceSelectedNode,
       selectedNode: voiceSelectedNode,
       visibleProjects: voiceVisibleProjects,
+      visibleWorkOrders: [],
+      highlightedWorkOrderId: null,
       detailPanelOpen: Boolean(selectedProjectId),
       globalSessionState,
       globalSessionPaused,
@@ -550,8 +579,8 @@ export function GlobalOrbitalCanvas({
   }, [setTransform]);
 
   const focusProjectNode = useCallback(
-    (projectId: string) => {
-      const target = projectNodes.find((node) => node.id === projectId);
+    (projectQuery: string) => {
+      const target = resolveProjectNodeByQuery(projectNodes, projectQuery);
       if (!target || target.x === undefined || target.y === undefined) return false;
       const tx = target.x as number;
       const ty = target.y as number;
@@ -569,8 +598,8 @@ export function GlobalOrbitalCanvas({
   );
 
   const openProjectDetail = useCallback(
-    (projectId: string) => {
-      const target = projectNodes.find((node) => node.id === projectId);
+    (projectQuery: string) => {
+      const target = resolveProjectNodeByQuery(projectNodes, projectQuery);
       if (!target) return false;
       if (selectedProjectNode?.id === target.id) {
         onSelectProject?.(target.id, target);
@@ -583,20 +612,92 @@ export function GlobalOrbitalCanvas({
   );
 
   useEffect(() => {
-    return subscribeCanvasCommands((command) => {
-      if (command.type === "focusProject") {
-        focusProjectNode(command.projectId);
-        return;
+    return registerCanvasCommandHandler(
+      {
+        id: "global-orbital-canvas",
+        label: "Portfolio canvas",
+        capabilities: {
+          focusNode: true,
+          focusProject: true,
+          highlightProject: true,
+          openProjectDetail: true,
+          toggleDetailPanel: true,
+        },
+      },
+      (command) => {
+        if (command.type === "focusProject") {
+          const ok = focusProjectNode(command.projectId);
+          return {
+            handled: true,
+            ok,
+            message: ok
+              ? "Focused project on portfolio canvas."
+              : `Project "${command.projectId}" is not visible on this canvas.`,
+          };
+        }
+        if (command.type === "focusNode") {
+          const ok = focusProjectNode(command.nodeId);
+          return {
+            handled: true,
+            ok,
+            message: ok
+              ? "Focused node on portfolio canvas."
+              : `Node "${command.nodeId}" is not visible on this canvas.`,
+          };
+        }
+        if (command.type === "highlightProject") {
+          const target = resolveProjectNodeByQuery(projectNodes, command.projectId);
+          if (!target) {
+            return {
+              handled: true,
+              ok: false,
+              message: `Project "${command.projectId}" is not visible on this canvas.`,
+            };
+          }
+          setHighlightedProjectId(target.id);
+          return {
+            handled: true,
+            ok: true,
+            message: "Highlighted project on portfolio canvas.",
+          };
+        }
+        if (command.type === "openProjectDetail") {
+          const ok = openProjectDetail(command.projectId);
+          return {
+            handled: true,
+            ok,
+            message: ok
+              ? "Opened project detail panel."
+              : `Project "${command.projectId}" is not visible on this canvas.`,
+          };
+        }
+        if (command.type === "toggleDetailPanel") {
+          if (command.open) {
+            if (selectedProjectNode) {
+              return {
+                handled: true,
+                ok: true,
+                message: "Project detail panel is already open.",
+              };
+            }
+            return {
+              handled: true,
+              ok: false,
+              message: "Select a project before opening the detail panel.",
+            };
+          }
+          clearSelection();
+          setHighlightedProjectId(null);
+          return {
+            handled: true,
+            ok: true,
+            message: "Project detail panel closed.",
+          };
+        }
+        return { handled: false };
       }
-      if (command.type === "highlightProject") {
-        setHighlightedProjectId(command.projectId);
-        return;
-      }
-      if (command.type === "openProjectDetail") {
-        openProjectDetail(command.projectId);
-      }
-    });
-  }, [focusProjectNode, openProjectDetail]);
+    );
+  }, [clearSelection, focusProjectNode, openProjectDetail, projectNodes, selectedProjectNode]);
 
   // -----------------------------------------------------------------------
   // Derive the hovered project node for the tooltip
