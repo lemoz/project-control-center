@@ -30,6 +30,40 @@ const EXPECTED_VOICE_CLIENT_TOOLS = [
   "startSession",
   "pauseSession",
 ];
+type VoiceToolRuntimePolicy = {
+  responseTimeoutSecs: number;
+  disableInterruptions: boolean;
+};
+const VOICE_CLIENT_TOOL_RUNTIME_POLICIES: Record<string, VoiceToolRuntimePolicy> = {
+  askGlobalAgent: {
+    responseTimeoutSecs: 20,
+    disableInterruptions: true,
+  },
+  startSession: {
+    responseTimeoutSecs: 25,
+    disableInterruptions: true,
+  },
+  pauseSession: {
+    responseTimeoutSecs: 12,
+    disableInterruptions: true,
+  },
+  updateSessionPriority: {
+    responseTimeoutSecs: 12,
+    disableInterruptions: true,
+  },
+  getProjectStatus: {
+    responseTimeoutSecs: 12,
+    disableInterruptions: false,
+  },
+  inspectProject: {
+    responseTimeoutSecs: 15,
+    disableInterruptions: false,
+  },
+  inspectProjectEscalations: {
+    responseTimeoutSecs: 15,
+    disableInterruptions: false,
+  },
+};
 const DEFAULT_VOICE_AGENT_FIRST_MESSAGE = "";
 const DEFAULT_VOICE_AGENT_SYSTEM_PROMPT = `# Personality
 
@@ -289,6 +323,22 @@ function asString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function asNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function asBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1") return true;
+  if (normalized === "false" || normalized === "0") return false;
+  return null;
 }
 
 function asStringArray(value: unknown): string[] {
@@ -753,6 +803,82 @@ async function fetchElevenLabsToolCatalog(apiKey: string): Promise<{
   return { tools: [], warning: lastError };
 }
 
+async function syncVoiceToolRuntimePolicy(params: {
+  apiKey: string;
+  toolId: string;
+  toolName: string;
+  policy: VoiceToolRuntimePolicy;
+}): Promise<string | null> {
+  const detailResponse = await requestElevenLabsJson({
+    apiKey: params.apiKey,
+    path: `/v1/convai/tools/${encodeURIComponent(params.toolId)}`,
+  });
+  if (!detailResponse.ok) {
+    return `Failed to inspect runtime config for ${params.toolName}: ${
+      detailResponse.errorMessage ?? "unknown error"
+    }`;
+  }
+  const detailRecord = asRecord(detailResponse.payload);
+  const toolConfig =
+    asRecord(detailRecord?.tool_config) ?? asRecord(detailRecord?.toolConfig);
+  if (!toolConfig) {
+    return `Tool ${params.toolName} is missing tool_config; runtime policy not applied.`;
+  }
+
+  const currentTimeout = asNumber(toolConfig.response_timeout_secs);
+  const currentDisableInterruptions = asBoolean(toolConfig.disable_interruptions);
+  if (
+    currentTimeout === params.policy.responseTimeoutSecs &&
+    currentDisableInterruptions === params.policy.disableInterruptions
+  ) {
+    return null;
+  }
+
+  const patchResponse = await requestElevenLabsJson({
+    apiKey: params.apiKey,
+    path: `/v1/convai/tools/${encodeURIComponent(params.toolId)}`,
+    method: "PATCH",
+    body: {
+      tool_config: {
+        ...toolConfig,
+        response_timeout_secs: params.policy.responseTimeoutSecs,
+        disable_interruptions: params.policy.disableInterruptions,
+      },
+    },
+  });
+  if (!patchResponse.ok) {
+    return `Failed to update runtime config for ${params.toolName}: ${
+      patchResponse.errorMessage ?? "unknown error"
+    }`;
+  }
+  return null;
+}
+
+async function syncVoiceToolRuntimePolicies(params: {
+  apiKey: string;
+  toolIds: string[];
+  availableTools: ElevenLabsToolSummary[];
+}): Promise<string[]> {
+  const warnings: string[] = [];
+  const nameById = new Map(
+    params.availableTools.map((tool) => [tool.id, tool.name] as const)
+  );
+  for (const toolId of dedupeToolNames(params.toolIds)) {
+    const toolName = nameById.get(toolId);
+    if (!toolName) continue;
+    const policy = VOICE_CLIENT_TOOL_RUNTIME_POLICIES[toolName];
+    if (!policy) continue;
+    const warning = await syncVoiceToolRuntimePolicy({
+      apiKey: params.apiKey,
+      toolId,
+      toolName,
+      policy,
+    });
+    if (warning) warnings.push(warning);
+  }
+  return warnings;
+}
+
 export function getVoiceStatus(): VoiceStatusResponse {
   const { apiKey, agentId, apiKeySource, agentIdSource } =
     resolveElevenLabsCredentials();
@@ -914,11 +1040,12 @@ export async function syncVoiceAgentConfiguration(
   const builtInTools = extractPromptBuiltInTools(existingPromptConfig);
 
   let resolvedToolIds: string[] = [];
+  let availableTools: ElevenLabsToolSummary[] = [];
   if (requestedToolNames !== undefined) {
     const promptToolIds = extractPromptToolIds(existingPromptConfig);
     const inlineTools = extractInlineToolSummaries(existingPromptConfig, promptToolIds);
     const catalog = await fetchElevenLabsToolCatalog(apiKey);
-    const availableTools = dedupeToolSummaries([...catalog.tools, ...inlineTools]);
+    availableTools = dedupeToolSummaries([...catalog.tools, ...inlineTools]);
     if (catalog.warning) {
       warnings.push(catalog.warning);
     }
@@ -975,6 +1102,14 @@ export async function syncVoiceAgentConfiguration(
       throw new Error(
         updateResponse.errorMessage ?? "Failed to update ElevenLabs agent configuration."
       );
+    }
+    if (requestedToolNames !== undefined && resolvedToolIds.length > 0) {
+      const runtimeWarnings = await syncVoiceToolRuntimePolicies({
+        apiKey,
+        toolIds: resolvedToolIds,
+        availableTools,
+      });
+      warnings.push(...runtimeWarnings);
     }
   }
 

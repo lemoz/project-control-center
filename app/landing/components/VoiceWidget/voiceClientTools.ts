@@ -815,28 +815,40 @@ function extractErrorMessage(payload: unknown, fallback: string): string {
   return typeof record.error === "string" && record.error.trim() ? record.error : fallback;
 }
 
-async function postJson(url: string, body?: Record<string, unknown>) {
+const VOICE_TOOL_HTTP_TIMEOUT_MS = 6000;
+
+async function fetchJsonWithTimeout(
+  url: string,
+  init: RequestInit
+): Promise<{ ok: boolean; payload: unknown }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), VOICE_TOOL_HTTP_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body ?? {}),
+      ...init,
+      signal: controller.signal,
     });
     const payload = (await res.json().catch(() => null)) as unknown;
     return { ok: res.ok, payload };
   } catch {
     return { ok: false, payload: null };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
+async function postJson(url: string, body?: Record<string, unknown>) {
+  return fetchJsonWithTimeout(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+}
+
 async function getJson(url: string) {
-  try {
-    const res = await fetch(url, { cache: "no-store" });
-    const payload = (await res.json().catch(() => null)) as unknown;
-    return { ok: res.ok, payload };
-  } catch {
-    return { ok: false, payload: null };
-  }
+  return fetchJsonWithTimeout(url, {
+    cache: "no-store",
+  });
 }
 
 async function fetchActiveSession(): Promise<{
@@ -1629,6 +1641,13 @@ export function createVoiceClientTools() {
       const trimmed = question.trim();
       if (!trimmed) {
         return "Missing question.";
+      }
+      const active = await fetchActiveSession();
+      if (active.error) {
+        return `Unable to check global session status: ${active.error}`;
+      }
+      if (!active.session) {
+        return "No active global session. Start the global session first.";
       }
       const response = await postJson("/api/chat/global", { content: trimmed });
       if (!response.ok) {
