@@ -471,6 +471,16 @@ type HighlightProjectArgs = { projectId: string };
 type OpenProjectDetailArgs = { projectId: string };
 
 type ToggleDetailPanelArgs = { open: boolean };
+type InspectProjectArgs = {
+  projectId?: string;
+  project?: string;
+  includeStatus?: boolean;
+};
+type InspectProjectEscalationsArgs = {
+  projectId?: string;
+  project?: string;
+  includeStatus?: boolean;
+};
 type ResolveEscalationArgs = {
   escalationId?: string;
   project?: string;
@@ -953,6 +963,194 @@ async function resolveProjectReference(
   return { ok: false, error: `Unable to resolve project "${trimmed}".` };
 }
 
+function resolveProjectQueryArg(
+  projectId?: string,
+  project?: string
+): string | null {
+  const candidates = [projectId, project];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const trimmed = candidate.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
+}
+
+type ProjectStatusLookup =
+  | {
+      ok: true;
+      projectId: string;
+      projectName: string;
+      context: ShiftContextResponse;
+      summary: string;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+async function fetchProjectStatusLookup(projectQuery: string): Promise<ProjectStatusLookup> {
+  const resolved = await resolveProjectReference(projectQuery, {
+    allowFallback: true,
+  });
+  if (!resolved.ok) return { ok: false, error: resolved.error };
+
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(resolved.projectId)}/shift-context`,
+    { cache: "no-store" }
+  );
+  const json = (await res.json().catch(() => null)) as ShiftContextResponse | null;
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: extractErrorMessage(json, `Unable to load status for ${resolved.projectName}.`),
+    };
+  }
+  if (!json) {
+    return {
+      ok: false,
+      error: `Unable to load status for ${resolved.projectName}.`,
+    };
+  }
+  return {
+    ok: true,
+    projectId: resolved.projectId,
+    projectName: json.project?.name ?? resolved.projectName,
+    context: json,
+    summary: formatShiftContextSummary(json),
+  };
+}
+
+type ProjectInspectActions = {
+  focus: CanvasCommandDispatchResult;
+  highlight: CanvasCommandDispatchResult;
+  openDetail: CanvasCommandDispatchResult;
+};
+
+async function runProjectInspectActions(projectId: string): Promise<ProjectInspectActions> {
+  const focus = await sendCanvasCommand({ type: "focusProject", projectId });
+  const highlight = await sendCanvasCommand({ type: "highlightProject", projectId });
+  const openDetail = await sendCanvasCommand({
+    type: "openProjectDetail",
+    projectId,
+  });
+  return { focus, highlight, openDetail };
+}
+
+function buildInspectSummary(
+  projectName: string,
+  actions: ProjectInspectActions
+): {
+  ok: boolean;
+  message: string;
+} {
+  const succeeded: string[] = [];
+  const failures: string[] = [];
+
+  if (actions.focus.ok) succeeded.push("focused");
+  else failures.push(actions.focus.message);
+
+  if (actions.highlight.ok) succeeded.push("highlighted");
+  else failures.push(actions.highlight.message);
+
+  if (actions.openDetail.ok) succeeded.push("opened details");
+  else failures.push(actions.openDetail.message);
+
+  if (failures.length === 0) {
+    return {
+      ok: true,
+      message: `Inspected ${projectName}: focused, highlighted, and opened details.`,
+    };
+  }
+
+  if (!succeeded.length) {
+    return {
+      ok: false,
+      message: `Could not inspect ${projectName} on the current canvas. ${failures[0]}`,
+    };
+  }
+
+  return {
+    ok: true,
+    message: `Partially inspected ${projectName}: ${succeeded.join(
+      ", "
+    )}. ${failures[0]}`,
+  };
+}
+
+function formatProjectEscalationSummary(
+  escalations: Array<{ type: string; summary: string }>
+): string {
+  if (!escalations.length) return "No active escalations.";
+  const listed = escalations.slice(0, 3).map((entry) => {
+    const typeLabel = entry.type?.trim() ? entry.type : "escalation";
+    const summaryLabel = entry.summary?.trim()
+      ? truncateText(entry.summary, 90)
+      : "requires attention";
+    return `${typeLabel}: ${summaryLabel}`;
+  });
+  const overflow =
+    escalations.length > 3 ? ` (+${escalations.length - 3} more)` : "";
+  return `Escalations (${escalations.length}): ${listed.join("; ")}${overflow}.`;
+}
+
+async function fetchProjectEscalationSummary(
+  projectId: string
+): Promise<{ ok: true; summary: string; count: number } | { ok: false; error: string }> {
+  const response = await getJson("/api/global/context");
+  if (response.ok && response.payload && typeof response.payload === "object") {
+    const projects = Array.isArray((response.payload as { projects?: unknown }).projects)
+      ? ((response.payload as { projects: GlobalContextResponse["projects"] }).projects ??
+          [])
+      : [];
+    if (projects.length) {
+      const target = projects.find(
+        (project) => normalizeMatch(project.id) === normalizeMatch(projectId)
+      );
+      if (!target) {
+        return {
+          ok: false,
+          error: `Project "${projectId}" was not found in global context.`,
+        };
+      }
+      const escalations = target.escalations ?? [];
+      return {
+        ok: true,
+        summary: formatProjectEscalationSummary(escalations),
+        count: escalations.length,
+      };
+    }
+  }
+
+  const fallbackEscalations = getCanvasVoiceState().escalations.filter(
+    (entry) => normalizeMatch(entry.projectId) === normalizeMatch(projectId)
+  );
+  if (fallbackEscalations.length) {
+    return {
+      ok: true,
+      summary: formatProjectEscalationSummary(
+        fallbackEscalations.map((entry) => ({
+          type: entry.type,
+          summary: entry.summary,
+        }))
+      ),
+      count: fallbackEscalations.length,
+    };
+  }
+  return {
+    ok: false,
+    error: "Unable to load escalation details for this project right now.",
+  };
+}
+
+function formatBudgetSnapshot(context: ShiftContextResponse): string {
+  const economy = context.economy;
+  if (!economy) return "";
+  const budgetStatus = economy.budget_status ?? "unknown";
+  const remaining = economy.budget_remaining_usd ?? 0;
+  return `Budget ${budgetStatus}: ${formatUsd(remaining)} remaining.`;
+}
+
 export function createVoiceClientTools() {
   return {
     focusNode: async ({ nodeId }: FocusNodeArgs) => {
@@ -1088,55 +1286,62 @@ export function createVoiceClientTools() {
       }
       const trimmed = project.trim();
       if (!trimmed) return "Project name or id is required.";
+      const statusLookup = await fetchProjectStatusLookup(trimmed);
+      if (!statusLookup.ok) return statusLookup.error;
+      return statusLookup.summary;
+    },
+    inspectProject: async ({
+      projectId,
+      project,
+      includeStatus = true,
+    }: InspectProjectArgs) => {
+      const projectQuery = resolveProjectQueryArg(projectId, project);
+      if (!projectQuery) return "Project name or id is required.";
 
-      let resolvedId = trimmed;
-      let resolvedName = trimmed;
-      let didLookup = false;
-      let foundMatch = false;
-      try {
-        const res = await fetch("/api/global/context", { cache: "no-store" });
-        const json = (await res.json().catch(() => null)) as GlobalContextResponse | null;
-        if (res.ok && json?.projects?.length) {
-          didLookup = true;
-          const matchResult = resolveProjectMatch(json.projects, trimmed);
-          if (matchResult.match) {
-            resolvedId = matchResult.match.id;
-            resolvedName = matchResult.match.name;
-            foundMatch = true;
-          } else if (matchResult.candidates.length > 1) {
-            const listed = matchResult.candidates
-              .slice(0, 5)
-              .map((candidate) => `${candidate.name} (${candidate.id})`)
-              .join(", ");
-            const overflow =
-              matchResult.candidates.length > 5
-                ? ` (+${matchResult.candidates.length - 5} more)`
-                : "";
-            return `Multiple projects match "${trimmed}": ${listed}${overflow}. Please specify the project id or exact name.`;
-          }
-        }
-      } catch {
-        // ignore lookup failures
-      }
+      const resolved = await resolveProjectReference(projectQuery, {
+        allowFallback: true,
+      });
+      if (!resolved.ok) return resolved.error;
 
-      if (didLookup && !foundMatch) {
-        return `Project "${trimmed}" not found. Try the project id.`;
-      }
+      const actions = await runProjectInspectActions(resolved.projectId);
+      const inspectSummary = buildInspectSummary(resolved.projectName, actions);
 
-      try {
-        const res = await fetch(
-          `/api/projects/${encodeURIComponent(resolvedId)}/shift-context`,
-          { cache: "no-store" }
-        );
-        const json = (await res.json().catch(() => null)) as ShiftContextResponse | null;
-        if (!res.ok) {
-          return extractErrorMessage(json, `Unable to load status for ${resolvedName}.`);
-        }
-        if (!json) return `Unable to load status for ${resolvedName}.`;
-        return formatShiftContextSummary(json);
-      } catch {
-        return `Unable to load status for ${resolvedName}.`;
+      if (!includeStatus) return inspectSummary.message;
+      const statusLookup = await fetchProjectStatusLookup(resolved.projectId);
+      if (!statusLookup.ok) return `${inspectSummary.message} ${statusLookup.error}`;
+      return `${inspectSummary.message} ${statusLookup.summary}`;
+    },
+    inspectProjectEscalations: async ({
+      projectId,
+      project,
+      includeStatus = true,
+    }: InspectProjectEscalationsArgs) => {
+      const projectQuery = resolveProjectQueryArg(projectId, project);
+      if (!projectQuery) return "Project name or id is required.";
+
+      const resolved = await resolveProjectReference(projectQuery, {
+        allowFallback: true,
+      });
+      if (!resolved.ok) return resolved.error;
+
+      const actions = await runProjectInspectActions(resolved.projectId);
+      const inspectSummary = buildInspectSummary(resolved.projectName, actions);
+
+      const escalationSummary = await fetchProjectEscalationSummary(resolved.projectId);
+      const escalationText = escalationSummary.ok
+        ? escalationSummary.summary
+        : escalationSummary.error;
+
+      if (!includeStatus) return `${inspectSummary.message} ${escalationText}`;
+
+      const statusLookup = await fetchProjectStatusLookup(resolved.projectId);
+      if (!statusLookup.ok) {
+        return `${inspectSummary.message} ${escalationText} ${statusLookup.error}`;
       }
+      const budgetLine = formatBudgetSnapshot(statusLookup.context);
+      return [inspectSummary.message, escalationText, budgetLine]
+        .filter(Boolean)
+        .join(" ");
     },
     updateSessionPriority: async ({ project, note }: UpdateSessionPriorityArgs) => {
       if (!project || typeof project !== "string") {
