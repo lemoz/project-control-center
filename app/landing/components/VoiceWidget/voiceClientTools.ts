@@ -485,7 +485,7 @@ type ResolveEscalationArgs = {
   escalationId?: string;
   project?: string;
   resolution?: string;
-  inputs?: Record<string, string>;
+  inputs?: Record<string, string> | string;
 };
 
 type UpdateSessionPriorityArgs = {
@@ -1151,6 +1151,47 @@ function formatBudgetSnapshot(context: ShiftContextResponse): string {
   return `Budget ${budgetStatus}: ${formatUsd(remaining)} remaining.`;
 }
 
+function normalizeEscalationInputs(
+  inputs: ResolveEscalationArgs["inputs"]
+): Record<string, string> | null {
+  if (!inputs) return null;
+  if (typeof inputs === "string") {
+    const trimmed = inputs.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return null;
+      }
+      const normalized: Record<string, string> = {};
+      for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+        const nextKey = key.trim();
+        if (!nextKey) continue;
+        if (typeof value === "string") {
+          const nextValue = value.trim();
+          if (nextValue) normalized[nextKey] = nextValue;
+          continue;
+        }
+        if (value !== null && value !== undefined) {
+          normalized[nextKey] = String(value);
+        }
+      }
+      return Object.keys(normalized).length ? normalized : null;
+    } catch {
+      return null;
+    }
+  }
+
+  const normalized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(inputs)) {
+    const nextKey = key.trim();
+    const nextValue = value.trim();
+    if (!nextKey || !nextValue) continue;
+    normalized[nextKey] = nextValue;
+  }
+  return Object.keys(normalized).length ? normalized : null;
+}
+
 export function createVoiceClientTools() {
   return {
     focusNode: async ({ nodeId }: FocusNodeArgs) => {
@@ -1401,7 +1442,8 @@ export function createVoiceClientTools() {
       inputs,
     }: ResolveEscalationArgs) => {
       const trimmedResolution = typeof resolution === "string" ? resolution.trim() : "";
-      if (!trimmedResolution && !inputs) {
+      const normalizedInputs = normalizeEscalationInputs(inputs);
+      if (!trimmedResolution && !normalizedInputs) {
         return "Resolution details are required.";
       }
       const normalizedProject = project ? normalizeMatch(project) : null;
@@ -1508,7 +1550,7 @@ export function createVoiceClientTools() {
             runEscalationInputs = parseRunEscalationInputs(runJson?.escalation);
           }
           const escalationInputs = runEscalationInputs ?? [];
-          let resolvedInputs = inputs;
+          let resolvedInputs = normalizedInputs;
           if (!resolvedInputs && trimmedResolution && escalationInputs.length === 1) {
             resolvedInputs = { [escalationInputs[0].key]: trimmedResolution };
           }
@@ -1548,6 +1590,7 @@ export function createVoiceClientTools() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               resolution: trimmedResolution || inputs || "resolved",
+              inputs: normalizedInputs ?? undefined,
             }),
           }
         );
