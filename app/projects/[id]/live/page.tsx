@@ -7,7 +7,6 @@ import { useAgentFocusSync } from "../../../playground/canvas/useAgentFocus";
 import { useProjectsVisualization } from "../../../playground/canvas/useProjectsVisualization";
 import type { ProjectNode } from "../../../playground/canvas/types";
 import { AgentActivityPanel } from "../../../live/AgentActivityPanel";
-import { CollapsibleVoiceWidget } from "../../../live/CollapsibleVoiceWidget";
 import { LiveOrbitalCanvas } from "../../../live/LiveOrbitalCanvas";
 import { ShiftStatusBar } from "../../../live/ShiftStatusBar";
 import styles from "../../../live/live.module.css";
@@ -85,8 +84,6 @@ export default function ProjectLivePage({ params }: { params: { id: string } }) 
               maxEntries={12}
             />
           </section>
-
-          <CollapsibleVoiceWidget />
 
           <section className={styles.narrationSection}>
             <NarrationPanel emptyStateText={emptyNarrationText} />

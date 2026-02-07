@@ -806,6 +806,60 @@ a {
   gap: 8px;
 }
 
+.nav-voice {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.nav-voice-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(43, 51, 71, 0.85);
+  background: rgba(15, 19, 32, 0.9);
+  color: #cbd5f5;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.nav-voice-trigger:hover {
+  background: rgba(22, 28, 44, 0.95);
+  border-color: rgba(64, 98, 168, 0.9);
+  color: #e6e8ee;
+}
+
+.nav-voice-trigger--open {
+  background: rgba(25, 33, 52, 0.98);
+  border-color: rgba(79, 115, 190, 0.95);
+  color: #e6e8ee;
+}
+
+.nav-voice-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 10px);
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(78vh, 680px);
+  overflow: auto;
+  z-index: 80;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-6px);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.nav-voice-panel--open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
 @media (max-width: 720px) {
   :root {
     --nav-offset: calc(72px + env(safe-area-inset-bottom));
@@ -866,6 +920,22 @@ a {
 
   .nav-actions {
     justify-self: end;
+  }
+
+  .nav-voice-trigger {
+    padding: 6px 8px;
+  }
+
+  .nav-voice-label {
+    display: none;
+  }
+
+  .nav-voice-panel {
+    top: auto;
+    bottom: calc(100% + 8px);
+    right: 0;
+    width: min(420px, calc(100vw - 16px));
+    max-height: min(72vh, 560px);
   }
 
   .container {

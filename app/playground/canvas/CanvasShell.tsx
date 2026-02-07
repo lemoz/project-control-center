@@ -27,7 +27,6 @@ import {
   subscribeCanvasCommands,
   type CanvasVoiceNode,
 } from "../../landing/components/VoiceWidget/voiceClientTools";
-import { VoiceWidget } from "../../landing/components/VoiceWidget/VoiceWidget";
 
 const TOOLTIP_OFFSET = 14;
 const CLICK_THRESHOLD = 4;
@@ -836,8 +835,6 @@ export function CanvasShell() {
           </button>
         </div>
       </section>
-
-      <VoiceWidget />
 
       <section
         className={isFullscreen ? "" : "card"}

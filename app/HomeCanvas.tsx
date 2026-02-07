@@ -4,7 +4,6 @@ import { useCallback, useRef, useState } from "react";
 import Link from "next/link";
 import { GlobalOrbitalCanvas } from "./live/GlobalOrbitalCanvas";
 import { GlobalSessionOverlay } from "./live/GlobalSessionOverlay";
-import { CollapsibleVoiceWidget } from "./live/CollapsibleVoiceWidget";
 import { ProjectDetailPanel } from "./live/ProjectDetailPanel";
 import type { ProjectNode } from "./playground/canvas/types";
 import type { GlobalAgentSession } from "./live/globalSessionTypes";
@@ -37,8 +36,6 @@ export function HomeCanvas() {
       <div className="home-session-overlay">
         <GlobalSessionOverlay onSessionChange={setGlobalSession} />
       </div>
-
-      <CollapsibleVoiceWidget />
 
       <Link href="/portfolio" className="home-list-toggle btnSecondary">
         List view

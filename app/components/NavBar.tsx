@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { ChatAttentionBell } from "./ChatAttentionBell";
+import { HeaderVoiceControl } from "./HeaderVoiceControl";
 
 const NAV_LINKS = [
   { href: "/", label: "Home" },
@@ -160,6 +161,7 @@ export function NavBar() {
         </div>
 
         <div className="nav-actions">
+          <HeaderVoiceControl />
           <Suspense fallback={null}>
             <ChatAttentionBell />
           </Suspense>

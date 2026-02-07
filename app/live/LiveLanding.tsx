@@ -7,7 +7,6 @@ import { useAgentFocusSync } from "../playground/canvas/useAgentFocus";
 import { useProjectsVisualization } from "../playground/canvas/useProjectsVisualization";
 import type { ProjectNode } from "../playground/canvas/types";
 import { AgentActivityPanel } from "./AgentActivityPanel";
-import { CollapsibleVoiceWidget } from "./CollapsibleVoiceWidget";
 import { LiveOrbitalCanvas } from "./LiveOrbitalCanvas";
 import { ShiftStatusBar } from "./ShiftStatusBar";
 import styles from "./live.module.css";
@@ -72,8 +71,6 @@ export function LiveLanding() {
           maxEntries={12}
         />
       </section>
-
-      <CollapsibleVoiceWidget />
 
       <section className={styles.narrationSection}>
         <NarrationPanel emptyStateText={emptyNarrationText} />
