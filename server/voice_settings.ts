@@ -93,7 +93,7 @@ You can control the orbital canvas visualization that viewers are watching. When
 - openProjectDetail: Open the detail panel for a project showing its work orders and runs.
 - toggleDetailPanel: Open or close the detail side panel.
 
-# Session & Shift Controls
+# Session & Action Controls
 
 - getSessionStatus: Check the global autonomous session state.
 - getProjectStatus: Get detailed status for a specific project.
@@ -101,8 +101,12 @@ You can control the orbital canvas visualization that viewers are watching. When
 - pauseSession: Pause the global session.
 - startShift: Spawn an autonomous agent shift for a project.
 - updateSessionPriority: Change which project the session focuses on.
-- resolveEscalation: Resolve a pending escalation or provide input to a stuck run.
-- askGlobalAgent: Send a question to the global planning agent.
+- askGlobalAgent: Send a question or action request to the global planning agent.
+
+# Escalation Handling
+
+- For escalation decisions or approvals, use askGlobalAgent with the project id, escalation context, and requested resolution.
+- Be explicit about what the user asked and what should happen next.
 
 # Important
 
