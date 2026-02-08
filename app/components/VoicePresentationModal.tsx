@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   setCanvasVoiceState,
   useCanvasVoiceState,
@@ -84,6 +84,82 @@ function normalizeDiagramSource(value: string): string {
   return trimmed;
 }
 
+const DOCK_MARGIN_PX = 12;
+
+type PresentationDockLayout = {
+  rightOffsetPx: number;
+  bottomOffsetPx: number;
+};
+
+function defaultDockLayout(): PresentationDockLayout {
+  return {
+    rightOffsetPx: DOCK_MARGIN_PX,
+    bottomOffsetPx: DOCK_MARGIN_PX,
+  };
+}
+
+function isVisibleElement(element: HTMLElement): boolean {
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return false;
+  }
+  if (rect.bottom < 0 || rect.top > window.innerHeight) {
+    return false;
+  }
+  if (rect.right < 0 || rect.left > window.innerWidth) {
+    return false;
+  }
+  const style = window.getComputedStyle(element);
+  if (style.display === "none" || style.visibility === "hidden") {
+    return false;
+  }
+  return true;
+}
+
+function measureDockLayout(): PresentationDockLayout {
+  if (typeof window === "undefined") {
+    return defaultDockLayout();
+  }
+
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  let rightOffsetPx = DOCK_MARGIN_PX;
+  let bottomOffsetPx = DOCK_MARGIN_PX;
+
+  const detailPanels = Array.from(
+    document.querySelectorAll<HTMLElement>('[data-pcc-overlay="detail-panel"]')
+  );
+  for (const panel of detailPanels) {
+    if (!isVisibleElement(panel)) continue;
+    const rect = panel.getBoundingClientRect();
+    const widthRatio = rect.width / Math.max(viewportWidth, 1);
+    const anchoredBottom = rect.bottom >= viewportHeight - 2;
+
+    if (widthRatio > 0.55 && anchoredBottom) {
+      // On narrow layouts the detail panel behaves like a bottom sheet,
+      // so move the presentation panel upward instead of pushing left.
+      const occupiedFromBottom = viewportHeight - rect.top;
+      bottomOffsetPx = Math.max(bottomOffsetPx, occupiedFromBottom + DOCK_MARGIN_PX);
+      continue;
+    }
+
+    const occupiedFromRight = viewportWidth - rect.left;
+    rightOffsetPx = Math.max(rightOffsetPx, occupiedFromRight + DOCK_MARGIN_PX);
+  }
+
+  const chatWidget = document.querySelector<HTMLElement>(".chat-widget");
+  if (chatWidget && isVisibleElement(chatWidget)) {
+    const rect = chatWidget.getBoundingClientRect();
+    const occupiedFromBottom = viewportHeight - rect.top;
+    bottomOffsetPx = Math.max(bottomOffsetPx, occupiedFromBottom + 8);
+  }
+
+  return {
+    rightOffsetPx: Math.round(rightOffsetPx),
+    bottomOffsetPx: Math.round(bottomOffsetPx),
+  };
+}
+
 export function VoicePresentationModal() {
   const { presentation } = useCanvasVoiceState();
   const [diagramSvg, setDiagramSvg] = useState<string | null>(null);
@@ -92,6 +168,9 @@ export function VoicePresentationModal() {
     null
   );
   const [websiteCheckLoading, setWebsiteCheckLoading] = useState(false);
+  const [dockLayout, setDockLayout] = useState<PresentationDockLayout>(
+    defaultDockLayout
+  );
 
   const close = useCallback(() => {
     setCanvasVoiceState({ presentation: null });
@@ -106,6 +185,19 @@ export function VoicePresentationModal() {
     if (!presentation?.open || presentation.kind !== "diagram") return "";
     return normalizeDiagramSource(presentation.content ?? "");
   }, [presentation]);
+
+  const recalculateDockLayout = useCallback(() => {
+    const next = measureDockLayout();
+    setDockLayout((previous) => {
+      if (
+        previous.rightOffsetPx === next.rightOffsetPx &&
+        previous.bottomOffsetPx === next.bottomOffsetPx
+      ) {
+        return previous;
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (!presentation?.open) return;
@@ -211,15 +303,75 @@ export function VoicePresentationModal() {
     };
   }, [diagramSource, presentation?.kind, presentation?.open]);
 
+  useEffect(() => {
+    if (!presentation?.open) {
+      setDockLayout(defaultDockLayout());
+      return;
+    }
+
+    recalculateDockLayout();
+    if (typeof window === "undefined") return;
+
+    const reconnectResizeTargets = (
+      observer: ResizeObserver | null
+    ): void => {
+      if (!observer) return;
+      observer.disconnect();
+      const targets = document.querySelectorAll<HTMLElement>(
+        '[data-pcc-overlay="detail-panel"], .chat-widget'
+      );
+      targets.forEach((target) => observer.observe(target));
+    };
+
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            recalculateDockLayout();
+          })
+        : null;
+
+    reconnectResizeTargets(resizeObserver);
+
+    const mutationObserver = new MutationObserver(() => {
+      reconnectResizeTargets(resizeObserver);
+      recalculateDockLayout();
+    });
+    mutationObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+
+    const onWindowResize = () => {
+      reconnectResizeTargets(resizeObserver);
+      recalculateDockLayout();
+    };
+    window.addEventListener("resize", onWindowResize);
+
+    return () => {
+      window.removeEventListener("resize", onWindowResize);
+      mutationObserver.disconnect();
+      resizeObserver?.disconnect();
+    };
+  }, [presentation?.open, recalculateDockLayout]);
+
   if (!presentation?.open) return null;
 
   const showWebsite = presentation.kind === "website" && Boolean(presentation.url);
   const showDiagram = presentation.kind === "diagram";
   const showText = presentation.kind !== "website" && presentation.kind !== "diagram";
   const websiteBlocked = Boolean(websiteBlockedReason);
+  const shellStyle = {
+    "--voice-presentation-right": `${dockLayout.rightOffsetPx}px`,
+    "--voice-presentation-bottom": `${dockLayout.bottomOffsetPx}px`,
+  } as CSSProperties;
 
   return (
-    <aside className="voice-presentation-shell" aria-label="Voice presentation panel">
+    <aside
+      className="voice-presentation-shell"
+      style={shellStyle}
+      data-pcc-overlay="voice-presentation"
+      aria-label="Voice presentation panel"
+    >
       <section className="voice-presentation-panel">
         <header className="voice-presentation-header">
           <div>

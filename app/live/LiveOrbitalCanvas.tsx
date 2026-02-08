@@ -1043,7 +1043,11 @@ export function LiveOrbitalCanvas({
       )}
 
       {selectedWorkOrderNode && (
-        <aside ref={detailPanelRef} className={`card ${styles.detailPanel}`}>
+        <aside
+          ref={detailPanelRef}
+          className={`card ${styles.detailPanel}`}
+          data-pcc-overlay="detail-panel"
+        >
           <div className={styles.detailHeader}>
             <div>
               <div className="muted" style={{ fontSize: 12 }}>

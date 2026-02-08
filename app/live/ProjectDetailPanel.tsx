@@ -268,7 +268,10 @@ export function ProjectDetailPanel({ projectId, initialNode, onClose }: ProjectD
   if (loading) {
     return (
       <div className={styles.detailPanelOverlay} role="presentation">
-        <aside className={`card ${styles.detailPanel} ${styles.detailPanelSlideIn}`}>
+        <aside
+          className={`card ${styles.detailPanel} ${styles.detailPanelSlideIn}`}
+          data-pcc-overlay="detail-panel"
+        >
           <div className={styles.detailHeader}>
             <div>
               <div className="muted" style={{ fontSize: 12 }}>{projectId}</div>
@@ -304,6 +307,7 @@ export function ProjectDetailPanel({ projectId, initialNode, onClose }: ProjectD
     <div className={styles.detailPanelOverlay} role="presentation">
       <aside
         className={`card ${styles.detailPanel} ${styles.detailPanelSlideIn}`}
+        data-pcc-overlay="detail-panel"
       >
         <div className={styles.detailHeader}>
           <div>

@@ -13,6 +13,8 @@ html {
 
 :root {
   --nav-offset: 49px;
+  --voice-presentation-right: 12px;
+  --voice-presentation-bottom: 12px;
 }
 
 a {
@@ -386,14 +388,15 @@ a {
 .voice-presentation-shell {
   position: fixed;
   top: calc(var(--nav-offset) + 10px);
-  right: 12px;
-  bottom: 12px;
+  right: var(--voice-presentation-right, 12px);
+  bottom: var(--voice-presentation-bottom, 12px);
   z-index: 45;
   pointer-events: none;
+  transition: right 0.2s ease, bottom 0.2s ease;
 }
 
 .voice-presentation-panel {
-  width: min(560px, calc(100vw - 24px));
+  width: min(560px, calc(100vw - var(--voice-presentation-right, 12px) - 24px));
   height: 100%;
   background: #101522;
   border: 1px solid #22293a;
@@ -403,6 +406,7 @@ a {
   flex-direction: column;
   overflow: hidden;
   pointer-events: auto;
+  transition: width 0.2s ease;
 }
 
 .voice-presentation-header {
@@ -778,9 +782,9 @@ a {
 
   .voice-presentation-shell {
     top: calc(var(--nav-offset) + 8px);
-    right: 8px;
+    right: var(--voice-presentation-right, 8px);
     left: 8px;
-    bottom: 8px;
+    bottom: var(--voice-presentation-bottom, 8px);
   }
 
   .voice-presentation-panel {
