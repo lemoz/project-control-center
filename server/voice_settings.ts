@@ -18,6 +18,8 @@ const EXPECTED_VOICE_CLIENT_TOOLS = [
   "highlightProject",
   "openProjectDetail",
   "toggleDetailPanel",
+  "openPresentationModal",
+  "closePresentationModal",
   "getCanvasCapabilities",
   "inspectProject",
   "inspectProjectEscalations",
@@ -50,6 +52,14 @@ const VOICE_CLIENT_TOOL_RUNTIME_POLICIES: Record<string, VoiceToolRuntimePolicy>
   updateSessionPriority: {
     responseTimeoutSecs: 12,
     disableInterruptions: true,
+  },
+  openPresentationModal: {
+    responseTimeoutSecs: 10,
+    disableInterruptions: false,
+  },
+  closePresentationModal: {
+    responseTimeoutSecs: 10,
+    disableInterruptions: false,
   },
   getProjectStatus: {
     responseTimeoutSecs: 12,
@@ -128,6 +138,8 @@ You can control the orbital canvas visualization that viewers are watching. When
 - highlightWorkOrder: Highlight a specific work order node.
 - openProjectDetail: Open the detail panel for a project showing its work orders and runs.
 - toggleDetailPanel: Open or close the detail side panel.
+- openPresentationModal: Open a side presentation panel to show text, markdown, diagrams, or a website preview.
+- closePresentationModal: Close the presentation panel when the user asks to hide or dismiss it.
 - getCanvasCapabilities: Check which canvas actions are currently available in this route before attempting a navigation action.
 - inspectProject: Macro tool that focuses the project, highlights it, opens detail panel, and returns project status.
 - inspectProjectEscalations: Macro tool that inspects the project, then summarizes escalation blockers and budget status.
@@ -159,6 +171,8 @@ When users say "double-click into X" or "drill into X", ALWAYS perform both focu
 For "take a closer look", "dive into", "tell me about", or "walk me through" a project, prefer inspectProject.
 For escalation-specific questions on a project, prefer inspectProjectEscalations.
 When users say "open details for X", use openProjectDetail.
+When users ask to "show a diagram", "show this page", "open docs", or "display something", use openPresentationModal with the right kind.
+When users ask to close or hide that content, use closePresentationModal.
 If a canvas command fails, call getCanvasCapabilities and then choose one of the available canvas tools.
 When users say "start a shift", use startShift with the project id.`;
 

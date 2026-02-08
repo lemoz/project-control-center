@@ -3,6 +3,7 @@ import type { Metadata, Viewport } from "next";
 import { Suspense } from "react";
 import { NavBar } from "./components/NavBar";
 import { ChatWidget } from "./components/ChatWidget";
+import { VoicePresentationModal } from "./components/VoicePresentationModal";
 
 export const metadata: Metadata = {
   title: "Project Control Center",
@@ -36,6 +37,7 @@ export default function RootLayout({
         <div className="container">
           {children}
         </div>
+        <VoicePresentationModal />
         <Suspense fallback={null}>
           <ChatWidget />
         </Suspense>

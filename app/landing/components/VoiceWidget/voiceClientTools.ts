@@ -83,6 +83,17 @@ type CanvasVoiceShift = {
   startedAt: string | null;
 };
 
+type CanvasVoicePresentationKind = "text" | "markdown" | "diagram" | "website";
+
+type CanvasVoicePresentation = {
+  open: boolean;
+  kind: CanvasVoicePresentationKind;
+  title: string;
+  content: string | null;
+  url: string | null;
+  updatedAt: number;
+};
+
 type CanvasVoiceState = {
   contextLabel?: string;
   focusedNode: CanvasVoiceNode | null;
@@ -98,6 +109,7 @@ type CanvasVoiceState = {
   globalSessionPaused: boolean;
   activeShiftProjects: CanvasVoiceShift[];
   escalationSummaries: CanvasVoiceEscalation[];
+  presentation: CanvasVoicePresentation | null;
   runtime: CanvasVoiceRuntime;
   updatedAt: number;
 };
@@ -193,6 +205,7 @@ let canvasVoiceState: CanvasVoiceState = {
   globalSessionPaused: false,
   activeShiftProjects: [],
   escalationSummaries: [],
+  presentation: null,
   runtime: {
     status: "disconnected",
     isConnecting: false,
@@ -471,6 +484,15 @@ type HighlightProjectArgs = { projectId: string };
 type OpenProjectDetailArgs = { projectId: string };
 
 type ToggleDetailPanelArgs = { open: boolean };
+type OpenPresentationModalArgs = {
+  title?: string;
+  kind?: string;
+  content?: string;
+  url?: string;
+};
+type ClosePresentationModalArgs = {
+  reason?: string;
+};
 type InspectProjectArgs = {
   projectId?: string;
   project?: string;
@@ -570,6 +592,29 @@ type GlobalSessionSummary = {
 
 function normalizeMatch(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function normalizePresentationKind(value: string | undefined): CanvasVoicePresentationKind {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "markdown") return "markdown";
+  if (normalized === "diagram") return "diagram";
+  if (normalized === "website" || normalized === "web" || normalized === "url") {
+    return "website";
+  }
+  return "text";
+}
+
+function normalizePresentationUrl(value: string | undefined): string | null {
+  if (!value || typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
 }
 
 function resolveNode(nodes: CanvasVoiceNode[], query: string): CanvasVoiceNode | null {
@@ -1289,6 +1334,56 @@ export function createVoiceClientTools() {
       if (!dispatch.ok) return dispatch.message;
       return open ? "Detail panel opened." : "Detail panel closed.";
     },
+    openPresentationModal: async ({
+      title,
+      kind,
+      content,
+      url,
+    }: OpenPresentationModalArgs) => {
+      const resolvedKind = normalizePresentationKind(kind);
+      const resolvedTitle =
+        typeof title === "string" && title.trim() ? title.trim() : "Presentation";
+      const resolvedContent =
+        typeof content === "string" && content.trim() ? content.trim() : null;
+      const resolvedUrl = normalizePresentationUrl(url);
+
+      if (resolvedKind === "website" && !resolvedUrl) {
+        return "A valid http or https URL is required for website presentation.";
+      }
+      if (resolvedKind !== "website" && !resolvedContent) {
+        return "Presentation content is required.";
+      }
+
+      setCanvasVoiceState({
+        presentation: {
+          open: true,
+          kind: resolvedKind,
+          title: resolvedTitle,
+          content: resolvedContent,
+          url: resolvedUrl,
+          updatedAt: Date.now(),
+        },
+      });
+
+      if (resolvedKind === "website") {
+        return `Opened website presentation for ${resolvedTitle}.`;
+      }
+      if (resolvedKind === "diagram") {
+        return `Opened diagram presentation for ${resolvedTitle}.`;
+      }
+      if (resolvedKind === "markdown") {
+        return `Opened markdown presentation for ${resolvedTitle}.`;
+      }
+      return `Opened presentation for ${resolvedTitle}.`;
+    },
+    closePresentationModal: async (_args: ClosePresentationModalArgs) => {
+      const current = getCanvasVoiceState().presentation;
+      if (!current?.open) {
+        return "Presentation modal is already closed.";
+      }
+      setCanvasVoiceState({ presentation: null });
+      return "Closed presentation modal.";
+    },
     getCanvasCapabilities: async () => {
       const capabilities = getCanvasCommandCapabilities();
       if (!capabilities.canvases.length) {
@@ -1730,6 +1825,8 @@ export type {
   CanvasVoiceRuntime,
   CanvasVoiceEscalation,
   CanvasVoiceEscalationDetail,
+  CanvasVoicePresentation,
+  CanvasVoicePresentationKind,
   CanvasVoiceShift,
   CanvasVoiceShiftUpdate,
   CanvasVoiceSession,
